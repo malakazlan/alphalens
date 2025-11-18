@@ -54,6 +54,14 @@ htmlcov/
 render.yaml.local
 .env.production
 
+# Local setup scripts (not needed for deployment)
+setup.bat
+setup.sh
+
+# Docker files (using Render, not Docker)
+Dockerfile
+docker-compose.yml
+
 # Vector stores and processed data
 vector_stores/
 processed_data/
