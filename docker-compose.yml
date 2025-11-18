@@ -1,0 +1,16 @@
+version: '3'
+
+services:
+  alpha-lens-app:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data
+    environment:
+      - HOST=0.0.0.0
+      - PORT=8000
+      - DEBUG=True
+      # You can override any .env settings here
+      # - LANDING_AI_API_KEY=your_key_here
+      # - ANTHROPIC_API_KEY=your_key_here

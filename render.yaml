@@ -1,0 +1,20 @@
+services:
+  - type: web
+    name: alpha-lens
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
+      - key: LANDING_AI_API_KEY
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_ANON_KEY
+        sync: false
+    healthCheckPath: /
+    plan: free
+

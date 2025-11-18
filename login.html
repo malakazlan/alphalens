@@ -1,0 +1,597 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Alpha Lens — Login</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
+        :root {
+            /* Landing.AI color theme - Premium, professional, top 1% design */
+            --bg: #ffffff;
+            --bg-soft: #fafbfc;
+            --bg-secondary: #f5f7fa;
+            --accent: #059669;
+            --accent-hover: #047857;
+            --accent-light: #d1fae5;
+            --accent-2: #10b981;
+            --accent-3: #34d399;
+            --accent-soft: rgba(5, 150, 105, 0.08);
+            --text: #0f172a;
+            --text-secondary: #475569;
+            --subtle: #64748b;
+            --border: #e2e8f0;
+            --border-light: #f1f5f9;
+            --card: #ffffff;
+            --success: #059669;
+            --warning: #f59e0b;
+            --error: #dc2626;
+            --shadow: 0 1px 3px rgba(0, 0, 0, 0.08), 0 1px 2px rgba(0, 0, 0, 0.04);
+            --shadow-lg: 0 10px 25px rgba(0, 0, 0, 0.08), 0 4px 10px rgba(0, 0, 0, 0.04);
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            margin: 0;
+            min-height: 100vh;
+            background: linear-gradient(135deg, var(--bg-soft) 0%, var(--bg-secondary) 100%);
+            color: var(--text);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+
+        .login-container {
+            width: 100%;
+            max-width: 440px;
+        }
+
+        .login-header {
+            text-align: center;
+            margin-bottom: 40px;
+        }
+
+        .logo-container {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 16px;
+            margin-bottom: 24px;
+        }
+
+        .logo-mark {
+            width: 64px;
+            height: 64px;
+            border-radius: 16px;
+            background: linear-gradient(145deg, var(--accent), var(--accent-2));
+            display: grid;
+            place-items: center;
+            overflow: hidden;
+            border: 1px solid var(--accent);
+            box-shadow: var(--shadow-lg);
+        }
+
+        .logo-mark img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+
+        .login-title {
+            font-size: 2rem;
+            font-weight: 700;
+            color: var(--text);
+            margin: 0 0 8px 0;
+            letter-spacing: -0.02em;
+        }
+
+        .login-subtitle {
+            font-size: 1rem;
+            color: var(--text-secondary);
+            margin: 0;
+        }
+
+        .login-card {
+            background: var(--card);
+            border-radius: 20px;
+            padding: 40px;
+            box-shadow: var(--shadow-lg);
+            border: 1px solid var(--border);
+        }
+
+        .auth-tabs {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 32px;
+            background: var(--bg-secondary);
+            padding: 4px;
+            border-radius: 12px;
+        }
+
+        .auth-tab {
+            flex: 1;
+            padding: 12px 20px;
+            background: transparent;
+            border: none;
+            color: var(--text-secondary);
+            cursor: pointer;
+            font-size: 0.95rem;
+            font-weight: 500;
+            border-radius: 8px;
+            transition: all 0.2s ease;
+        }
+
+        .auth-tab:hover {
+            color: var(--accent);
+        }
+
+        .auth-tab.active {
+            background: var(--card);
+            color: var(--accent);
+            font-weight: 600;
+            box-shadow: var(--shadow);
+        }
+
+        .auth-form {
+            display: none;
+        }
+
+        .auth-form.active {
+            display: block;
+        }
+
+        .form-group {
+            margin-bottom: 24px;
+        }
+
+        .form-label {
+            display: block;
+            font-size: 0.9rem;
+            font-weight: 500;
+            color: var(--text);
+            margin-bottom: 8px;
+        }
+
+        .form-input {
+            width: 100%;
+            padding: 14px 16px;
+            font-size: 1rem;
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            background: var(--bg);
+            color: var(--text);
+            transition: all 0.2s ease;
+            font-family: inherit;
+        }
+
+        .form-input:focus {
+            outline: none;
+            border-color: var(--accent);
+            box-shadow: 0 0 0 3px var(--accent-soft);
+        }
+
+        .form-input::placeholder {
+            color: var(--subtle);
+        }
+
+        .password-toggle {
+            position: relative;
+        }
+
+        .password-toggle-btn {
+            position: absolute;
+            right: 12px;
+            top: 50%;
+            transform: translateY(-50%);
+            background: none;
+            border: none;
+            color: var(--text-secondary);
+            cursor: pointer;
+            font-size: 0.9rem;
+            padding: 4px 8px;
+        }
+
+        .password-toggle-btn:hover {
+            color: var(--accent);
+        }
+
+        .forgot-password {
+            text-align: right;
+            margin-bottom: 24px;
+        }
+
+        .forgot-password a {
+            color: var(--accent);
+            text-decoration: none;
+            font-size: 0.9rem;
+            font-weight: 500;
+        }
+
+        .forgot-password a:hover {
+            text-decoration: underline;
+        }
+
+        .submit-btn {
+            width: 100%;
+            padding: 14px 24px;
+            background: var(--accent);
+            color: white;
+            border: none;
+            border-radius: 10px;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            box-shadow: var(--shadow);
+        }
+
+        .submit-btn:hover:not(:disabled) {
+            background: var(--accent-hover);
+            transform: translateY(-2px);
+            box-shadow: var(--shadow-lg);
+        }
+
+        .submit-btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
+        .message {
+            padding: 12px 16px;
+            border-radius: 10px;
+            margin-bottom: 24px;
+            font-size: 0.9rem;
+            display: none;
+        }
+
+        .message.show {
+            display: block;
+        }
+
+        .message.error {
+            background: rgba(220, 38, 38, 0.1);
+            color: var(--error);
+            border: 1px solid rgba(220, 38, 38, 0.2);
+        }
+
+        .message.success {
+            background: var(--accent-light);
+            color: var(--success);
+            border: 1px solid var(--accent);
+        }
+
+        /* Responsive */
+        @media (max-width: 640px) {
+            .login-card {
+                padding: 32px 24px;
+            }
+
+            .login-title {
+                font-size: 1.75rem;
+            }
+
+            .form-input {
+                padding: 12px 14px;
+            }
+
+            .submit-btn {
+                padding: 12px 20px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="login-container">
+        <div class="login-header">
+            <div class="logo-container">
+                <div class="logo-mark">
+                    <img src="img/ALPHA LENS LOGO.png" alt="Alpha Lens Logo" onerror="this.style.display='none'">
+                </div>
+            </div>
+            <h1 class="login-title">Alpha Lens</h1>
+            <p class="login-subtitle">Financial Intelligence Platform</p>
+        </div>
+
+        <div class="login-card">
+            <div class="auth-tabs">
+                <button class="auth-tab active" data-tab="login">Sign In</button>
+                <button class="auth-tab" data-tab="signup">Sign Up</button>
+            </div>
+
+            <!-- Login Form -->
+            <form class="auth-form active" id="login-form">
+                <div class="message" id="login-message"></div>
+                
+                <div class="form-group">
+                    <label class="form-label" for="login-email">Email</label>
+                    <input 
+                        type="email" 
+                        id="login-email" 
+                        class="form-input" 
+                        placeholder="Enter your email"
+                        required
+                    >
+                </div>
+
+                <div class="form-group">
+                    <label class="form-label" for="login-password">Password</label>
+                    <div class="password-toggle">
+                        <input 
+                            type="password" 
+                            id="login-password" 
+                            class="form-input" 
+                            placeholder="Enter your password"
+                            required
+                        >
+                        <button type="button" class="password-toggle-btn" onclick="togglePassword('login-password')">Show</button>
+                    </div>
+                </div>
+
+                <div class="forgot-password">
+                    <a href="#" id="forgot-password-link">Forgot password?</a>
+                </div>
+
+                <button type="submit" class="submit-btn" id="login-submit">
+                    Sign In
+                </button>
+            </form>
+
+            <!-- Sign Up Form -->
+            <form class="auth-form" id="signup-form">
+                <div class="message" id="signup-message"></div>
+                
+                <div class="form-group">
+                    <label class="form-label" for="signup-email">Email</label>
+                    <input 
+                        type="email" 
+                        id="signup-email" 
+                        class="form-input" 
+                        placeholder="Enter your email"
+                        required
+                    >
+                </div>
+
+                <div class="form-group">
+                    <label class="form-label" for="signup-password">Password</label>
+                    <div class="password-toggle">
+                        <input 
+                            type="password" 
+                            id="signup-password" 
+                            class="form-input" 
+                            placeholder="Create a password"
+                            required
+                            minlength="6"
+                        >
+                        <button type="button" class="password-toggle-btn" onclick="togglePassword('signup-password')">Show</button>
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label class="form-label" for="signup-confirm">Confirm Password</label>
+                    <div class="password-toggle">
+                        <input 
+                            type="password" 
+                            id="signup-confirm" 
+                            class="form-input" 
+                            placeholder="Confirm your password"
+                            required
+                            minlength="6"
+                        >
+                        <button type="button" class="password-toggle-btn" onclick="togglePassword('signup-confirm')">Show</button>
+                    </div>
+                </div>
+
+                <button type="submit" class="submit-btn" id="signup-submit">
+                    Create Account
+                </button>
+            </form>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE_URL = window.location.origin;
+
+        // Tab switching
+        document.querySelectorAll('.auth-tab').forEach(tab => {
+            tab.addEventListener('click', () => {
+                const tabName = tab.dataset.tab;
+                
+                // Update active tab
+                document.querySelectorAll('.auth-tab').forEach(t => t.classList.remove('active'));
+                tab.classList.add('active');
+                
+                // Update active form
+                document.querySelectorAll('.auth-form').forEach(f => f.classList.remove('active'));
+                document.getElementById(`${tabName}-form`).classList.add('active');
+                
+                // Clear messages
+                document.getElementById('login-message').classList.remove('show');
+                document.getElementById('signup-message').classList.remove('show');
+            });
+        });
+
+        // Toggle password visibility
+        function togglePassword(inputId) {
+            const input = document.getElementById(inputId);
+            const btn = input.nextElementSibling;
+            
+            if (input.type === 'password') {
+                input.type = 'text';
+                btn.textContent = 'Hide';
+            } else {
+                input.type = 'password';
+                btn.textContent = 'Show';
+            }
+        }
+
+        // Show message
+        function showMessage(formId, message, type = 'error') {
+            const messageEl = document.getElementById(`${formId}-message`);
+            messageEl.textContent = message;
+            messageEl.className = `message ${type} show`;
+            setTimeout(() => {
+                messageEl.classList.remove('show');
+            }, 5000);
+        }
+
+        // Login form submission
+        document.getElementById('login-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            
+            const email = document.getElementById('login-email').value;
+            const password = document.getElementById('login-password').value;
+            const submitBtn = document.getElementById('login-submit');
+            
+            submitBtn.disabled = true;
+            submitBtn.textContent = 'Signing in...';
+            
+            try {
+                const response = await fetch(`${API_BASE_URL}/api/auth/login`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    credentials: 'include',
+                    body: JSON.stringify({ email, password })
+                });
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    showMessage('login', 'Login successful! Redirecting...', 'success');
+                    // Store token in localStorage as backup
+                    if (data.access_token) {
+                        localStorage.setItem('access_token', data.access_token);
+                    }
+                    // Redirect to dashboard
+                    setTimeout(() => {
+                        window.location.href = '/dashboard';
+                    }, 1000);
+                } else {
+                    showMessage('login', data.error || 'Invalid email or password');
+                    submitBtn.disabled = false;
+                    submitBtn.textContent = 'Sign In';
+                }
+            } catch (error) {
+                showMessage('login', 'Network error. Please try again.');
+                submitBtn.disabled = false;
+                submitBtn.textContent = 'Sign In';
+            }
+        });
+
+        // Signup form submission
+        document.getElementById('signup-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            
+            const email = document.getElementById('signup-email').value;
+            const password = document.getElementById('signup-password').value;
+            const confirm = document.getElementById('signup-confirm').value;
+            const submitBtn = document.getElementById('signup-submit');
+            
+            // Validate passwords match
+            if (password !== confirm) {
+                showMessage('signup', 'Passwords do not match');
+                return;
+            }
+            
+            if (password.length < 6) {
+                showMessage('signup', 'Password must be at least 6 characters');
+                return;
+            }
+            
+            submitBtn.disabled = true;
+            submitBtn.textContent = 'Creating account...';
+            
+            try {
+                const response = await fetch(`${API_BASE_URL}/api/auth/signup`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    credentials: 'include',
+                    body: JSON.stringify({ email, password })
+                });
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    showMessage('signup', 'Account created! Redirecting...', 'success');
+                    // Store token
+                    if (data.access_token) {
+                        localStorage.setItem('access_token', data.access_token);
+                    }
+                    // Redirect to dashboard
+                    setTimeout(() => {
+                        window.location.href = '/dashboard';
+                    }, 1000);
+                } else {
+                    showMessage('signup', data.error || 'Failed to create account');
+                    submitBtn.disabled = false;
+                    submitBtn.textContent = 'Create Account';
+                }
+            } catch (error) {
+                showMessage('signup', 'Network error. Please try again.');
+                submitBtn.disabled = false;
+                submitBtn.textContent = 'Create Account';
+            }
+        });
+
+        // Forgot password
+        document.getElementById('forgot-password-link').addEventListener('click', async (e) => {
+            e.preventDefault();
+            const email = document.getElementById('login-email').value;
+            
+            if (!email) {
+                showMessage('login', 'Please enter your email first');
+                return;
+            }
+            
+            try {
+                const response = await fetch(`${API_BASE_URL}/api/auth/forgot-password`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ email })
+                });
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    showMessage('login', 'Password reset email sent! Check your inbox.', 'success');
+                } else {
+                    showMessage('login', data.error || 'Failed to send reset email');
+                }
+            } catch (error) {
+                showMessage('login', 'Network error. Please try again.');
+            }
+        });
+
+        // Check if already logged in
+        async function checkSession() {
+            try {
+                const response = await fetch(`${API_BASE_URL}/api/auth/session`, {
+                    credentials: 'include'
+                });
+                
+                if (response.ok) {
+                    // Already logged in, redirect to dashboard
+                    window.location.href = '/dashboard';
+                }
+            } catch (error) {
+                // Not logged in, stay on login page
+            }
+        }
+
+        // Check session on load
+        checkSession();
+    </script>
+</body>
+</html>
+
