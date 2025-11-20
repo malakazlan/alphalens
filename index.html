@@ -133,67 +133,123 @@
             <div class="main-content-area">
                 <!-- Left: Document Viewer -->
                 <div class="document-viewer-section">
-                    <div class="main-tabs">
-                        <button class="main-tab active" data-tab="parse">Parse</button>
-                        <button class="main-tab" data-tab="extract">Extract</button>
-                        <button class="main-tab" data-tab="chat">Chat</button>
-        </div>
-        
-                    <div class="document-stage glass-card" id="parse-tab-content">
-                        <div class="stage-header">
-                            <div>
-                                <div class="panel-title">Document</div>
-                                <p class="doc-meta">PDF with detected regions</p>
-                            </div>
-                            <div class="stage-controls">
-                                <button class="stage-btn" id="pdf-prev">Prev</button>
-                                <span id="page-indicator" class="doc-meta">Page 1 / 1</span>
-                                <button class="stage-btn" id="pdf-next">Next</button>
+                    <div class="document-stage glass-card">
+                        <!-- Document Header: Upload icon, Doc name, Page indicator -->
+                        <div class="document-header-bar">
+                            <button class="upload-icon-btn" id="file-select-btn" title="Upload Document">
+                                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                                    <polyline points="17 8 12 3 7 8"></polyline>
+                                    <line x1="12" y1="3" x2="12" y2="15"></line>
+                                </svg>
+                            </button>
+                            <span id="selected-file-name" class="document-name">No document selected</span>
+                            <div class="page-indicator-container">
+                                <button class="page-nav-btn" id="pdf-prev" disabled><</button>
+                                <span id="page-indicator" class="page-indicator">1 / 1</span>
+                                <button class="page-nav-btn" id="pdf-next" disabled>></button>
                             </div>
                         </div>
                         <div class="pdf-wrapper" id="pdf-wrapper">
                             <canvas id="pdf-canvas"></canvas>
                             <div class="pdf-overlay" id="pdf-overlay"></div>
                         </div>
-            </div>
-            
-                    <div class="glass-card" id="extract-tab-content" style="display: none;">
-                        <div class="panel-title">Extract</div>
-                        <p class="doc-meta">Schema-based extraction coming soon</p>
+                    </div>
                 </div>
-                    
-                    <div class="chat-area glass-card" id="chat-tab-content" style="display: none;">
-                        <div class="panel-title">Chat</div>
-                        <p class="doc-meta">Ask questions about your document</p>
-                        <div class="chat-messages" id="chat-messages"></div>
-                <div class="chat-input">
-                            <input type="text" id="chat-input" placeholder="Ask anything about the active document...">
-                            <button id="chat-send" type="button">Send</button>
-                </div>
-            </div>
-        </div>
                 
                 <!-- Right: Parse Data Panel -->
                 <div class="parse-panel-section">
                     <div class="glass-card" style="display: flex; flex-direction: column; height: 100%;">
-                        <div class="parse-panel-header">
-                            <div class="panel-title">Parsed Data</div>
-                            <div class="parse-view-tabs">
-                                <button class="parse-view-tab active" data-view="markdown">Markdown</button>
-                                <button class="parse-view-tab" data-view="json">JSON</button>
+                        <!-- Top Level Tabs: Parse, Extract, Chat -->
+                        <div class="main-tabs">
+                            <button class="main-tab active" data-tab="parse">Parse</button>
+                            <button class="main-tab" data-tab="extract">Extract</button>
+                            <button class="main-tab" data-tab="chat">Chat</button>
+                        </div>
+                        
+                        <!-- Parse Tab Content -->
+                        <div class="tab-content-wrapper" id="parse-tab-content">
+                            <div class="parse-panel-header">
+                                <div class="panel-title">Parsed Data</div>
+                                <div class="parse-view-tabs">
+                                    <button class="parse-view-tab active" data-view="markdown">Markdown</button>
+                                    <button class="parse-view-tab" data-view="json">JSON</button>
+                                </div>
+                            </div>
+                            <div class="parse-content" id="parse-content">
+                                <div id="markdown-view">
+                                    <p class="doc-meta">Select a document to view parsed data</p>
+                                </div>
+                                <div id="json-view" style="display: none;">
+                                    <pre id="json-content" class="json-view"></pre>
+                                </div>
                             </div>
                         </div>
-                        <div class="parse-content" id="parse-content">
-                            <div id="markdown-view">
-                                <p class="doc-meta">Select a document to view parsed data</p>
+                        
+                        <!-- Extract Tab Content -->
+                        <div class="tab-content-wrapper" id="extract-tab-content" style="display: none;">
+                            <div class="panel-title">Extract</div>
+                            <p class="doc-meta">Schema-based extraction coming soon</p>
+                        </div>
+                        
+                        <!-- Chat Tab Content -->
+                        <div class="tab-content-wrapper chat-area" id="chat-tab-content" style="display: none;">
+                            <div class="chat-container">
+                                <!-- Chat Header with Description -->
+                                <div class="chat-header">
+                                    <div class="chat-icon">
+                                        <!-- Test tube and flask icon -->
+                                        <svg width="64" height="64" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                            <!-- Flask -->
+                                            <path d="M20 16 L20 48 L16 52 L16 56 L48 56 L48 52 L44 48 L44 16 L20 16 Z" fill="#10b981" opacity="0.9"/>
+                                            <path d="M20 16 L44 16 L44 20 L20 20 Z" fill="#10b981"/>
+                                            <path d="M18 20 L18 24 L46 24 L46 20 Z" fill="#10b981" opacity="0.7"/>
+                                            <!-- Test tube -->
+                                            <path d="M40 12 L40 32 L36 36 L36 40 L48 40 L48 36 L44 32 L44 12 L40 12 Z" fill="#06b6d4" opacity="0.9"/>
+                                            <circle cx="42" cy="8" r="3" fill="#06b6d4"/>
+                                            <!-- Bubbles -->
+                                            <circle cx="24" cy="28" r="2" fill="#10b981" opacity="0.6"/>
+                                            <circle cx="30" cy="32" r="1.5" fill="#10b981" opacity="0.5"/>
+                                            <circle cx="26" cy="38" r="1.5" fill="#10b981" opacity="0.5"/>
+                                            <circle cx="38" cy="18" r="1.5" fill="#06b6d4" opacity="0.6"/>
+                                            <circle cx="46" cy="22" r="1" fill="#06b6d4" opacity="0.5"/>
+                                        </svg>
+                                    </div>
+                                    <p class="chat-description">
+                                        Test our Agentic Document Extraction API by chatting with the doc. See how it finds answers from forms, reports, and figures and highlights the exact sources in the document.
+                                    </p>
+                                </div>
+                                
+                                <!-- Example Prompts Section -->
+                                <div class="example-prompts-section" id="example-prompts-section" style="display: none;">
+                                    <div class="example-prompts-title">Example prompts</div>
+                                    <div class="example-prompts-list" id="example-prompts-list">
+                                        <!-- Will be populated dynamically -->
+                                    </div>
+                                </div>
+                                
+                                <!-- Chat Messages Area -->
+                                <div class="chat-messages" id="chat-messages">
+                                    <!-- Messages will be added here -->
+                                </div>
+                                
+                                <!-- Chat Input Area -->
+                                <div class="chat-input-container">
+                                    <div class="chat-input">
+                                        <input type="text" id="chat-input" placeholder="Type your question">
+                                        <button id="chat-send" type="button" class="chat-send-btn">
+                                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                                <line x1="22" y1="2" x2="11" y2="13"></line>
+                                                <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+                                            </svg>
+                                        </button>
+                                    </div>
+                                </div>
                             </div>
-                            <div id="json-view" style="display: none;">
-                                <pre id="json-content" class="json-view"></pre>
-                            </div>
+                        </div>
+                    </div>
                 </div>
             </div>
-        </div>
-    </div>
         </main>
 
         <!-- FinBot Coming Soon Section -->

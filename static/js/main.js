@@ -240,7 +240,24 @@ if (uploadForm) {
 
 // Event listeners are now set up in initializeDOMElements()
 
-// Tab switching functionality
+// Upload icon button - opens file input or scrolls to document list
+const fileSelectBtn = document.getElementById('file-select-btn');
+if (fileSelectBtn) {
+    fileSelectBtn.addEventListener('click', () => {
+        const fileInput = document.getElementById('file-input');
+        if (fileInput) {
+            fileInput.click();
+        } else {
+            // If file input not found, scroll to document list in sidebar
+            const documentList = document.getElementById('document-list');
+            if (documentList) {
+                documentList.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+            }
+        }
+    });
+}
+
+// Tab switching functionality - Top level tabs (Parse, Extract, Chat)
 document.querySelectorAll('.main-tab').forEach(tab => {
     tab.addEventListener('click', () => {
         const tabName = tab.dataset.tab;
@@ -249,13 +266,13 @@ document.querySelectorAll('.main-tab').forEach(tab => {
         document.querySelectorAll('.main-tab').forEach(t => t.classList.remove('active'));
         tab.classList.add('active');
         
-        // Show/hide content
-        document.querySelectorAll('[id$="-tab-content"]').forEach(content => {
+        // Show/hide content - use tab-content-wrapper
+        document.querySelectorAll('.tab-content-wrapper').forEach(content => {
             content.style.display = 'none';
         });
         const activeContent = document.getElementById(`${tabName}-tab-content`);
         if (activeContent) {
-            activeContent.style.display = 'block';
+            activeContent.style.display = 'flex';
         }
     });
 });
@@ -568,8 +585,12 @@ async function selectDocument(documentId) {
         const document = await response.json();
         updateDocumentView(document);
         
-        // Clear chat messages
-        chatMessages.innerHTML = '';
+        // Clear chat messages and show example prompts
+        if (chatMessages) {
+            chatMessages.innerHTML = '';
+            chatMessages.style.display = 'none';
+        }
+        updateExamplePrompts(document);
     } catch (error) {
         console.error('Error loading document details:', error);
         documentView.innerHTML = `<div class="status-banner error">Error loading document details: ${error.message}</div>`;
@@ -614,8 +635,18 @@ function updateDocumentView(docData) {
         console.log('Document markdown not available yet');
     }
     
+    // Update document name in header bar
+    const selectedFileElement = document.getElementById('selected-file-name');
+    if (selectedFileElement) {
+        if (docData.filename) {
+            selectedFileElement.textContent = docData.filename;
+        } else {
+            selectedFileElement.textContent = 'No document selected';
+        }
+    }
+    
     // Load PDF if available
-    if (docData.status === 'complete' && pdfCanvas) {
+    if (docData.status === 'complete' && pdfWrapper) {
         renderDocumentPreview(docData);
     }
     
@@ -792,7 +823,7 @@ function formatMarkdownLikeLandingAI(docData) {
     // If we have chunks, use them for better structure (like Landing.AI)
     if (docData.detected_chunks && docData.detected_chunks.length > 0) {
         // Group chunks by type and render them
-        docData.detected_chunks.forEach(chunk => {
+        docData.detected_chunks.forEach((chunk, index) => {
             // Get markdown - prioritize markdown field, then text, then content
             const chunkMarkdown = chunk.markdown || chunk.text || chunk.content || '';
             const chunkType = chunk.type || 'text';
@@ -852,11 +883,20 @@ function formatMarkdownLikeLandingAI(docData) {
             }
             
             if (content) {
-                const chunkId = chunk.id || '';
+                // Ensure chunkId is a string and not empty - use a fallback if needed
+                let chunkId = chunk.id || chunk.chunk_id || '';
+                if (!chunkId && chunk.grounding && chunk.grounding.id) {
+                    chunkId = chunk.grounding.id;
+                }
+                // If still no ID, generate one based on index and type
+                if (!chunkId) {
+                    chunkId = `chunk-${sectionType.toLowerCase()}-${index}`;
+                }
+                
                 const chunkBox = chunk.grounding?.box || chunk.box || null;
                 const pageNumber = typeof chunk.page === 'number' ? chunk.page + 1 : null;
                 html += `
-                    <div class="markdown-section" data-chunk-id="${chunkId}" data-chunk-type="${sectionType.toLowerCase()}" ${chunkBox ? `data-chunk-box='${JSON.stringify(chunkBox)}'` : ''}>
+                    <div class="markdown-section" data-chunk-id="${escapeHtml(String(chunkId))}" data-chunk-type="${sectionType.toLowerCase()}" ${chunkBox ? `data-chunk-box='${JSON.stringify(chunkBox)}'` : ''}>
                         <div class="section-header">
                             <span class="section-type">${numberedLabel}</span>
                             ${pageNumber ? `<span class="section-page">Page ${pageNumber}</span>` : ''}
@@ -1058,31 +1098,85 @@ function formatBoundingBox(box) {
 
 function renderCitationChips(citations) {
     if (!citations || citations.length === 0) return '';
+    
+    // Group citations by visual reference to show duplicates
+    const grouped = {};
+    citations.forEach(citation => {
+        const key = citation.visual_ref || `${citation.page || 1}. ${citation.type || 'text'}`;
+        if (!grouped[key]) {
+            grouped[key] = [];
+        }
+        grouped[key].push(citation);
+    });
+    
+    const citationItems = Object.entries(grouped).map(([visualRef, refs]) => {
+        const citation = refs[0]; // Use first citation for data
+        return `
+            <button
+                class="visual-reference-item"
+                data-citation-chunk="${citation.chunk_id || ''}"
+                data-page="${citation.page !== undefined ? citation.page : ''}"
+                title="${escapeHtml(citation.title || 'Reference')}"
+            >
+                ${escapeHtml(visualRef)} →
+            </button>
+        `;
+    }).join('');
+    
     return `
-        <div class="chat-citations">
-            ${citations.map((citation, index) => `
-                <button
-                    class="citation-chip"
-                    data-citation-chunk="${citation.chunk_id || ''}"
-                    title="${escapeHtml(citation.title || 'Reference')}"
-                >
-                    Ref ${index + 1}${typeof citation.page === 'number' ? ` · Pg ${citation.page + 1}` : ''}
-                </button>
-            `).join('')}
+        <div class="visual-references-section">
+            <div class="visual-references-title">Visual reference for the answer:</div>
+            <div class="visual-references-list">
+                ${citationItems}
+                <button class="clear-references-btn" onclick="clearVisualReferences()">Clear</button>
+            </div>
         </div>
     `;
 }
 
 function attachCitationHandlers() {
-    document.querySelectorAll('.citation-chip').forEach(chip => {
-        const chunkId = chip.dataset.citationChunk;
+    document.querySelectorAll('.visual-reference-item').forEach(item => {
+        const chunkId = item.dataset.citationChunk;
         if (!chunkId) return;
-        chip.addEventListener('mouseenter', () => highlightChunk(chunkId));
-        chip.addEventListener('mouseleave', () => highlightChunk(null));
-        chip.addEventListener('click', () => {
+        
+        item.addEventListener('mouseenter', () => {
             highlightChunk(chunkId);
-            scrollStageIntoView();
+            highlightPdfRegion(chunkId);
         });
+        
+        item.addEventListener('mouseleave', () => {
+            highlightChunk(null);
+            highlightPdfRegion(null);
+        });
+        
+        item.addEventListener('click', () => {
+            // Toggle active state
+            document.querySelectorAll('.visual-reference-item').forEach(i => i.classList.remove('active'));
+            item.classList.add('active');
+            
+            highlightChunk(chunkId);
+            highlightPdfRegion(chunkId);
+            scrollToMarkdownSection(chunkId);
+            // Scroll PDF to the relevant page if available
+            const page = item.dataset.page;
+            if (page !== undefined && page !== '') {
+                const pageNum = parseInt(page) + 1; // Convert to 1-based
+                if (pdfDocInstance && pageNum <= pdfDocInstance.numPages) {
+                    renderAllPdfPages(); // Re-render to show the page
+                }
+            }
+        });
+    });
+}
+
+function clearVisualReferences() {
+    // Remove all highlights
+    highlightChunk(null);
+    highlightPdfRegion(null);
+    
+    // Remove active state from all visual reference items
+    document.querySelectorAll('.visual-reference-item').forEach(item => {
+        item.classList.remove('active');
     });
 }
 
@@ -1217,17 +1311,156 @@ function highlightMarkdownSection(chunkId) {
 }
 
 function scrollToMarkdownSection(chunkId) {
-    if (!chunkId) return;
+    if (!chunkId) {
+        console.warn('scrollToMarkdownSection: No chunkId provided');
+        return;
+    }
     
-    const section = document.querySelector(`.markdown-section[data-chunk-id="${chunkId}"]`);
-    if (section) {
-        section.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    console.log('scrollToMarkdownSection: Looking for chunkId:', chunkId);
+    
+    // First, make sure we're on the Parse tab (not Extract or Chat)
+    const parseTab = document.querySelector('.main-tab[data-tab="parse"]');
+    const parseTabContent = document.getElementById('parse-tab-content');
+    
+    if (parseTab && !parseTab.classList.contains('active')) {
+        // Switch to Parse tab
+        console.log('scrollToMarkdownSection: Switching to Parse tab');
+        parseTab.click();
+        // Wait for tab switch to complete
+        setTimeout(() => {
+            scrollToMarkdownSection(chunkId);
+        }, 100);
+        return;
+    }
+    
+    // Get the parse-content container (right side panel)
+    const parseContent = document.getElementById('parse-content');
+    if (!parseContent) {
+        console.error('scrollToMarkdownSection: parse-content container not found');
+        return;
+    }
+    
+    // Make sure we're viewing markdown (not JSON)
+    const markdownView = document.getElementById('markdown-view');
+    const jsonView = document.getElementById('json-view');
+    
+    if (!markdownView) {
+        console.error('scrollToMarkdownSection: markdown-view not found');
+        return;
+    }
+    
+    const needsViewSwitch = markdownView.style.display === 'none' || 
+                            (jsonView && jsonView.style.display !== 'none');
+    
+    if (needsViewSwitch) {
+        console.log('scrollToMarkdownSection: Switching to markdown view');
+        // Switch to markdown view
+        markdownView.style.display = 'block';
+        if (jsonView) jsonView.style.display = 'none';
+        // Update active tab
+        document.querySelectorAll('.parse-view-tab').forEach(tab => {
+            tab.classList.remove('active');
+            if (tab.dataset.view === 'markdown') {
+                tab.classList.add('active');
+            }
+        });
+    }
+    
+    // Function to perform the scroll
+    const performScroll = () => {
+        // Find the markdown section - try multiple selectors
+        let section = document.querySelector(`.markdown-section[data-chunk-id="${chunkId}"]`);
+        
+        // If not found, try finding by exact match or partial match
+        if (!section) {
+            // Try to find all sections and match by chunk ID
+            const allSections = document.querySelectorAll('.markdown-section');
+            console.log('scrollToMarkdownSection: Found', allSections.length, 'markdown sections');
+            
+            for (let s of allSections) {
+                const sectionChunkId = s.getAttribute('data-chunk-id');
+                console.log('scrollToMarkdownSection: Checking section with chunkId:', sectionChunkId);
+                if (sectionChunkId === chunkId || sectionChunkId === String(chunkId)) {
+                    section = s;
+                    break;
+                }
+            }
+        }
+        
+        if (!section) {
+            console.warn('scrollToMarkdownSection: Section not found for chunkId:', chunkId);
+            // Try to find any section as fallback
+            const firstSection = document.querySelector('.markdown-section');
+            if (firstSection) {
+                console.log('scrollToMarkdownSection: Scrolling to first section as fallback');
+                section = firstSection;
+            } else {
+                console.error('scrollToMarkdownSection: No markdown sections found at all');
+                return;
+            }
+        }
+        
+        console.log('scrollToMarkdownSection: Found section, scrolling to it');
+        
+        // Calculate position relative to parse-content container
+        // Get the section's offset position within the markdown-view
+        const markdownView = document.getElementById('markdown-view');
+        if (!markdownView) {
+            console.error('scrollToMarkdownSection: markdown-view not found');
+            return;
+        }
+        
+        // Get the section's position relative to markdown-view
+        const sectionOffsetTop = section.offsetTop;
+        const markdownViewOffsetTop = markdownView.offsetTop || 0;
+        const sectionRelativeTop = sectionOffsetTop - markdownViewOffsetTop;
+        
+        // Get current scroll position of parse-content
+        const currentScroll = parseContent.scrollTop;
+        
+        // Calculate target scroll position to center the section
+        const containerHeight = parseContent.clientHeight;
+        const sectionHeight = section.offsetHeight || section.getBoundingClientRect().height;
+        
+        // Target scroll: position section in center of viewport
+        const targetScroll = sectionRelativeTop - (containerHeight / 2) + (sectionHeight / 2);
+        
+        // Clamp to valid scroll range
+        const maxScroll = Math.max(0, parseContent.scrollHeight - parseContent.clientHeight);
+        const finalScroll = Math.max(0, Math.min(targetScroll, maxScroll));
+        
+        console.log('scrollToMarkdownSection: Scrolling to position:', finalScroll, {
+            sectionOffsetTop,
+            sectionRelativeTop,
+            containerHeight,
+            sectionHeight,
+            maxScroll
+        });
+        
+        // Scroll ONLY the right panel (parse-content), NOT the whole page
+        parseContent.scrollTo({
+            top: finalScroll,
+            behavior: 'smooth'
+        });
+        
+        // Highlight the section
         highlightMarkdownSection(chunkId);
         
-        // Remove highlight after 2 seconds
+        // Remove highlight after 3 seconds
         setTimeout(() => {
-            section.classList.remove('highlighted');
-        }, 2000);
+            const section = document.querySelector(`.markdown-section[data-chunk-id="${chunkId}"]`);
+            if (section) {
+                section.classList.remove('highlighted');
+            }
+        }, 3000);
+    };
+    
+    // If we switched views or tabs, wait a bit for DOM to update, otherwise scroll immediately
+    if (needsViewSwitch) {
+        setTimeout(performScroll, 100);
+    } else {
+        // Small delay to ensure DOM is ready
+        setTimeout(performScroll, 50);
     }
 }
 
@@ -1238,36 +1471,56 @@ function setupMarkdownInteractivity() {
         if (!chunkId) return;
         
         section.addEventListener('click', () => {
-            // Highlight PDF region
+            // Highlight PDF region (left side - no scrolling)
             highlightPdfRegion(chunkId);
-            // Scroll to section (already visible, just highlight)
-            section.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            // Highlight markdown section
             highlightMarkdownSection(chunkId);
+            // Scroll within parse-content container only (right side)
+            scrollToMarkdownSection(chunkId);
         });
         
         section.addEventListener('mouseenter', () => {
             highlightPdfRegion(chunkId);
+            highlightMarkdownSection(chunkId);
         });
         
         section.addEventListener('mouseleave', () => {
             highlightPdfRegion(null);
+            highlightMarkdownSection(null);
         });
     });
 }
 
 function highlightPdfRegion(chunkId) {
-    if (!pdfOverlay) return;
+    // Find all overlay boxes in all page containers (for multi-page view)
+    const allOverlayBoxes = document.querySelectorAll('.pdf-overlay .overlay-box');
     
     // Remove all highlights
-    pdfOverlay.querySelectorAll('.overlay-box').forEach(box => {
+    allOverlayBoxes.forEach(box => {
         box.classList.remove('highlighted', 'active');
     });
     
-    // Highlight the matching region
+    // Also check legacy single overlay
+    if (pdfOverlay) {
+        pdfOverlay.querySelectorAll('.overlay-box').forEach(box => {
+            box.classList.remove('highlighted', 'active');
+        });
+    }
+    
+    // Highlight the matching region ONLY - NO SCROLLING on left side
+    // Left side PDF stays completely static
     if (chunkId) {
-        const overlayBox = pdfOverlay.querySelector(`.overlay-box[data-chunk-id="${chunkId}"]`);
+        // Try to find in all page containers first
+        const overlayBox = document.querySelector(`.pdf-overlay .overlay-box[data-chunk-id="${chunkId}"]`);
         if (overlayBox) {
             overlayBox.classList.add('highlighted', 'active');
+            // NO SCROLLING - just highlight the region
+        } else if (pdfOverlay) {
+            // Fallback to legacy single overlay
+            const legacyBox = pdfOverlay.querySelector(`.overlay-box[data-chunk-id="${chunkId}"]`);
+            if (legacyBox) {
+                legacyBox.classList.add('highlighted', 'active');
+            }
         }
     }
 }
@@ -1325,14 +1578,18 @@ async function renderAllPdfPages() {
     // Clear wrapper
     pdfWrapper.innerHTML = '';
     
-    // Update page indicator
+    // Update page indicator - show current page / total pages
     if (pageIndicator) {
-        pageIndicator.textContent = `All Pages (${totalPages} total)`;
+        pageIndicator.textContent = `1 / ${totalPages}`;
     }
     
     // Disable navigation buttons since we're showing all pages
-    if (pdfPrevButton) pdfPrevButton.style.display = 'none';
-    if (pdfNextButton) pdfNextButton.style.display = 'none';
+    if (pdfPrevButton) {
+        pdfPrevButton.disabled = true;
+    }
+    if (pdfNextButton) {
+        pdfNextButton.disabled = true;
+    }
     
     const wrapperWidth = pdfWrapper.clientWidth;
     let totalHeight = 0;
@@ -1342,8 +1599,11 @@ async function renderAllPdfPages() {
         try {
             const page = await pdfDocInstance.getPage(pageNum);
             const baseViewport = page.getViewport({ scale: 1 });
-            const scale = wrapperWidth / baseViewport.width;
-            const viewport = page.getViewport({ scale });
+            
+            // Account for device pixel ratio to prevent blurriness when zooming
+            const devicePixelRatio = window.devicePixelRatio || 1;
+            const scale = (wrapperWidth / baseViewport.width) * devicePixelRatio;
+            const viewport = page.getViewport({ scale: scale / devicePixelRatio });
             
             // Create container for this page
             const pageContainer = document.createElement('div');
@@ -1354,11 +1614,22 @@ async function renderAllPdfPages() {
             pageContainer.style.height = `${viewport.height}px`;
             pageContainer.dataset.pageNumber = pageNum;
             
-            // Create canvas for this page
+            // Create canvas for this page with high DPI support
             const canvas = document.createElement('canvas');
-            canvas.width = viewport.width;
-            canvas.height = viewport.height;
             const context = canvas.getContext('2d');
+            
+            // Set canvas size accounting for device pixel ratio
+            canvas.width = viewport.width * devicePixelRatio;
+            canvas.height = viewport.height * devicePixelRatio;
+            canvas.style.width = `${viewport.width}px`;
+            canvas.style.height = `${viewport.height}px`;
+            
+            // Scale context to account for device pixel ratio
+            context.scale(devicePixelRatio, devicePixelRatio);
+            
+            // Use high-quality rendering
+            context.imageSmoothingEnabled = true;
+            context.imageSmoothingQuality = 'high';
             
             // Render page
             await page.render({ canvasContext: context, viewport }).promise;
@@ -1399,11 +1670,25 @@ async function renderPdfPage(pageNumber) {
         const page = await pdfDocInstance.getPage(currentPdfPage);
         const baseViewport = page.getViewport({ scale: 1 });
         const wrapperWidth = pdfWrapper ? pdfWrapper.clientWidth : baseViewport.width;
-        const scale = wrapperWidth / baseViewport.width;
-        const viewport = page.getViewport({ scale });
+        
+        // Account for device pixel ratio to prevent blurriness when zooming
+        const devicePixelRatio = window.devicePixelRatio || 1;
+        const scale = (wrapperWidth / baseViewport.width) * devicePixelRatio;
+        const viewport = page.getViewport({ scale: scale / devicePixelRatio });
 
-        pdfCanvas.height = viewport.height;
-        pdfCanvas.width = viewport.width;
+        // Set canvas size accounting for device pixel ratio
+        pdfCanvas.width = viewport.width * devicePixelRatio;
+        pdfCanvas.height = viewport.height * devicePixelRatio;
+        pdfCanvas.style.width = `${viewport.width}px`;
+        pdfCanvas.style.height = `${viewport.height}px`;
+        
+        // Reset transform and scale context to account for device pixel ratio
+        pdfContext.setTransform(1, 0, 0, 1, 0, 0); // Reset transform
+        pdfContext.scale(devicePixelRatio, devicePixelRatio);
+        
+        // Use high-quality rendering
+        pdfContext.imageSmoothingEnabled = true;
+        pdfContext.imageSmoothingQuality = 'high';
 
         await page.render({ canvasContext: pdfContext, viewport }).promise;
         drawOverlays(viewport);
@@ -1435,27 +1720,45 @@ function drawPageOverlays(overlayElement, viewport, pageNumber) {
         overlayBox.style.top = `${box.top * viewport.height}px`;
         overlayBox.style.width = `${(box.right - box.left) * viewport.width}px`;
         overlayBox.style.height = `${(box.bottom - box.top) * viewport.height}px`;
-        overlayBox.dataset.chunkId = chunk.id || '';
+        // Get chunk ID - try multiple sources
+        let chunkId = chunk.id || chunk.chunk_id || '';
+        if (!chunkId && chunk.grounding && chunk.grounding.id) {
+            chunkId = chunk.grounding.id;
+        }
+        overlayBox.dataset.chunkId = chunkId || '';
         overlayBox.style.pointerEvents = 'auto';
         overlayBox.style.cursor = 'pointer';
 
         const label = document.createElement('span');
         const chunkType = (chunk.type || 'zone').toLowerCase();
         // Get numbered label based on type
-        const numberedLabel = getNumberedLabel(chunkType, chunk.id || '');
+        const numberedLabel = getNumberedLabel(chunkType, chunkId || '');
         label.textContent = numberedLabel;
         overlayBox.appendChild(label);
 
         overlayBox.addEventListener('mouseenter', () => {
-            highlightChunk(chunk.id || '');
-            highlightMarkdownSection(chunk.id || '');
+            highlightChunk(chunkId || '');
+            highlightMarkdownSection(chunkId || '');
         });
         overlayBox.addEventListener('mouseleave', () => {
             highlightChunk(null);
             highlightMarkdownSection(null);
         });
-        overlayBox.addEventListener('click', () => {
-            scrollToMarkdownSection(chunk.id || '');
+        overlayBox.addEventListener('click', (e) => {
+            e.stopPropagation();
+            // Get chunk ID - try multiple sources
+            let chunkId = chunk.id || chunk.chunk_id || '';
+            if (!chunkId && chunk.grounding && chunk.grounding.id) {
+                chunkId = chunk.grounding.id;
+            }
+            console.log('PDF overlay clicked (drawPageOverlays), chunkId:', chunkId, 'chunk:', chunk);
+            if (chunkId) {
+                // Scroll RIGHT panel (parse-content) to show corresponding markdown section
+                // Left side PDF stays static - no scrolling
+                scrollToMarkdownSection(String(chunkId));
+            } else {
+                console.warn('PDF overlay clicked but no chunkId found for chunk:', chunk);
+            }
         });
 
         overlayElement.appendChild(overlayBox);
@@ -1482,24 +1785,35 @@ function drawOverlays(viewport) {
         overlayBox.style.top = `${box.top * viewport.height}px`;
         overlayBox.style.width = `${(box.right - box.left) * viewport.width}px`;
         overlayBox.style.height = `${(box.bottom - box.top) * viewport.height}px`;
-        overlayBox.dataset.chunkId = chunk.id || '';
+        // Get chunk ID - try multiple sources
+        let chunkId = chunk.id || chunk.chunk_id || '';
+        if (!chunkId && chunk.grounding && chunk.grounding.id) {
+            chunkId = chunk.grounding.id;
+        }
+        overlayBox.dataset.chunkId = chunkId || '';
 
         const label = document.createElement('span');
         const chunkType = (chunk.type || 'zone').toLowerCase();
-        const numberedLabel = getNumberedLabel(chunkType, chunk.id || '');
+        const numberedLabel = getNumberedLabel(chunkType, chunkId || '');
         label.textContent = numberedLabel;
         overlayBox.appendChild(label);
 
         overlayBox.addEventListener('mouseenter', () => {
-            highlightChunk(chunk.id || '');
-            highlightMarkdownSection(chunk.id || '');
+            highlightChunk(chunkId || '');
+            highlightMarkdownSection(chunkId || '');
         });
         overlayBox.addEventListener('mouseleave', () => {
             highlightChunk(null);
             highlightMarkdownSection(null);
         });
-        overlayBox.addEventListener('click', () => {
-            scrollToMarkdownSection(chunk.id || '');
+        overlayBox.addEventListener('click', (e) => {
+            e.stopPropagation();
+            console.log('PDF overlay clicked (drawOverlays), chunkId:', chunkId, 'chunk:', chunk);
+            if (chunkId) {
+                scrollToMarkdownSection(String(chunkId));
+            } else {
+                console.warn('PDF overlay clicked but no chunkId found for chunk:', chunk);
+            }
         });
 
         pdfOverlay.appendChild(overlayBox);
@@ -1566,6 +1880,28 @@ function navigatePdf(delta) {
     renderPdfPage(currentPdfPage + delta);
 }
 
+// Add event listeners for page navigation buttons
+if (pdfPrevButton) {
+    pdfPrevButton.addEventListener('click', () => navigatePdf(-1));
+}
+if (pdfNextButton) {
+    pdfNextButton.addEventListener('click', () => navigatePdf(1));
+}
+
+// Set up chat event listeners
+if (chatSendButton) {
+    chatSendButton.addEventListener('click', sendChatMessage);
+}
+
+if (chatInput) {
+    chatInput.addEventListener('keypress', (e) => {
+        if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            sendChatMessage();
+        }
+    });
+}
+
 // Function to send a chat message
 async function sendChatMessage() {
     const query = chatInput.value.trim();
@@ -1575,23 +1911,41 @@ async function sendChatMessage() {
     }
     
     if (!selectedDocumentId) {
-        chatMessages.innerHTML += `
-            <div class="message response">
-                Please select a document first.
-            </div>
-        `;
+        // Show chat messages area
+        if (chatMessages) {
+            chatMessages.style.display = 'flex';
+        }
+        const errorMsg = document.createElement('div');
+        errorMsg.className = 'message response';
+        errorMsg.innerHTML = '<div>Please select a document first.</div>';
+        chatMessages.appendChild(errorMsg);
         return;
     }
     
+    // Hide example prompts when user starts chatting
+    const examplePromptsSection = document.getElementById('example-prompts-section');
+    if (examplePromptsSection) {
+        examplePromptsSection.style.display = 'none';
+    }
+    
+    // Show chat messages area
+    if (chatMessages) {
+        chatMessages.style.display = 'flex';
+    }
+    
     // Add user query to chat
-    chatMessages.innerHTML += `
-        <div class="message query">
-            <strong>You:</strong> ${query}
-        </div>
-    `;
+    const userMessage = document.createElement('div');
+    userMessage.className = 'message query';
+    userMessage.innerHTML = `<div>${escapeHtml(query)}</div>`;
+    chatMessages.appendChild(userMessage);
     
     // Clear input
     chatInput.value = '';
+    
+    // Disable send button while processing
+    if (chatSendButton) {
+        chatSendButton.disabled = true;
+    }
     
     // Scroll to bottom
     chatMessages.scrollTop = chatMessages.scrollHeight;
@@ -1635,28 +1989,136 @@ async function sendChatMessage() {
         }
         
         const citationHtml = renderCitationChips(data.sources);
-        chatMessages.innerHTML += `
-            <div class="message response">
-                <strong>ALPHA LENS:</strong> 
-                ${escapeHtml(data.answer)}
-                ${sourceText ? `<span class="source-tag ${sourceClass}">${sourceText}</span>` : ''}
-                ${citationHtml}
-            </div>
+        const responseMessage = document.createElement('div');
+        responseMessage.className = 'message response';
+        
+        // Format answer - if it's a simple number, display it prominently
+        let answerHtml = escapeHtml(data.answer);
+        const numericMatch = data.answer.match(/^[\d,]+(?:\.\d+)?$/);
+        if (numericMatch && data.sources && data.sources.length > 0) {
+            // If answer is just a number and we have sources, show it with icon
+            answerHtml = `
+                <div class="answer-with-icon">
+                    <div class="answer-icon">📊</div>
+                    <div class="answer-value">${escapeHtml(data.answer)}</div>
+                </div>
+            `;
+        } else {
+            answerHtml = `<div>${escapeHtml(data.answer)}</div>`;
+        }
+        
+        responseMessage.innerHTML = `
+            ${answerHtml}
+            ${sourceText ? `<span class="source-tag ${sourceClass}">${sourceText}</span>` : ''}
+            ${citationHtml}
         `;
+        chatMessages.appendChild(responseMessage);
         attachCitationHandlers();
+        
+        // Re-enable send button
+        if (chatSendButton) {
+            chatSendButton.disabled = false;
+        }
         
         // Scroll to bottom
         chatMessages.scrollTop = chatMessages.scrollHeight;
     } catch (error) {
         console.error('Error getting answer:', error);
         
-        chatMessages.innerHTML += `
-            <div class="message response">
-                <strong>ALPHA LENS:</strong> Error getting answer: ${error.message}
-            </div>
-        `;
+        const errorMessage = document.createElement('div');
+        errorMessage.className = 'message response';
+        errorMessage.innerHTML = `<div>Error getting answer: ${escapeHtml(error.message)}</div>`;
+        chatMessages.appendChild(errorMessage);
+        
+        // Re-enable send button
+        if (chatSendButton) {
+            chatSendButton.disabled = false;
+        }
         
         chatMessages.scrollTop = chatMessages.scrollHeight;
+    }
+}
+
+// Function to generate example prompts based on parsed data
+function updateExamplePrompts(docData) {
+    const examplePromptsList = document.getElementById('example-prompts-list');
+    const examplePromptsSection = document.getElementById('example-prompts-section');
+    
+    if (!examplePromptsList || !examplePromptsSection) return;
+    
+    // Clear existing prompts
+    examplePromptsList.innerHTML = '';
+    
+    // Generate prompts based on document data
+    const prompts = [];
+    
+    if (docData && docData.detected_chunks && docData.detected_chunks.length > 0) {
+        // Check for common financial document patterns
+        const markdown = docData.document_markdown || '';
+        const chunks = docData.detected_chunks || [];
+        
+        // Look for total amount, due date, or other key information
+        const hasAmount = markdown.toLowerCase().includes('total') || 
+                         markdown.toLowerCase().includes('amount') ||
+                         markdown.toLowerCase().includes('due');
+        
+        const hasDate = markdown.toLowerCase().includes('date') ||
+                       markdown.toLowerCase().includes('due date');
+        
+        const hasBank = markdown.toLowerCase().includes('bank') ||
+                       markdown.toLowerCase().includes('account');
+        
+        // Generate prompts based on detected content
+        if (hasAmount) {
+            // Extract potential name from document
+            let name = '';
+            const nameMatch = markdown.match(/(?:name|student|customer)[:\s]+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)/i);
+            if (nameMatch) {
+                name = nameMatch[1];
+            }
+            
+            if (name) {
+                prompts.push(`What is the total amount due for ${name}?`);
+            } else {
+                prompts.push('What is the total amount due?');
+            }
+        }
+        
+        if (hasDate) {
+            prompts.push('What is the due date for payment?');
+        }
+        
+        if (hasBank) {
+            prompts.push('Which bank and account number should be used for payment?');
+        }
+    }
+    
+    // If no specific prompts generated, use generic ones
+    if (prompts.length === 0) {
+        prompts.push('What is the total amount due?');
+        prompts.push('What is the due date for payment?');
+    }
+    
+    // Limit to 2 prompts as requested
+    const displayPrompts = prompts.slice(0, 2);
+    
+    // Create prompt elements
+    displayPrompts.forEach(prompt => {
+        const promptElement = document.createElement('div');
+        promptElement.className = 'example-prompt';
+        promptElement.textContent = prompt;
+        promptElement.addEventListener('click', () => {
+            chatInput.value = prompt;
+            chatInput.focus();
+        });
+        examplePromptsList.appendChild(promptElement);
+    });
+    
+    // Show section if we have prompts
+    if (displayPrompts.length > 0) {
+        examplePromptsSection.style.display = 'block';
+    } else {
+        examplePromptsSection.style.display = 'none';
     }
 }
 

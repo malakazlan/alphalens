@@ -413,6 +413,7 @@ Your response:
         metadata: Dict[str, Any],
         key_metrics: List[Dict[str, Any]],
         context_blocks: List[Dict[str, Any]],
+        financial_data: Dict[str, Any] = None,
     ) -> str:
         """Generate a finance-grounded response with explicit citation instructions."""
         try:
@@ -451,23 +452,45 @@ Your response:
                 if text:
                     context_text += f"[{block_id}] {title} ({page_label})\n{text}\n\n"
             
-            prompt = f"""
+            # Add tables context if available
+            tables_context = ""
+            if financial_data and financial_data.get("tables"):
+                tables = financial_data.get("tables", [])[:3]  # Limit to 3 tables
+                tables_context = "\n\nTables in document:\n"
+                for table in tables:
+                    table_title = table.get("title", "Table")
+                    table_rows = table.get("rows", [])[:5]  # Limit rows
+                    tables_context += f"\n{table_title}:\n"
+                    if table.get("header"):
+                        tables_context += f"Headers: {', '.join(table['header'])}\n"
+                    for row in table_rows:
+                        tables_context += f"{row}\n"
+            
+            prompt = f"""You are ALPHA LENS, a senior financial analyst and document expert. You specialize in analyzing financial documents, invoices, fee bills, financial statements, and related documents.
+
 Document metadata:
 {metadata_text}
 
 Key metrics:
 {metrics_text}
+{tables_context}
 
 Context blocks (each block is labeled with an ID in brackets):
 {context_text or 'N/A'}
 
 Question: {query}
 
-Instructions:
-- Base your answer ONLY on the context blocks provided.
-- If the answer is not present, state that politely.
-- Cite the supporting context by appending [[chunk_id]] at the end of the relevant sentence.
-- Keep the tone professional and concise (2-4 sentences).
+CRITICAL INSTRUCTIONS:
+- Answer as a finance expert with deep knowledge of financial documents, accounting, and business analysis.
+- Base your answer ONLY on the context blocks and document data provided above.
+- NEVER say "I'm sorry" or "the document does not contain" - always provide information from what IS available
+- For specific questions (amounts, dates, names), provide the exact value directly (e.g., "149,990" not "The amount is 149,990").
+- For general questions about the document, provide comprehensive answers using ALL available data (metadata, metrics, tables, chunks, markdown).
+- If specific information isn't in context blocks, use the document metadata, tables, and detected chunks to answer.
+- ALWAYS cite the supporting context by appending [[chunk_id]] at the end of relevant sentences.
+- Keep the tone professional, expert, and helpful - never apologetic.
+- If asked about document structure, components, or sections, describe what you see in the data above.
+- If asked to summarize or explain, provide a comprehensive overview using ALL available information.
 """
             
             response = client.chat.completions.create(
@@ -521,6 +544,187 @@ Instructions:
         # Generic fallback for document questions
         document_type = financial_data.get("metadata", {}).get("document_type", "document")
         return f"I can see this is a {document_type}, but I couldn't find specific information about your question. Could you try asking about a different aspect of the document?"
+
+    def generate_document_summary(self, financial_data: Dict[str, Any]) -> str:
+        """Generate a comprehensive document summary using LLM with full document data."""
+        try:
+            # Validate financial_data
+            if not financial_data:
+                print("Warning: financial_data is empty, using fallback summary")
+                return self._generate_basic_summary(financial_data)
+            
+            if not self.openai_api_key:
+                print("OpenAI API key not found. Please set OPENAI_API_KEY.")
+                return self._generate_basic_summary(financial_data)
+            
+            client = openai.OpenAI(api_key=self.openai_api_key)
+            
+            # Build comprehensive context from all available data
+            context_parts = []
+            
+            # Check if we have any data at all
+            has_data = False
+            
+            # 1. Metadata
+            metadata = financial_data.get("metadata", {})
+            if metadata:
+                metadata_text = "Document Metadata:\n"
+                for key, value in metadata.items():
+                    if value:
+                        metadata_text += f"- {key.replace('_', ' ').title()}: {value}\n"
+                        has_data = True
+                if has_data:
+                    context_parts.append(metadata_text)
+            
+            # 2. Key Metrics
+            key_metrics = financial_data.get("key_metrics", [])
+            if key_metrics:
+                metrics_text = "Key Financial Metrics:\n"
+                metric_count = 0
+                for metric in key_metrics[:10]:  # Top 10 metrics
+                    name = metric.get("name", "")
+                    value = metric.get("value", "")
+                    unit = metric.get("unit", "")
+                    if name and value is not None:
+                        if isinstance(value, (int, float)):
+                            formatted = f"${value:,.2f}" if unit == "USD" else f"{value:,}"
+                        else:
+                            formatted = str(value)
+                        metrics_text += f"- {name}: {formatted} {unit}\n"
+                        metric_count += 1
+                        has_data = True
+                if metric_count > 0:
+                    context_parts.append(metrics_text)
+            
+            # 3. Tables Summary
+            tables = financial_data.get("tables", [])
+            if tables:
+                tables_text = f"Document contains {len(tables)} table(s):\n"
+                for i, table in enumerate(tables[:5], 1):  # Limit to 5 tables
+                    table_title = table.get("title", f"Table {i}")
+                    headers = table.get("header", [])
+                    rows = table.get("rows", [])
+                    tables_text += f"\n{table_title}:\n"
+                    if headers:
+                        tables_text += f"  Headers: {', '.join(str(h) for h in headers[:5])}\n"
+                    if rows:
+                        # Show first few rows as sample
+                        for row_idx, row in enumerate(rows[:3], 1):
+                            if isinstance(row, list):
+                                row_str = " | ".join(str(cell) for cell in row[:5])
+                            else:
+                                row_str = str(row)
+                            tables_text += f"  Row {row_idx}: {row_str}\n"
+                        if len(rows) > 3:
+                            tables_text += f"  ... and {len(rows) - 3} more rows\n"
+                context_parts.append(tables_text)
+                has_data = True
+            
+            # 4. Detected Chunks Summary
+            detected_chunks = financial_data.get("detected_chunks", [])
+            if detected_chunks:
+                chunks_text = f"Document structure: {len(detected_chunks)} detected sections\n"
+                chunk_types = {}
+                for chunk in detected_chunks:
+                    chunk_type = chunk.get("type", "text")
+                    chunk_types[chunk_type] = chunk_types.get(chunk_type, 0) + 1
+                
+                for chunk_type, count in chunk_types.items():
+                    chunks_text += f"- {chunk_type.title()}: {count} section(s)\n"
+                context_parts.append(chunks_text)
+                has_data = True
+            
+            # 5. Document Markdown (first 3000 chars for context)
+            document_markdown = financial_data.get("document_markdown", "") or financial_data.get("markdown", "")
+            if document_markdown and len(document_markdown.strip()) > 50:
+                markdown_preview = document_markdown[:3000]
+                context_parts.append(f"Document Content Preview:\n{markdown_preview}\n...")
+                has_data = True
+            
+            # If no data found, use fallback
+            if not has_data or not context_parts:
+                print("Warning: No document data found for summary, using fallback")
+                return self._generate_basic_summary(financial_data)
+            
+            # Combine all context
+            full_context = "\n\n".join(context_parts)
+            
+            prompt = f"""You are ALPHA LENS, a senior financial analyst. You MUST analyze the following document data and provide a comprehensive summary.
+
+DOCUMENT DATA:
+{full_context}
+
+ABSOLUTE REQUIREMENTS - YOU MUST FOLLOW THESE:
+1. NEVER say "I'm sorry" or "the document does not contain" - this is FORBIDDEN
+2. ALWAYS provide a summary based on the data shown above, even if incomplete
+3. Use EVERY piece of information from the data above: metadata, metrics, tables, chunks, markdown
+4. Be specific: mention exact numbers, dates, company names, table counts, section types
+5. Write 3-5 detailed paragraphs analyzing the document
+6. If data seems limited, still summarize what IS present - never refuse to summarize
+
+Your response MUST start with a direct summary statement, NOT an apology. Example:
+"This document is a [type] for [company] dated [date]. It contains [X] tables and [Y] sections..."
+
+Now provide the summary:
+"""
+            
+            response = client.chat.completions.create(
+                model="gpt-3.5-turbo",
+                messages=[
+                    {"role": "system", "content": "You are ALPHA LENS, a senior financial analyst specializing in document analysis and summarization."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.3,
+                max_tokens=800
+            )
+            
+            summary = response.choices[0].message.content.strip()
+            return summary if summary else self._generate_basic_summary(financial_data)
+            
+        except Exception as e:
+            print(f"Error generating document summary with LLM: {str(e)}")
+            return self._generate_basic_summary(financial_data)
+    
+    def _generate_basic_summary(self, financial_data: Dict[str, Any]) -> str:
+        """Generate a basic summary without LLM (fallback)."""
+        parts = []
+        
+        metadata = financial_data.get("metadata", {})
+        if metadata.get("document_type"):
+            parts.append(f"This is a {metadata.get('document_type')} document.")
+        
+        if metadata.get("company_name"):
+            parts.append(f"Company/Organization: {metadata.get('company_name')}")
+        
+        if metadata.get("document_date"):
+            parts.append(f"Date: {metadata.get('document_date')}")
+        
+        key_metrics = financial_data.get("key_metrics", [])
+        if key_metrics:
+            parts.append("\nKey metrics found:")
+            for metric in key_metrics[:8]:
+                name = metric.get("name", "")
+                value = metric.get("value", "")
+                unit = metric.get("unit", "")
+                if name and value is not None:
+                    if isinstance(value, (int, float)):
+                        formatted = f"${value:,.2f}" if unit == "USD" else f"{value:,}"
+                    else:
+                        formatted = str(value)
+                    parts.append(f"- {name}: {formatted} {unit}")
+        
+        tables = financial_data.get("tables", [])
+        if tables:
+            parts.append(f"\nThe document contains {len(tables)} table(s) with structured data.")
+        
+        detected_chunks = financial_data.get("detected_chunks", [])
+        if detected_chunks:
+            parts.append(f"The document has {len(detected_chunks)} detected sections (tables, text, charts, etc.).")
+        
+        if not parts:
+            return "This document has been processed. However, no structured summary information is available. You can ask specific questions about the document content."
+        
+        return "\n".join(parts)
 
 # Create a singleton instance
 llm_service = LLMService()
