@@ -376,11 +376,11 @@ User Question: "{query}"
 
 Instructions:
 1. Answer in a friendly, conversational tone
-2. If the answer is clearly in the document, provide it directly
-3. If the exact answer isn't in the document, tell the user what you do know from the document that might be relevant
-4. If the document doesn't contain ANY information related to the question, politely explain that the document doesn't contain that information
-5. For greetings or casual questions, respond naturally while mentioning you're here to help with the document
-6. Keep your answer concise (1-3 sentences) unless detailed information is needed
+2. Keep answers SHORT and DIRECT - maximum 2 sentences unless detailed information is needed
+3. If the answer is clearly in the document, provide it directly and concisely
+4. If the exact answer isn't in the document, briefly tell the user what you know from the document
+5. If the document doesn't contain ANY information related to the question, say so briefly: "The document doesn't provide this information."
+6. Avoid long explanations - be concise and to the point
 
 Your response:
 """
@@ -395,7 +395,7 @@ Your response:
                     {"role": "user", "content": prompt}
                 ],
                 temperature=0.7,  # Slightly higher for more conversational tone
-                max_tokens=500
+                max_tokens=200
             )
             
             # Extract the answer from the response
@@ -483,14 +483,14 @@ Question: {query}
 CRITICAL INSTRUCTIONS:
 - Answer as a finance expert with deep knowledge of financial documents, accounting, and business analysis.
 - Base your answer ONLY on the context blocks and document data provided above.
-- NEVER say "I'm sorry" or "the document does not contain" - always provide information from what IS available
+- Keep answers SHORT and DIRECT - maximum 2-3 sentences unless the question requires detailed explanation.
 - For specific questions (amounts, dates, names), provide the exact value directly (e.g., "149,990" not "The amount is 149,990").
-- For general questions about the document, provide comprehensive answers using ALL available data (metadata, metrics, tables, chunks, markdown).
+- For general questions about the document, provide concise answers using available data.
 - If specific information isn't in context blocks, use the document metadata, tables, and detected chunks to answer.
 - ALWAYS cite the supporting context by appending [[chunk_id]] at the end of relevant sentences.
 - Keep the tone professional, expert, and helpful - never apologetic.
-- If asked about document structure, components, or sections, describe what you see in the data above.
-- If asked to summarize or explain, provide a comprehensive overview using ALL available information.
+- If the document doesn't contain the information, say so briefly: "The document doesn't provide this information."
+- Be concise - avoid long explanations unless necessary.
 """
             
             response = client.chat.completions.create(
@@ -500,7 +500,7 @@ CRITICAL INSTRUCTIONS:
                     {"role": "user", "content": prompt}
                 ],
                 temperature=0.2,
-                max_tokens=450
+                max_tokens=250
             )
             
             return response.choices[0].message.content

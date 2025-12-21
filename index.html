@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Alpha Lens — Financial Analysis Platform</title>
-    <link rel="stylesheet" href="/static/css/style.css">
+    <link rel="stylesheet" href="/static/css/style.css?v=1.0">
 </head>
 <body>
     <!-- Header Navigation -->
@@ -103,146 +103,265 @@
         </section>
 
         <!-- Analyzer Section -->
-        <main class="dashboard" id="analyzer-section" style="display: none;">
-            <aside class="control-panel glass-card">
-                <div>
-                    <div class="panel-title">Workspace</div>
-                    <p class="doc-meta">Track ingestion & switch between documents.</p>
+        <main class="analyzer-container" id="analyzer-section" style="display: none;">
+            <!-- Initial State: Action Cards + Pre-saved Docs -->
+            <div class="analyzer-initial-state" id="analyzer-initial-state">
+                <div class="analyzer-header">
+                    <h2 class="analyzer-title">How would you like to process your files?</h2>
                 </div>
-                <div style="margin-bottom: 16px; padding: 12px; background: var(--bg-secondary); border-radius: 10px; width: 100%; box-sizing: border-box;">
-                    <div style="font-size: 0.85rem; color: var(--text-secondary);">Logged in as</div>
-                    <div id="user-info" style="font-size: 0.95rem; font-weight: 500; color: var(--text); margin-top: 4px;">-</div>
-    </div>
-    
-                <!-- Upload Form -->
-                <div class="upload-section" style="margin-bottom: 20px; padding: 16px; background: var(--bg-soft); border-radius: 12px; border: 1px solid var(--border); width: 100%; box-sizing: border-box;">
-                    <p style="font-size: 0.9rem; font-weight: 600; color: var(--text); margin: 0 0 12px 0;">Upload Document</p>
-                    <form id="upload-form" class="upload-form" enctype="multipart/form-data">
-            <input type="file" id="file-input" name="file" accept=".pdf">
-                        <button type="submit">Upload & Process</button>
-        </form>
-        <div id="upload-status"></div>
-    </div>
-    
-            <div id="document-status"></div>
-            <ul id="document-list" class="document-list">
-                    <!-- Populated dynamically -->
-            </ul>
-            </aside>
-
-            <div class="main-content-area">
-                <!-- Left: Document Viewer -->
-                <div class="document-viewer-section">
-                    <div class="document-stage glass-card">
-                        <!-- Document Header: Upload icon, Doc name, Page indicator -->
-                        <div class="document-header-bar">
-                            <button class="upload-icon-btn" id="file-select-btn" title="Upload Document">
-                                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
-                                    <polyline points="17 8 12 3 7 8"></polyline>
-                                    <line x1="12" y1="3" x2="12" y2="15"></line>
+                
+                <!-- Hidden file input for action cards -->
+                <input type="file" id="action-card-file-input" accept=".pdf,.png,.jpg,.jpeg,.gif,.bmp,.tiff" style="display: none;">
+                
+                <!-- Action Cards -->
+                <div class="action-cards-container">
+                    <!-- Parse Card -->
+                    <div class="action-card" data-action="parse">
+                        <div class="action-card-header">
+                            <div class="action-card-icon">
+                                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                    <path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"></path>
                                 </svg>
-                            </button>
-                            <span id="selected-file-name" class="document-name">No document selected</span>
-                            <div class="page-indicator-container">
-                                <button class="page-nav-btn" id="pdf-prev" disabled><</button>
-                                <span id="page-indicator" class="page-indicator">1 / 1</span>
-                                <button class="page-nav-btn" id="pdf-next" disabled>></button>
                             </div>
+                            <a href="#" class="action-card-docs-link" onclick="event.preventDefault(); return false;">
+                                <span>Docs</span>
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                    <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>
+                                    <polyline points="15 3 21 3 21 9"></polyline>
+                                    <line x1="10" y1="14" x2="21" y2="3"></line>
+                                </svg>
+                            </a>
                         </div>
-                        <div class="pdf-wrapper" id="pdf-wrapper">
-                            <canvas id="pdf-canvas"></canvas>
-                            <div class="pdf-overlay" id="pdf-overlay"></div>
+                        <h3 class="action-card-title">Parse</h3>
+                        <p class="action-card-desc">Turn documents into structured, machine-readable Markdown.</p>
+                        <button class="action-card-upload-btn" data-action="parse">Upload File</button>
+                    </div>
+                    
+                    <!-- Extract Card -->
+                    <div class="action-card" data-action="extract">
+                        <div class="action-card-header">
+                            <div class="action-card-icon">
+                                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                    <circle cx="11" cy="11" r="8"></circle>
+                                    <path d="m21 21-4.35-4.35"></path>
+                                </svg>
+                            </div>
+                            <a href="#" class="action-card-docs-link" onclick="event.preventDefault(); return false;">
+                                <span>Docs</span>
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                    <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>
+                                    <polyline points="15 3 21 3 21 9"></polyline>
+                                    <line x1="10" y1="14" x2="21" y2="3"></line>
+                                </svg>
+                            </a>
                         </div>
+                        <h3 class="action-card-title">Extract</h3>
+                        <p class="action-card-desc">Extract key fields like names, dates, and totals from parsed output.</p>
+                        <button class="action-card-upload-btn" data-action="extract">Upload File</button>
+                    </div>
+                    
+                    <!-- Chat Card -->
+                    <div class="action-card" data-action="chat">
+                        <div class="action-card-header">
+                            <div class="action-card-icon">
+                                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                    <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+                                </svg>
+                            </div>
+                            <a href="#" class="action-card-docs-link" onclick="event.preventDefault(); return false;">
+                                <span>Docs</span>
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                    <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>
+                                    <polyline points="15 3 21 3 21 9"></polyline>
+                                    <line x1="10" y1="14" x2="21" y2="3"></line>
+                                </svg>
+                            </a>
+                        </div>
+                        <h3 class="action-card-title">Chat</h3>
+                        <p class="action-card-desc">Ask questions and get answers from your documents using AI.</p>
+                        <button class="action-card-upload-btn" data-action="chat">Upload File</button>
                     </div>
                 </div>
                 
-                <!-- Right: Parse Data Panel -->
-                <div class="parse-panel-section">
-                    <div class="glass-card" style="display: flex; flex-direction: column; height: 100%;">
-                        <!-- Top Level Tabs: Parse, Extract, Chat -->
-                        <div class="main-tabs">
-                            <button class="main-tab active" data-tab="parse">Parse</button>
-                            <button class="main-tab" data-tab="extract">Extract</button>
-                            <button class="main-tab" data-tab="chat">Chat</button>
-                        </div>
-                        
-                        <!-- Parse Tab Content -->
-                        <div class="tab-content-wrapper" id="parse-tab-content">
-                            <div class="parse-panel-header">
-                                <div class="panel-title">Parsed Data</div>
-                                <div class="parse-view-tabs">
-                                    <button class="parse-view-tab active" data-view="markdown">Markdown</button>
-                                    <button class="parse-view-tab" data-view="json">JSON</button>
-                                </div>
+                <!-- Pre-saved Documents Section -->
+                <div class="presaved-docs-section">
+                    <h3 class="presaved-docs-title">Pre-saved Documents</h3>
+                    <div id="presaved-docs-list" class="presaved-docs-list">
+                        <!-- Populated dynamically -->
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Loading State -->
+            <div class="analyzer-loading-state" id="analyzer-loading-state" style="display: none;">
+                <div class="loading-spinner">
+                    <div class="spinner"></div>
+                    <p class="loading-text">Processing your document...</p>
+                </div>
+            </div>
+            
+            <!-- Result State: Document Viewer + Parse Panel -->
+            <div class="analyzer-result-state" id="analyzer-result-state" style="display: none;">
+                <button class="sidebar-toggle" id="sidebar-toggle" title="Toggle Sidebar">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <line x1="3" y1="12" x2="21" y2="12"></line>
+                        <line x1="3" y1="6" x2="21" y2="6"></line>
+                        <line x1="3" y1="18" x2="21" y2="18"></line>
+                    </svg>
+                </button>
+                <button class="back-to-cards-btn" id="back-to-cards-btn" title="Back to Cards">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M19 12H5M12 19l-7-7 7-7"></path>
+                    </svg>
+                    <span>Back</span>
+                </button>
+                
+                <div class="dashboard">
+                    <aside class="control-panel glass-card" id="workspace-sidebar">
+                        <div class="sidebar-header">
+                            <div>
+                                <div class="panel-title">Workspace</div>
+                                <p class="doc-meta">Track ingestion & switch between documents.</p>
                             </div>
-                            <div class="parse-content" id="parse-content">
-                                <div id="markdown-view">
-                                    <p class="doc-meta">Select a document to view parsed data</p>
-                                </div>
-                                <div id="json-view" style="display: none;">
-                                    <pre id="json-content" class="json-view"></pre>
-                                </div>
-                            </div>
+                            <button class="sidebar-close-btn" id="sidebar-close-btn" title="Close Sidebar">
+                                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                    <line x1="18" y1="6" x2="6" y2="18"></line>
+                                    <line x1="6" y1="6" x2="18" y2="18"></line>
+                                </svg>
+                            </button>
                         </div>
-                        
-                        <!-- Extract Tab Content -->
-                        <div class="tab-content-wrapper" id="extract-tab-content" style="display: none;">
-                            <div class="panel-title">Extract</div>
-                            <p class="doc-meta">Schema-based extraction coming soon</p>
+                        <div style="margin-bottom: 16px; padding: 12px; background: var(--bg-secondary); border-radius: 10px; width: 100%; box-sizing: border-box;">
+                            <div style="font-size: 0.85rem; color: var(--text-secondary);">Logged in as</div>
+                            <div id="user-info" style="font-size: 0.95rem; font-weight: 500; color: var(--text); margin-top: 4px;">-</div>
                         </div>
-                        
-                        <!-- Chat Tab Content -->
-                        <div class="tab-content-wrapper chat-area" id="chat-tab-content" style="display: none;">
-                            <div class="chat-container">
-                                <!-- Chat Header with Description -->
-                                <div class="chat-header">
-                                    <div class="chat-icon">
-                                        <!-- Test tube and flask icon -->
-                                        <svg width="64" height="64" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
-                                            <!-- Flask -->
-                                            <path d="M20 16 L20 48 L16 52 L16 56 L48 56 L48 52 L44 48 L44 16 L20 16 Z" fill="#10b981" opacity="0.9"/>
-                                            <path d="M20 16 L44 16 L44 20 L20 20 Z" fill="#10b981"/>
-                                            <path d="M18 20 L18 24 L46 24 L46 20 Z" fill="#10b981" opacity="0.7"/>
-                                            <!-- Test tube -->
-                                            <path d="M40 12 L40 32 L36 36 L36 40 L48 40 L48 36 L44 32 L44 12 L40 12 Z" fill="#06b6d4" opacity="0.9"/>
-                                            <circle cx="42" cy="8" r="3" fill="#06b6d4"/>
-                                            <!-- Bubbles -->
-                                            <circle cx="24" cy="28" r="2" fill="#10b981" opacity="0.6"/>
-                                            <circle cx="30" cy="32" r="1.5" fill="#10b981" opacity="0.5"/>
-                                            <circle cx="26" cy="38" r="1.5" fill="#10b981" opacity="0.5"/>
-                                            <circle cx="38" cy="18" r="1.5" fill="#06b6d4" opacity="0.6"/>
-                                            <circle cx="46" cy="22" r="1" fill="#06b6d4" opacity="0.5"/>
+                        <div id="document-status"></div>
+                        <ul id="document-list" class="document-list">
+                            <!-- Populated dynamically -->
+                        </ul>
+                    </aside>
+
+                    <div class="main-content-area">
+                        <!-- Left: Document Viewer -->
+                        <div class="document-viewer-section resizable-panel">
+                            <div class="document-stage glass-card">
+                                <!-- Document Header: Upload icon, Doc name, Page indicator -->
+                                <div class="document-header-bar">
+                                    <button class="upload-icon-btn" id="file-select-btn" title="Upload Document">
+                                        <svg class="arrow-up-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+                                            <line x1="12" y1="19" x2="12" y2="5"></line>
+                                            <polyline points="5 12 12 5 19 12"></polyline>
                                         </svg>
+                                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                                            <polyline points="17 8 12 3 7 8"></polyline>
+                                            <line x1="12" y1="3" x2="12" y2="15"></line>
+                                        </svg>
+                                    </button>
+                                    <span id="selected-file-name" class="document-name">No document selected</span>
+                                    <div class="page-indicator-container">
+                                        <button class="page-nav-btn" id="pdf-prev" disabled><</button>
+                                        <span id="page-indicator" class="page-indicator">1 / 1</span>
+                                        <button class="page-nav-btn" id="pdf-next" disabled>></button>
                                     </div>
-                                    <p class="chat-description">
-                                        Test our Agentic Document Extraction API by chatting with the doc. See how it finds answers from forms, reports, and figures and highlights the exact sources in the document.
-                                    </p>
+                                </div>
+                                <div class="pdf-wrapper" id="pdf-wrapper">
+                                    <canvas id="pdf-canvas"></canvas>
+                                    <div class="pdf-overlay" id="pdf-overlay"></div>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <!-- Resizer Handle -->
+                        <div class="resizer-handle" id="resizer-handle"></div>
+                        
+                        <!-- Right: Parse Data Panel -->
+                        <div class="parse-panel-section resizable-panel">
+                            <div class="glass-card" style="display: flex; flex-direction: column; height: 100%;">
+                                <!-- Top Level Tabs: Parse, Extract, Chat -->
+                                <div class="main-tabs">
+                                    <button class="main-tab active" data-tab="parse">Parse</button>
+                                    <button class="main-tab" data-tab="extract">Extract</button>
+                                    <button class="main-tab" data-tab="chat">Chat</button>
                                 </div>
                                 
-                                <!-- Example Prompts Section -->
-                                <div class="example-prompts-section" id="example-prompts-section" style="display: none;">
-                                    <div class="example-prompts-title">Example prompts</div>
-                                    <div class="example-prompts-list" id="example-prompts-list">
-                                        <!-- Will be populated dynamically -->
+                                <!-- Parse Tab Content -->
+                                <div class="tab-content-wrapper" id="parse-tab-content">
+                                    <div class="parse-panel-header">
+                                        <div class="panel-title">Parsed Data</div>
+                                        <div class="parse-view-tabs">
+                                            <button class="parse-view-tab active" data-view="markdown">Markdown</button>
+                                            <button class="parse-view-tab" data-view="json">JSON</button>
+                                        </div>
+                                    </div>
+                                    <div class="parse-content" id="parse-content">
+                                        <div id="markdown-view">
+                                            <p class="doc-meta">Select a document to view parsed data</p>
+                                        </div>
+                                        <div id="json-view" style="display: none;">
+                                            <pre id="json-content" class="json-view"></pre>
+                                        </div>
                                     </div>
                                 </div>
                                 
-                                <!-- Chat Messages Area -->
-                                <div class="chat-messages" id="chat-messages">
-                                    <!-- Messages will be added here -->
+                                <!-- Extract Tab Content -->
+                                <div class="tab-content-wrapper" id="extract-tab-content" style="display: none;">
+                                    <div class="panel-title">Extract</div>
+                                    <p class="doc-meta">Schema-based extraction coming soon</p>
                                 </div>
                                 
-                                <!-- Chat Input Area -->
-                                <div class="chat-input-container">
-                                    <div class="chat-input">
-                                        <input type="text" id="chat-input" placeholder="Type your question">
-                                        <button id="chat-send" type="button" class="chat-send-btn">
-                                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                                <line x1="22" y1="2" x2="11" y2="13"></line>
-                                                <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
-                                            </svg>
-                                        </button>
+                                <!-- Chat Tab Content -->
+                                <div class="tab-content-wrapper chat-area" id="chat-tab-content" style="display: none;">
+                                    <div class="chat-container">
+                                        <!-- Chat Header with Description -->
+                                        <div class="chat-header">
+                                            <div class="chat-icon">
+                                                <!-- Test tube and flask icon -->
+                                                <svg width="64" height="64" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                                    <!-- Flask -->
+                                                    <path d="M20 16 L20 48 L16 52 L16 56 L48 56 L48 52 L44 48 L44 16 L20 16 Z" fill="#10b981" opacity="0.9"/>
+                                                    <path d="M20 16 L44 16 L44 20 L20 20 Z" fill="#10b981"/>
+                                                    <path d="M18 20 L18 24 L46 24 L46 20 Z" fill="#10b981" opacity="0.7"/>
+                                                    <!-- Test tube -->
+                                                    <path d="M40 12 L40 32 L36 36 L36 40 L48 40 L48 36 L44 32 L44 12 L40 12 Z" fill="#06b6d4" opacity="0.9"/>
+                                                    <circle cx="42" cy="8" r="3" fill="#06b6d4"/>
+                                                    <!-- Bubbles -->
+                                                    <circle cx="24" cy="28" r="2" fill="#10b981" opacity="0.6"/>
+                                                    <circle cx="30" cy="32" r="1.5" fill="#10b981" opacity="0.5"/>
+                                                    <circle cx="26" cy="38" r="1.5" fill="#10b981" opacity="0.5"/>
+                                                    <circle cx="38" cy="18" r="1.5" fill="#06b6d4" opacity="0.6"/>
+                                                    <circle cx="46" cy="22" r="1" fill="#06b6d4" opacity="0.5"/>
+                                                </svg>
+                                            </div>
+                                            <p class="chat-description">
+                                                Test our Agentic Document Extraction API by chatting with the doc. See how it finds answers from forms, reports, and figures and highlights the exact sources in the document.
+                                            </p>
+                                        </div>
+                                        
+                                        <!-- Example Prompts Section -->
+                                        <div class="example-prompts-section" id="example-prompts-section" style="display: none;">
+                                            <div class="example-prompts-title">Example prompts</div>
+                                            <div class="example-prompts-list" id="example-prompts-list">
+                                                <!-- Will be populated dynamically -->
+                                            </div>
+                                        </div>
+                                        
+                                        <!-- Chat Messages Area -->
+                                        <div class="chat-messages" id="chat-messages">
+                                            <!-- Messages will be added here -->
+                                        </div>
+                                        
+                                        <!-- Chat Input Area -->
+                                        <div class="chat-input-container">
+                                            <div class="chat-input">
+                                                <input type="text" id="chat-input" placeholder="Type your question">
+                                                <button id="chat-send" type="button" class="chat-send-btn">
+                                                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                                        <line x1="22" y1="2" x2="11" y2="13"></line>
+                                                        <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+                                                    </svg>
+                                                </button>
+                                            </div>
+                                        </div>
                                     </div>
                                 </div>
                             </div>
@@ -286,7 +405,7 @@
             </div>
         </div>
     </div>
-
+    
     <!-- Footer -->
     <footer class="main-footer">
         <div class="footer-container">
@@ -327,6 +446,22 @@
     </footer>
 
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
-    <script src="/static/js/main.js"></script>
+    <script>
+        // Ensure CSS is loaded before executing JavaScript
+        window.addEventListener('load', function() {
+            // Force reflow to ensure all CSS is applied
+            const dashboard = document.getElementById('analyzer-section');
+            if (dashboard) {
+                dashboard.style.display = 'none';
+                setTimeout(() => {
+                    // Ensure grid layout is properly applied
+                    if (dashboard.style.display === 'grid' || dashboard.style.display === '') {
+                        dashboard.style.display = 'grid';
+                    }
+                }, 50);
+            }
+        });
+    </script>
+    <script src="/static/js/main.js?v=1.0"></script>
 </body>
 </html>

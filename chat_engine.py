@@ -6,8 +6,79 @@ from typing import Dict, Any, List
 from vector_store import similarity_search
 from llm_service import llm_service
 
+try:
+    import openai
+except ImportError:
+    openai = None
+
 MAX_CONTEXT_CHARS = 8000
 CITATION_PATTERN = re.compile(r"\[\[([^\]]+)\]\]")
+
+
+def is_query_relevant_to_document(query: str, financial_data: Dict[str, Any] = None) -> bool:
+    """Check if a query is relevant to the document or is a general question."""
+    query_lower = query.lower().strip()
+    
+    # Check for math questions (simple arithmetic)
+    math_patterns = [
+        r'^\d+\s*[+\-*/]\s*\d+',  # "2+2", "5-3", "10*2", "8/4"
+        r'what is \d+\s*[+\-*/]\s*\d+',  # "what is 2+2"
+        r'calculate \d+\s*[+\-*/]\s*\d+',  # "calculate 2+2"
+    ]
+    for pattern in math_patterns:
+        if re.search(pattern, query_lower):
+            return False
+    
+    # Check for general knowledge questions unrelated to documents
+    general_questions = [
+        'what is the capital of',
+        'who is the president of',
+        'what is the weather',
+        'tell me a joke',
+        'what time is it',
+        'what day is it',
+    ]
+    for gq in general_questions:
+        if gq in query_lower:
+            return False
+    
+    # Check if query contains document-related keywords
+    doc_keywords = [
+        'document', 'doc', 'file', 'statement', 'report', 'financial',
+        'table', 'section', 'page', 'registrant', 'company', 'amount',
+        'revenue', 'income', 'expense', 'asset', 'liability', 'metric',
+        'data', 'submission', 'filing', 'commission', 'xbrl'
+    ]
+    
+    # If query has document keywords, it's likely relevant
+    if any(keyword in query_lower for keyword in doc_keywords):
+        return True
+    
+    # Check if query asks about specific document content
+    content_questions = [
+        'what is', 'what are', 'how much', 'how many', 'when', 'where',
+        'who', 'which', 'show me', 'find', 'list', 'explain'
+    ]
+    
+    # If it's a question word but no document context, might be general
+    if any(qw in query_lower for qw in content_questions):
+        # Check similarity with document content
+        if financial_data:
+            # Check if query terms appear in document metadata or summary
+            doc_text = ""
+            if financial_data.get("summary"):
+                doc_text += financial_data["summary"].lower()
+            if financial_data.get("metadata"):
+                doc_text += " " + json.dumps(financial_data["metadata"]).lower()
+            
+            # If query has terms matching document, it's relevant
+            query_words = set(query_lower.split())
+            doc_words = set(doc_text.split())
+            if query_words.intersection(doc_words):
+                return True
+    
+    # Default: assume relevant (let vector search decide)
+    return True
 
 
 def get_answer_from_document(
@@ -24,8 +95,20 @@ def get_answer_from_document(
         else:
             financial_data = {}
     
-    # Check if this is a summarization request (more comprehensive detection)
+    # Check if query is relevant to the document
     query_lower = query.lower().strip()
+    
+    # First, check if this is an irrelevant question (math, general knowledge, etc.)
+    if not is_query_relevant_to_document(query, financial_data):
+        # Handle irrelevant questions directly and briefly
+        answer = handle_irrelevant_question(query)
+        return {
+            "answer": answer,
+            "sources": [],
+            "source": "general_knowledge"
+        }
+    
+    # Check if this is a summarization request (more comprehensive detection)
     summary_keywords = [
         "summarize", "summary", "overview", "what is this document", "tell me about this document",
         "give me a summary", "document summary", "brief overview", "explain the document",
@@ -484,6 +567,66 @@ def _generate_fallback_summary(financial_data: Dict[str, Any]) -> str:
         return "This document has been processed. The document contains financial data, but specific summary details are not available. Please ask specific questions about the document content."
     
     return "\n".join(parts)
+
+
+def handle_irrelevant_question(query: str) -> str:
+    """Handle questions that are not related to the document."""
+    query_lower = query.lower().strip()
+    
+    # Handle math questions
+    math_match = re.search(r'(\d+)\s*([+\-*/])\s*(\d+)', query_lower)
+    if math_match:
+        try:
+            num1 = int(math_match.group(1))
+            operator = math_match.group(2)
+            num2 = int(math_match.group(3))
+            
+            if operator == '+':
+                result = num1 + num2
+            elif operator == '-':
+                result = num1 - num2
+            elif operator == '*':
+                result = num1 * num2
+            elif operator == '/':
+                if num2 == 0:
+                    return "Division by zero is undefined.\n\n*Note: This question is not related to the document content.*"
+                result = num1 / num2
+            else:
+                return f"I can help with that, but this question is not related to the document. Please ask questions about the document content instead."
+            
+            # Format result (remove .0 for whole numbers)
+            if isinstance(result, float) and result.is_integer():
+                result = int(result)
+            
+            return f"{result}\n\n*Note: This question is not related to the document content.*"
+        except:
+            pass
+    
+    # Handle other general questions - use LLM for brief answer
+    try:
+        if openai:
+            from config import settings
+            
+            api_key = settings.OPENAI_API_KEY or os.environ.get("OPENAI_API_KEY")
+            if api_key:
+                client = openai.OpenAI(api_key=api_key)
+                response = client.chat.completions.create(
+                    model="gpt-3.5-turbo",
+                    messages=[
+                        {"role": "system", "content": "You are a helpful assistant. Answer questions directly and concisely in 1-2 sentences maximum."},
+                        {"role": "user", "content": query}
+                    ],
+                    temperature=0.3,
+                    max_tokens=100
+                )
+                answer = response.choices[0].message.content.strip()
+                return f"{answer}\n\n*Note: This question is not related to the document content.*"
+    except Exception as e:
+        print(f"Error handling irrelevant question: {e}")
+        pass
+    
+    # Fallback for irrelevant questions
+    return f"I can help with that, but this question is not related to the document. Please ask questions about the document content instead."
 
 
 def build_fallback_context(financial_data: Dict[str, Any], relevant_chunks: List[Dict[str, Any]]) -> str:

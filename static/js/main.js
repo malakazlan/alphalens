@@ -136,16 +136,14 @@ function showFeature(feature) {
     
     // Show the selected section
     if (feature === 'analyzer') {
-        if (analyzerSection) analyzerSection.style.display = 'grid';
+        if (analyzerSection) {
+            analyzerSection.style.display = 'block';
+            // Show initial state by default
+            showAnalyzerInitialState();
+        }
         updateNavLinks('analyzer');
-        // Set up upload form listener when analyzer section is shown
-        setTimeout(() => {
-            const form = document.getElementById('upload-form');
-            if (form && !form.hasAttribute('data-listener-attached')) {
-                form.addEventListener('submit', uploadDocument);
-                form.setAttribute('data-listener-attached', 'true');
-            }
-        }, 100);
+        // Initialize analyzer functionality
+        initializeAnalyzer();
     } else if (feature === 'finbot') {
         if (finbotSection) finbotSection.style.display = 'block';
         updateNavLinks('chatbot');
@@ -213,7 +211,440 @@ window.addEventListener('DOMContentLoaded', async () => {
     // Show homepage by default
     showHomePage();
     loadDocuments();
+    initializeSidebar();
+    initializeResizer();
 });
+
+// Sidebar toggle functionality
+function initializeSidebar() {
+    const sidebarToggle = document.getElementById('sidebar-toggle');
+    const sidebarCloseBtn = document.getElementById('sidebar-close-btn');
+    const dashboard = document.getElementById('analyzer-section');
+    const sidebar = document.getElementById('workspace-sidebar');
+    
+    if (!sidebarToggle || !sidebarCloseBtn || !dashboard || !sidebar) return;
+    
+    // Load saved sidebar state from localStorage
+    const savedState = localStorage.getItem('sidebar-collapsed');
+    if (savedState === 'true') {
+        dashboard.classList.add('sidebar-collapsed');
+    }
+    
+    // Toggle sidebar
+    function toggleSidebar() {
+        dashboard.classList.toggle('sidebar-collapsed');
+        const isCollapsed = dashboard.classList.contains('sidebar-collapsed');
+        localStorage.setItem('sidebar-collapsed', isCollapsed.toString());
+    }
+    
+    // Open sidebar
+    function openSidebar() {
+        dashboard.classList.remove('sidebar-collapsed');
+        localStorage.setItem('sidebar-collapsed', 'false');
+    }
+    
+    // Close sidebar
+    function closeSidebar() {
+        dashboard.classList.add('sidebar-collapsed');
+        localStorage.setItem('sidebar-collapsed', 'true');
+    }
+    
+    sidebarToggle.addEventListener('click', openSidebar);
+    sidebarCloseBtn.addEventListener('click', closeSidebar);
+}
+
+// Resizer functionality for main content panels (Landing.AI style)
+function initializeResizer() {
+    const resizer = document.getElementById('resizer-handle');
+    const leftPanel = document.querySelector('.document-viewer-section');
+    const rightPanel = document.querySelector('.parse-panel-section');
+    const container = document.querySelector('.main-content-area');
+    
+    if (!resizer || !leftPanel || !rightPanel || !container) return;
+    
+    let isResizing = false;
+    let startX = 0;
+    let startLeftWidth = 0;
+    
+    // Set initial widths - 50/50 split
+    const containerWidth = container.offsetWidth || container.clientWidth;
+    const initialLeftWidth = containerWidth / 2;
+    leftPanel.style.flex = `0 0 ${initialLeftWidth}px`;
+    rightPanel.style.flex = '1 1 auto';
+    
+    // Load saved width from localStorage
+    const savedLeftWidth = localStorage.getItem('left-panel-width');
+    if (savedLeftWidth) {
+        const width = parseFloat(savedLeftWidth);
+        if (width > 0 && width < containerWidth - 250) {
+            leftPanel.style.flex = `0 0 ${width}px`;
+            rightPanel.style.flex = '1 1 auto';
+        }
+    }
+    
+    resizer.addEventListener('mousedown', (e) => {
+        isResizing = true;
+        startX = e.clientX;
+        startLeftWidth = leftPanel.offsetWidth;
+        document.body.style.cursor = 'col-resize';
+        document.body.style.userSelect = 'none';
+        resizer.style.background = 'rgba(5, 150, 105, 0.3)';
+        e.preventDefault();
+        e.stopPropagation();
+    });
+    
+    const handleMouseMove = (e) => {
+        if (!isResizing) return;
+        
+        const deltaX = e.clientX - startX;
+        const containerWidth = container.offsetWidth;
+        const resizerWidth = resizer.offsetWidth;
+        
+        // Calculate new left panel width
+        let newLeftWidth = startLeftWidth + deltaX;
+        
+        // Minimum and maximum widths
+        const minWidth = 250;
+        const maxWidth = containerWidth - 250 - resizerWidth;
+        
+        // Clamp the width
+        newLeftWidth = Math.max(minWidth, Math.min(maxWidth, newLeftWidth));
+        
+        // Apply new width - left panel gets fixed width, right panel flexes
+        leftPanel.style.flex = `0 0 ${newLeftWidth}px`;
+        rightPanel.style.flex = '1 1 auto';
+        rightPanel.style.minWidth = '250px';
+        
+        // Save to localStorage
+        localStorage.setItem('left-panel-width', newLeftWidth.toString());
+        
+        // Trigger resize to redraw PDF/image
+        handlePanelResize();
+    };
+    
+    // Function to handle panel resize and redraw content
+    function handlePanelResize() {
+        // Use requestAnimationFrame to debounce resize
+        if (handlePanelResize.timeout) {
+            cancelAnimationFrame(handlePanelResize.timeout);
+        }
+        handlePanelResize.timeout = requestAnimationFrame(() => {
+            // Redraw PDF if it exists
+            if (pdfDocInstance) {
+                // Check if we're using multi-page view
+                const pageContainers = pdfWrapper?.querySelectorAll('.pdf-page-container');
+                if (pageContainers && pageContainers.length > 0) {
+                    // Multi-page view - redraw all pages
+                    renderAllPdfPages();
+                } else if (currentPdfPage) {
+                    // Single page view - redraw current page
+                    renderPdfPage(currentPdfPage);
+                }
+            }
+            
+            // Redraw image if it exists
+            const imageContainer = pdfWrapper?.querySelector('.image-container');
+            if (imageContainer) {
+                const img = imageContainer.querySelector('img');
+                if (img && img.complete) {
+                    // Recalculate and redraw image overlays
+                    const chunks = currentOverlayChunks || [];
+                    if (chunks.length > 0) {
+                        // Remove existing overlay
+                        const existingOverlay = imageContainer.querySelector('.image-overlay');
+                        if (existingOverlay) {
+                            existingOverlay.remove();
+                        }
+                        // Redraw overlays with new dimensions
+                        drawImageOverlays(img, chunks);
+                    }
+                }
+            }
+        });
+    }
+    
+    const handleMouseUp = () => {
+        if (isResizing) {
+            isResizing = false;
+            document.body.style.cursor = '';
+            document.body.style.userSelect = '';
+            resizer.style.background = 'transparent';
+        }
+    };
+    
+    document.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('mouseup', handleMouseUp);
+    
+    // Also handle mouse leave to stop resizing
+    document.addEventListener('mouseleave', handleMouseUp);
+    
+    // Add ResizeObserver to watch for panel size changes
+    if (window.ResizeObserver) {
+        const resizeObserver = new ResizeObserver((entries) => {
+            // Debounce resize events
+            if (resizeObserver.timeout) {
+                clearTimeout(resizeObserver.timeout);
+            }
+            resizeObserver.timeout = setTimeout(() => {
+                handlePanelResize();
+            }, 150);
+        });
+        
+        // Observe both panels
+        resizeObserver.observe(leftPanel);
+        resizeObserver.observe(rightPanel);
+    }
+}
+
+// Analyzer State Management
+let currentAnalyzerState = 'initial'; // 'initial', 'loading', 'result'
+
+function showAnalyzerInitialState() {
+    const initialState = document.getElementById('analyzer-initial-state');
+    const loadingState = document.getElementById('analyzer-loading-state');
+    const resultState = document.getElementById('analyzer-result-state');
+    const analyzerContainer = document.getElementById('analyzer-section');
+    const pageContainer = document.querySelector('.page');
+    
+    if (initialState) initialState.style.display = 'block';
+    if (loadingState) loadingState.style.display = 'none';
+    if (resultState) resultState.style.display = 'none';
+    
+    // Remove classes to restore padding
+    if (analyzerContainer) analyzerContainer.classList.remove('result-state-active');
+    if (pageContainer) pageContainer.classList.remove('analyzer-result-active');
+    
+    currentAnalyzerState = 'initial';
+}
+
+function showAnalyzerLoadingState() {
+    const initialState = document.getElementById('analyzer-initial-state');
+    const loadingState = document.getElementById('analyzer-loading-state');
+    const resultState = document.getElementById('analyzer-result-state');
+    
+    if (initialState) initialState.style.display = 'none';
+    if (loadingState) loadingState.style.display = 'flex';
+    if (resultState) resultState.style.display = 'none';
+    
+    currentAnalyzerState = 'loading';
+}
+
+function showAnalyzerResultState() {
+    const initialState = document.getElementById('analyzer-initial-state');
+    const loadingState = document.getElementById('analyzer-loading-state');
+    const resultState = document.getElementById('analyzer-result-state');
+    const analyzerContainer = document.getElementById('analyzer-section');
+    const pageContainer = document.querySelector('.page');
+    
+    if (initialState) initialState.style.display = 'none';
+    if (loadingState) loadingState.style.display = 'none';
+    if (resultState) resultState.style.display = 'block';
+    
+    // Add classes to remove padding
+    if (analyzerContainer) analyzerContainer.classList.add('result-state-active');
+    if (pageContainer) pageContainer.classList.add('analyzer-result-active');
+    
+    currentAnalyzerState = 'result';
+    
+    // Initialize sidebar and resizer when result state is shown
+    setTimeout(() => {
+        initializeSidebar();
+        initializeResizer();
+    }, 100);
+}
+
+function initializeAnalyzer() {
+    // Set up action card upload buttons
+    const uploadButtons = document.querySelectorAll('.action-card-upload-btn');
+    uploadButtons.forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const action = btn.getAttribute('data-action');
+            handleActionCardUpload(action);
+        });
+    });
+    
+    // Set up back button
+    const backBtn = document.getElementById('back-to-cards-btn');
+    if (backBtn) {
+        backBtn.addEventListener('click', () => {
+            showAnalyzerInitialState();
+        });
+    }
+    
+    // Load pre-saved documents
+    loadPresavedDocuments();
+}
+
+function handleActionCardUpload(action) {
+    // Use the hidden file input
+    const fileInput = document.getElementById('action-card-file-input');
+    if (!fileInput) return;
+    
+    // Reset the input
+    fileInput.value = '';
+    
+    fileInput.addEventListener('change', async (e) => {
+        const file = e.target.files[0];
+        if (file) {
+            showAnalyzerLoadingState();
+            await processFileUpload(file, action);
+        }
+    }, { once: true });
+    
+    fileInput.click();
+}
+
+async function processFileUpload(file, action) {
+    try {
+        const formData = new FormData();
+        formData.append('file', file);
+        
+        // Get auth headers but remove Content-Type for FormData (browser sets it automatically)
+        const authHeaders = getAuthHeaders();
+        delete authHeaders['Content-Type'];
+        
+        const response = await fetch(`${API_BASE_URL}/documents/upload`, {
+            method: 'POST',
+            credentials: 'include',
+            headers: authHeaders,
+            body: formData
+        });
+        
+        // Handle 401 - redirect to login
+        if (response.status === 401) {
+            window.location.href = '/login';
+            return;
+        }
+        
+        if (!response.ok) {
+            let errorMessage = `Upload failed: ${response.statusText}`;
+            try {
+                const errorData = await response.json();
+                errorMessage = errorData.detail || errorData.error || errorMessage;
+            } catch (e) {
+                // If response is not JSON, use status text
+                errorMessage = `Upload failed: ${response.status} ${response.statusText}`;
+            }
+            throw new Error(errorMessage);
+        }
+        
+        const data = await response.json();
+        
+        if (!data.document_id) {
+            throw new Error('No document ID returned from server');
+        }
+        
+        // Wait for processing to complete
+        await waitForProcessing(data.document_id);
+        
+        // Load the document
+        await selectDocument(data.document_id);
+        
+        // Show result state
+        showAnalyzerResultState();
+        
+        // Switch to appropriate tab based on action
+        if (action === 'extract') {
+            const extractTab = document.querySelector('[data-tab="extract"]');
+            if (extractTab) extractTab.click();
+        } else if (action === 'chat') {
+            const chatTab = document.querySelector('[data-tab="chat"]');
+            if (chatTab) chatTab.click();
+        }
+        
+    } catch (error) {
+        console.error('Upload error:', error);
+        showAnalyzerInitialState();
+        
+        // Show more detailed error message
+        let errorMessage = 'Failed to upload document.';
+        if (error.message) {
+            errorMessage = error.message;
+        }
+        
+        // Check if it's a network error
+        if (error.message && error.message.includes('fetch')) {
+            errorMessage = 'Network error. Please check your connection and try again.';
+        }
+        
+        alert(errorMessage);
+    }
+}
+
+async function waitForProcessing(documentId) {
+    const maxAttempts = 60; // 60 seconds max
+    let attempts = 0;
+    
+    while (attempts < maxAttempts) {
+        try {
+            const response = await fetch(`${API_BASE_URL}/documents/${documentId}`, {
+                credentials: 'include',
+                headers: getAuthHeaders()
+            });
+            
+            // Handle 401 - redirect to login
+            if (response.status === 401) {
+                window.location.href = '/login';
+                return;
+            }
+            
+            if (response.ok) {
+                const data = await response.json();
+                if (data.status === 'complete') {
+                    return;
+                }
+            }
+        } catch (error) {
+            console.error('Error checking status:', error);
+        }
+        
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        attempts++;
+    }
+    
+    throw new Error('Processing timeout - document is still being processed');
+}
+
+function loadPresavedDocuments() {
+    // Load documents from API and populate the pre-saved docs list
+    loadDocuments().then(() => {
+        const documentList = document.getElementById('document-list');
+        const presavedList = document.getElementById('presaved-docs-list');
+        
+        if (!documentList || !presavedList) return;
+        
+        const docs = Array.from(documentList.querySelectorAll('.document-item'));
+        presavedList.innerHTML = '';
+        
+        docs.forEach(docItem => {
+            const docName = docItem.querySelector('.doc-name')?.textContent || 'Unknown';
+            const docMeta = docItem.querySelector('.doc-meta')?.textContent || '';
+            const docId = docItem.getAttribute('data-document-id');
+            
+            if (docId) {
+                const presavedItem = document.createElement('div');
+                presavedItem.className = 'presaved-doc-item';
+                presavedItem.innerHTML = `
+                    <h4 class="presaved-doc-name">${docName}</h4>
+                    <p class="presaved-doc-meta">${docMeta}</p>
+                `;
+                presavedItem.addEventListener('click', async () => {
+                    showAnalyzerLoadingState();
+                    try {
+                        await selectDocument(docId);
+                        showAnalyzerResultState();
+                    } catch (error) {
+                        console.error('Error loading document:', error);
+                        showAnalyzerInitialState();
+                        alert('Failed to load document. Please try again.');
+                    }
+                });
+                presavedList.appendChild(presavedItem);
+            }
+        });
+    });
+}
 
 // Handle window resize for responsive PDF overlays
 let resizeTimeout;
@@ -548,6 +979,11 @@ function pollDocumentStatus() {
 async function selectDocument(documentId) {
     selectedDocumentId = documentId;
     
+    // If we're in initial state, show loading first
+    if (currentAnalyzerState === 'initial') {
+        showAnalyzerLoadingState();
+    }
+    
     // Clear any existing polling and restart to get fresh data
     if (pollingInterval) {
         clearInterval(pollingInterval);
@@ -591,9 +1027,19 @@ async function selectDocument(documentId) {
             chatMessages.style.display = 'none';
         }
         updateExamplePrompts(document);
+        
+        // Transition to result state if we're in loading state
+        if (currentAnalyzerState === 'loading') {
+            showAnalyzerResultState();
+        }
     } catch (error) {
         console.error('Error loading document details:', error);
         documentView.innerHTML = `<div class="status-banner error">Error loading document details: ${error.message}</div>`;
+        
+        // If error occurred during loading, go back to initial state
+        if (currentAnalyzerState === 'loading') {
+            showAnalyzerInitialState();
+        }
     }
 }
 
@@ -1532,9 +1978,9 @@ function scrollStageIntoView() {
     }
 }
 
-async function renderDocumentPreview(document) {
-    if (!pdfWrapper || !window.pdfjsLib) return;
-    if (!document || document.status !== 'complete') {
+async function renderDocumentPreview(docData) {
+    if (!pdfWrapper) return;
+    if (!docData || docData.status !== 'complete') {
         if (pdfWrapper) pdfWrapper.innerHTML = '';
         if (pageIndicator) pageIndicator.textContent = 'Preview unavailable';
         pdfDocInstance = null;
@@ -1542,16 +1988,102 @@ async function renderDocumentPreview(document) {
         return;
     }
 
-    const docId = document.document_id || selectedDocumentId;
+    const docId = docData.document_id || selectedDocumentId;
     if (!docId) return;
     
     // Reset counters for new document
     resetCounters();
     
+    // Detect file type from filename
+    const filename = docData.filename || '';
+    const fileExtension = filename.split('.').pop()?.toLowerCase() || '';
+    const isImage = ['png', 'jpg', 'jpeg', 'gif', 'bmp', 'tiff', 'webp'].includes(fileExtension);
+    const isPdf = fileExtension === 'pdf';
+    
     const fileUrl = `${API_BASE_URL}/documents/${docId}/file?cache=${Date.now()}`;
+    
     try {
-        pdfDocInstance = await window.pdfjsLib.getDocument(fileUrl).promise;
-        currentOverlayChunks = document.detected_chunks || [];
+        // Get auth token
+        const token = getAuthToken();
+        const headers = {};
+        if (token) {
+            headers['Authorization'] = `Bearer ${token}`;
+        }
+        
+        if (isImage) {
+            // Render image file
+            if (pageIndicator) {
+                pageIndicator.textContent = 'Image';
+            }
+            
+            // Disable navigation buttons for images
+            if (pdfPrevButton) pdfPrevButton.disabled = true;
+            if (pdfNextButton) pdfNextButton.disabled = true;
+            
+            // Create image element - use window.document to access global document object
+            const img = window.document.createElement('img');
+            img.style.maxWidth = '100%';
+            img.style.height = 'auto';
+            img.style.display = 'block';
+            img.style.margin = '0 auto';
+            img.style.borderRadius = '8px';
+            img.style.boxShadow = '0 2px 8px rgba(0,0,0,0.1)';
+            
+            // Handle image load
+            img.onload = () => {
+                // Draw overlays if chunks are available
+                currentOverlayChunks = docData.detected_chunks || [];
+                if (currentOverlayChunks && currentOverlayChunks.length > 0) {
+                    drawImageOverlays(img, currentOverlayChunks);
+                }
+            };
+            
+            img.onerror = () => {
+                pdfWrapper.innerHTML = `<div style="padding: 20px; text-align: center; color: var(--text-secondary);">
+                    <p>Unable to load image preview.</p>
+                </div>`;
+            };
+            
+            // Load image with authentication
+            if (token) {
+                // For images, we need to use fetch and create object URL
+                fetch(fileUrl, {
+                    credentials: 'include',
+                    headers: headers
+                })
+                .then(response => {
+                    if (!response.ok) throw new Error('Failed to load image');
+                    return response.blob();
+                })
+                .then(blob => {
+                    const objectUrl = URL.createObjectURL(blob);
+                    img.src = objectUrl;
+                    pdfWrapper.innerHTML = '';
+                    pdfWrapper.appendChild(img);
+                })
+                .catch(error => {
+                    console.error('Error loading image:', error);
+                    pdfWrapper.innerHTML = `<div style="padding: 20px; text-align: center; color: var(--text-secondary);">
+                        <p>Unable to load image preview.</p>
+                        <p style="font-size: 0.85rem; margin-top: 8px;">${error.message || 'Unknown error'}</p>
+                    </div>`;
+                });
+            } else {
+                img.src = fileUrl;
+                pdfWrapper.innerHTML = '';
+                pdfWrapper.appendChild(img);
+            }
+            
+        } else if (isPdf && window.pdfjsLib) {
+            // Render PDF file
+            const loadingTask = window.pdfjsLib.getDocument({
+                url: fileUrl,
+                httpHeaders: headers,
+                withCredentials: true
+            });
+            
+            pdfDocInstance = await loadingTask.promise;
+            currentOverlayChunks = docData.detected_chunks || [];
         
         // Pre-assign numbers to all chunks for consistent labeling
         if (currentOverlayChunks) {
@@ -1562,12 +2094,121 @@ async function renderDocumentPreview(document) {
         }
         
         await renderAllPdfPages();
+        } else {
+            // Unsupported file type
+            pdfWrapper.innerHTML = `<div style="padding: 20px; text-align: center; color: var(--text-secondary);">
+                <p>Preview not available for this file type.</p>
+            </div>`;
+            if (pageIndicator) {
+                pageIndicator.textContent = 'Preview unavailable';
+            }
+        }
     } catch (error) {
-        console.error('Error loading PDF preview:', error);
+        console.error('Error loading preview:', error);
         if (pageIndicator) {
             pageIndicator.textContent = 'Preview unavailable';
         }
+        // Show error message in PDF wrapper
+        if (pdfWrapper) {
+            pdfWrapper.innerHTML = `<div style="padding: 20px; text-align: center; color: var(--text-secondary);">
+                <p>Unable to load preview. Please try again.</p>
+                <p style="font-size: 0.85rem; margin-top: 8px;">${error.message || 'Unknown error'}</p>
+            </div>`;
+        }
     }
+}
+
+// Draw overlays on image
+function drawImageOverlays(imgElement, chunks) {
+    if (!imgElement || !chunks || chunks.length === 0) return;
+    
+    // Wait for image to load
+    if (!imgElement.complete) {
+        imgElement.onload = () => drawImageOverlays(imgElement, chunks);
+        return;
+    }
+    
+    // Get image dimensions after load
+    const imgWidth = imgElement.naturalWidth || imgElement.width;
+    const imgHeight = imgElement.naturalHeight || imgElement.height;
+    const displayWidth = imgElement.offsetWidth || imgElement.clientWidth;
+    const displayHeight = imgElement.offsetHeight || imgElement.clientHeight;
+    
+    if (!imgWidth || !imgHeight) {
+        // Wait a bit more if dimensions aren't available
+        setTimeout(() => drawImageOverlays(imgElement, chunks), 100);
+        return;
+    }
+    
+    const scaleX = displayWidth / imgWidth;
+    const scaleY = displayHeight / imgHeight;
+    
+    // Create overlay container
+    const overlay = window.document.createElement('div');
+    overlay.className = 'pdf-overlay';
+    overlay.style.position = 'absolute';
+    overlay.style.top = '0';
+    overlay.style.left = '0';
+    overlay.style.width = `${displayWidth}px`;
+    overlay.style.height = `${displayHeight}px`;
+    overlay.style.pointerEvents = 'none';
+    overlay.style.zIndex = '10';
+    
+    // Draw bounding boxes for chunks
+    chunks.forEach(chunk => {
+        if (chunk.bbox && Array.isArray(chunk.bbox) && chunk.bbox.length >= 4) {
+            const [x, y, width, height] = chunk.bbox;
+            
+            const box = window.document.createElement('div');
+            box.className = 'overlay-box';
+            box.style.left = `${x * scaleX}px`;
+            box.style.top = `${y * scaleY}px`;
+            box.style.width = `${width * scaleX}px`;
+            box.style.height = `${height * scaleY}px`;
+            
+            const chunkType = (chunk.type || 'text').toLowerCase();
+            const label = getNumberedLabel(chunkType, chunk.id || '');
+            
+            const labelSpan = window.document.createElement('span');
+            labelSpan.textContent = label;
+            labelSpan.className = 'overlay-label';
+            box.appendChild(labelSpan);
+            
+            // Add hover event listeners to show/hide label
+            box.addEventListener('mouseenter', () => {
+                labelSpan.style.opacity = '1';
+                labelSpan.style.visibility = 'visible';
+            });
+            box.addEventListener('mouseleave', () => {
+                labelSpan.style.opacity = '0';
+                labelSpan.style.visibility = 'hidden';
+            });
+            // Also support touch events for mobile
+            box.addEventListener('touchstart', () => {
+                labelSpan.style.opacity = '1';
+                labelSpan.style.visibility = 'visible';
+            });
+            
+            overlay.appendChild(box);
+        }
+    });
+    
+    // Wrap image and overlay in container if not already wrapped
+    let container = imgElement.parentElement;
+    if (!container || !container.classList.contains('image-container')) {
+        container = window.document.createElement('div');
+        container.className = 'image-container';
+        container.style.position = 'relative';
+        container.style.display = 'inline-block';
+        container.style.width = '100%';
+        container.style.textAlign = 'center';
+        
+        const parent = imgElement.parentNode;
+        parent.insertBefore(container, imgElement);
+        container.appendChild(imgElement);
+    }
+    
+    container.appendChild(overlay);
 }
 
 // Render all PDF pages stacked vertically
@@ -1713,7 +2354,7 @@ function drawPageOverlays(overlayElement, viewport, pageNumber) {
     overlays.forEach(chunk => {
         if (!chunk.box) return;
         const box = chunk.box;
-        const overlayBox = document.createElement('div');
+        const overlayBox = window.document.createElement('div');
         overlayBox.className = 'overlay-box';
         overlayBox.style.position = 'absolute';
         overlayBox.style.left = `${box.left * viewport.width}px`;
@@ -1729,20 +2370,30 @@ function drawPageOverlays(overlayElement, viewport, pageNumber) {
         overlayBox.style.pointerEvents = 'auto';
         overlayBox.style.cursor = 'pointer';
 
-        const label = document.createElement('span');
+        const label = window.document.createElement('span');
         const chunkType = (chunk.type || 'zone').toLowerCase();
         // Get numbered label based on type
         const numberedLabel = getNumberedLabel(chunkType, chunkId || '');
         label.textContent = numberedLabel;
+        label.className = 'overlay-label';
         overlayBox.appendChild(label);
 
         overlayBox.addEventListener('mouseenter', () => {
+            label.style.opacity = '1';
+            label.style.visibility = 'visible';
             highlightChunk(chunkId || '');
             highlightMarkdownSection(chunkId || '');
         });
         overlayBox.addEventListener('mouseleave', () => {
+            label.style.opacity = '0';
+            label.style.visibility = 'hidden';
             highlightChunk(null);
             highlightMarkdownSection(null);
+        });
+        // Also support touch events for mobile
+        overlayBox.addEventListener('touchstart', () => {
+            label.style.opacity = '1';
+            label.style.visibility = 'visible';
         });
         overlayBox.addEventListener('click', (e) => {
             e.stopPropagation();
@@ -1779,7 +2430,7 @@ function drawOverlays(viewport) {
     overlays.forEach(chunk => {
         if (!chunk.box) return;
         const box = chunk.box;
-        const overlayBox = document.createElement('div');
+        const overlayBox = window.document.createElement('div');
         overlayBox.className = 'overlay-box';
         overlayBox.style.left = `${box.left * viewport.width}px`;
         overlayBox.style.top = `${box.top * viewport.height}px`;
@@ -1792,19 +2443,29 @@ function drawOverlays(viewport) {
         }
         overlayBox.dataset.chunkId = chunkId || '';
 
-        const label = document.createElement('span');
+        const label = window.document.createElement('span');
         const chunkType = (chunk.type || 'zone').toLowerCase();
         const numberedLabel = getNumberedLabel(chunkType, chunkId || '');
         label.textContent = numberedLabel;
+        label.className = 'overlay-label';
         overlayBox.appendChild(label);
 
         overlayBox.addEventListener('mouseenter', () => {
+            label.style.opacity = '1';
+            label.style.visibility = 'visible';
             highlightChunk(chunkId || '');
             highlightMarkdownSection(chunkId || '');
         });
         overlayBox.addEventListener('mouseleave', () => {
+            label.style.opacity = '0';
+            label.style.visibility = 'hidden';
             highlightChunk(null);
             highlightMarkdownSection(null);
+        });
+        // Also support touch events for mobile
+        overlayBox.addEventListener('touchstart', () => {
+            label.style.opacity = '1';
+            label.style.visibility = 'visible';
         });
         overlayBox.addEventListener('click', (e) => {
             e.stopPropagation();

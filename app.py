@@ -242,8 +242,13 @@ async def upload_document(
     # Generate document ID
     document_id = str(uuid.uuid4())
     
-    # Save file to temporary location
-    temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
+    # Detect file extension from original filename
+    file_ext = os.path.splitext(file.filename)[1] if file.filename else '.pdf'
+    if not file_ext:
+        file_ext = '.pdf'  # Default to PDF if no extension
+    
+    # Save file to temporary location with correct extension
+    temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=file_ext)
     temp_file_path = temp_file.name
     
     try:
@@ -383,7 +388,7 @@ async def get_document(document_id: str, current_user: dict = Depends(get_curren
 
 @app.get("/documents/{document_id}/file")
 async def download_document(document_id: str, current_user: dict = Depends(get_current_user)):
-    """Download the original PDF for preview overlays"""
+    """Download the original file for preview (PDF or image)"""
     if document_id not in documents:
         raise HTTPException(status_code=404, detail="Document not found")
     
@@ -396,7 +401,22 @@ async def download_document(document_id: str, current_user: dict = Depends(get_c
         raise HTTPException(status_code=404, detail="Document file not found")
     
     filename = documents[document_id].get("filename") or f"{document_id}.pdf"
-    return FileResponse(path=file_path, media_type="application/pdf", filename=filename)
+    
+    # Detect media type from file extension
+    file_ext = os.path.splitext(filename)[1].lower()
+    media_type_map = {
+        '.pdf': 'application/pdf',
+        '.png': 'image/png',
+        '.jpg': 'image/jpeg',
+        '.jpeg': 'image/jpeg',
+        '.gif': 'image/gif',
+        '.bmp': 'image/bmp',
+        '.tiff': 'image/tiff',
+        '.webp': 'image/webp'
+    }
+    media_type = media_type_map.get(file_ext, 'application/octet-stream')
+    
+    return FileResponse(path=file_path, media_type=media_type, filename=filename)
 
 @app.post("/documents/chat", response_model=ChatResponse)
 async def chat_with_document(query: ChatQuery, current_user: dict = Depends(get_current_user)):
@@ -483,7 +503,12 @@ async def login_page():
 async def dashboard_page():
     """Serve the dashboard page"""
     if os.path.exists("index.html"):
-        return FileResponse("index.html")
+        response = FileResponse("index.html")
+        # Prevent caching to ensure fresh CSS/JS loads
+        response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+        return response
     raise HTTPException(status_code=404, detail="Dashboard not found")
 
 # Root redirect
