@@ -1,13 +1,31 @@
+# Core Framework
 fastapi==0.104.1
 uvicorn==0.24.0.post1
 python-multipart==0.0.6
+
+# Data Validation
 pydantic==2.4.2
-pydantic[email]
+pydantic[email]==2.4.2
+email-validator==2.3.0
+
+# HTTP & API
 requests==2.31.0
+
+# Data Processing
 numpy==1.26.4
+
+# PDF Processing
 PyPDF2==3.0.1
-python-dotenv
-landingai-ade
+
+# Environment & Configuration
+python-dotenv==1.1.1
+
+# AI/ML Services
+landingai-ade>=0.21.2
+openai>=1.12.0
+
+# HTML Parsing
 beautifulsoup4==4.12.2
-supabase
-email-validator
+
+# Database & Storage
+supabase>=2.24.0
