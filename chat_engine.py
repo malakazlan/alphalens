@@ -24,6 +24,10 @@ def is_query_relevant_to_document(query: str, financial_data: Dict[str, Any] = N
         r'^\d+\s*[+\-*/]\s*\d+',  # "2+2", "5-3", "10*2", "8/4"
         r'what is \d+\s*[+\-*/]\s*\d+',  # "what is 2+2"
         r'calculate \d+\s*[+\-*/]\s*\d+',  # "calculate 2+2"
+        r'^\d+\s*plus\s*\d+',  # "2 plus 2"
+        r'^\d+\s*minus\s*\d+',  # "5 minus 3"
+        r'^\d+\s*times\s*\d+',  # "2 times 3"
+        r'^\d+\s*divided by\s*\d+',  # "10 divided by 2"
     ]
     for pattern in math_patterns:
         if re.search(pattern, query_lower):
@@ -37,6 +41,13 @@ def is_query_relevant_to_document(query: str, financial_data: Dict[str, Any] = N
         'tell me a joke',
         'what time is it',
         'what day is it',
+        'who invented',
+        'when was',
+        'where is',
+        'what is the population of',
+        'explain quantum physics',
+        'what is gravity',
+        'how does photosynthesis work',
     ]
     for gq in general_questions:
         if gq in query_lower:
@@ -80,6 +91,74 @@ def is_query_relevant_to_document(query: str, financial_data: Dict[str, Any] = N
     # Default: assume relevant (let vector search decide)
     return True
 
+def is_financial_term_question(query: str) -> bool:
+    """Check if the query is asking for a financial term definition."""
+    query_lower = query.lower().strip()
+    
+    financial_term_patterns = [
+        r'what is (an? )?(.*?)(?:mean|meaning|definition|explain)',
+        r'explain (.*?)(?:term|concept)',
+        r'what does (.*?) mean',
+        r'define (.*?)',
+        r'what is (.*?)(?:in finance|financial)',
+    ]
+    
+    financial_terms = [
+        'revenue', 'income', 'profit', 'loss', 'asset', 'liability', 'equity',
+        'cash flow', 'ebitda', 'eps', 'roe', 'roi', 'debt', 'leverage',
+        'margin', 'depreciation', 'amortization', 'balance sheet', 'income statement',
+        'cash flow statement', 'working capital', 'current ratio', 'quick ratio',
+        'debt to equity', 'price to earnings', 'dividend', 'yield', 'volatility',
+        'beta', 'alpha', 'hedge', 'derivative', 'option', 'futures', 'swap',
+        'bond', 'stock', 'security', 'portfolio', 'diversification', 'risk',
+        'return', 'yield', 'maturity', 'coupon', 'principal', 'interest',
+        'inflation', 'deflation', 'recession', 'depression', 'gdp', 'cpi',
+        'federal reserve', 'monetary policy', 'fiscal policy', 'tax',
+        'deduction', 'credit', 'audit', 'compliance', 'gaap', 'ifrs',
+        'accrual', 'cash basis', 'amortization', 'depreciation', 'goodwill',
+        'intangible', 'tangible', 'liquidity', 'solvency', 'bankruptcy',
+        'merger', 'acquisition', 'ipo', 'secondary offering', 'dividend',
+        'stock split', 'reverse split', 'buyback', 'dilution', 'warrant',
+        'convertible', 'preferred stock', 'common stock', 'treasury stock'
+    ]
+    
+    # Check if query matches financial term patterns
+    for pattern in financial_term_patterns:
+        if re.search(pattern, query_lower):
+            # Extract potential term
+            match = re.search(pattern, query_lower)
+            if match:
+                potential_term = match.group(1) or match.group(2) or ""
+                # Check if it's a known financial term
+                if any(term in potential_term.lower() for term in financial_terms):
+                    return True
+    
+    # Direct check for "what is [financial term]"
+    for term in financial_terms:
+        if f'what is {term}' in query_lower or f'explain {term}' in query_lower or f'define {term}' in query_lower:
+            return True
+    
+    return False
+
+def is_math_question(query: str) -> bool:
+    """Check if the query is a math question."""
+    query_lower = query.lower().strip()
+    
+    math_patterns = [
+        r'^\d+\s*[+\-*/]\s*\d+',  # "2+2", "5-3"
+        r'what is \d+\s*[+\-*/]\s*\d+',  # "what is 2+2"
+        r'calculate \d+\s*[+\-*/]\s*\d+',  # "calculate 2+2"
+        r'^\d+\s*(plus|minus|times|divided by|multiplied by)\s*\d+',  # "2 plus 2"
+        r'solve \d+\s*[+\-*/]\s*\d+',  # "solve 2+2"
+        r'\d+\s*[+\-*/]\s*\d+\s*=',  # "2+2="
+    ]
+    
+    for pattern in math_patterns:
+        if re.search(pattern, query_lower):
+            return True
+    
+    return False
+
 
 def get_answer_from_document(
     query: str,
@@ -98,7 +177,25 @@ def get_answer_from_document(
     # Check if query is relevant to the document
     query_lower = query.lower().strip()
     
-    # First, check if this is an irrelevant question (math, general knowledge, etc.)
+    # Check for math questions first
+    if is_math_question(query):
+        answer = handle_math_question(query)
+        return {
+            "answer": answer,
+            "sources": [],
+            "source": "math_calculator"
+        }
+    
+    # Check for financial term questions (should be answered even if not in doc)
+    if is_financial_term_question(query):
+        answer = handle_financial_term_question(query)
+        return {
+            "answer": answer,
+            "sources": [],
+            "source": "financial_glossary"
+        }
+    
+    # Check for general knowledge questions (not about document)
     if not is_query_relevant_to_document(query, financial_data):
         # Handle irrelevant questions directly and briefly
         answer = handle_irrelevant_question(query)
@@ -599,17 +696,27 @@ def _generate_fallback_summary(financial_data: Dict[str, Any]) -> str:
     return "\n".join(parts)
 
 
-def handle_irrelevant_question(query: str) -> str:
-    """Handle questions that are not related to the document."""
+def handle_math_question(query: str) -> str:
+    """Handle math questions with calculation."""
     query_lower = query.lower().strip()
     
-    # Handle math questions
-    math_match = re.search(r'(\d+)\s*([+\-*/])\s*(\d+)', query_lower)
+    # Try to extract math expression
+    math_match = re.search(r'(\d+)\s*([+\-*/]|plus|minus|times|divided by|multiplied by)\s*(\d+)', query_lower)
     if math_match:
         try:
             num1 = int(math_match.group(1))
-            operator = math_match.group(2)
+            operator_str = math_match.group(2)
             num2 = int(math_match.group(3))
+            
+            # Convert word operators to symbols
+            operator_map = {
+                'plus': '+',
+                'minus': '-',
+                'times': '*',
+                'multiplied by': '*',
+                'divided by': '/'
+            }
+            operator = operator_map.get(operator_str, operator_str)
             
             if operator == '+':
                 result = num1 + num2
@@ -629,10 +736,61 @@ def handle_irrelevant_question(query: str) -> str:
                 result = int(result)
             
             return f"{result}\n\n*Note: This question is not related to the document content.*"
-        except:
+        except Exception as e:
+            print(f"Error calculating math: {e}")
             pass
     
-    # Handle other general questions - use LLM for brief answer
+    return f"I can help with that, but this question is not related to the document. Please ask questions about the document content instead."
+
+def handle_financial_term_question(query: str) -> str:
+    """Handle financial term definition questions with expert explanation."""
+    try:
+        if openai:
+            from config import settings
+            
+            api_key = settings.OPENAI_API_KEY or os.environ.get("OPENAI_API_KEY")
+            if api_key:
+                client = openai.OpenAI(api_key=api_key)
+                
+                # Extract the term being asked about
+                term_match = re.search(r'(?:what is|explain|define)\s+(?:an?|the)?\s*([^?]+)', query.lower())
+                term = term_match.group(1).strip() if term_match else query
+                
+                prompt = f"""You are a financial expert and educator. Explain the financial term "{term}" in a clear, concise, and professional manner.
+
+REQUIREMENTS:
+1. **Definition**: Provide a clear, one-sentence definition
+2. **Explanation**: Explain what it means in practical terms (2-3 sentences)
+3. **Context**: Explain when/why it's used in finance (1-2 sentences)
+4. **Example**: Provide a simple, concrete example if helpful (1 sentence)
+5. **Format**: Use markdown formatting:
+   - Use **bold** for the term name
+   - Use bullet points if listing multiple aspects
+   - Keep total response to 4-6 sentences maximum
+
+Be professional, accurate, and educational. If the term is not a financial term, say so briefly.
+
+Term to explain: {term}"""
+                
+                response = client.chat.completions.create(
+                    model="gpt-4",
+                    messages=[
+                        {"role": "system", "content": "You are a financial expert and educator. Explain financial terms clearly, concisely, and professionally. Always provide practical context and examples."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    temperature=0.3,
+                    max_tokens=300
+                )
+                answer = response.choices[0].message.content.strip()
+                return f"{answer}\n\n*Note: This explanation is general financial knowledge, not specific to the document.*"
+    except Exception as e:
+        print(f"Error handling financial term question: {e}")
+        pass
+    
+    return f"I can help explain financial terms, but I need more context. Please rephrase your question about the financial term you'd like explained.\n\n*Note: This question is not related to the document content.*"
+
+def handle_irrelevant_question(query: str) -> str:
+    """Handle general knowledge questions that are not related to the document."""
     try:
         if openai:
             from config import settings
@@ -643,11 +801,11 @@ def handle_irrelevant_question(query: str) -> str:
                 response = client.chat.completions.create(
                     model="gpt-3.5-turbo",
                     messages=[
-                        {"role": "system", "content": "You are a helpful assistant. Answer questions directly and concisely in 1-2 sentences maximum."},
+                        {"role": "system", "content": "You are a helpful assistant. Answer questions directly and concisely in exactly 1 sentence maximum. Be factual and brief."},
                         {"role": "user", "content": query}
                     ],
                     temperature=0.3,
-                    max_tokens=100
+                    max_tokens=80
                 )
                 answer = response.choices[0].message.content.strip()
                 return f"{answer}\n\n*Note: This question is not related to the document content.*"

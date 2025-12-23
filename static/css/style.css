@@ -3700,6 +3700,178 @@ button:hover {
     font-weight: 600;
 }
 
+/* Professional Report Content Styling */
+.professional-report-content {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    color: var(--text);
+    line-height: 1.8;
+    max-width: 100%;
+}
+
+.professional-report-content .report-h1 {
+    font-size: 2rem;
+    font-weight: 700;
+    color: var(--text);
+    margin: 2rem 0 1rem 0;
+    padding-bottom: 0.5rem;
+    border-bottom: 2px solid var(--border);
+}
+
+.professional-report-content .report-h2 {
+    font-size: 1.5rem;
+    font-weight: 600;
+    color: var(--text);
+    margin: 1.5rem 0 1rem 0;
+    padding-bottom: 0.5rem;
+    border-bottom: 1px solid var(--border-light);
+}
+
+.professional-report-content .report-h3 {
+    font-size: 1.25rem;
+    font-weight: 600;
+    color: var(--text);
+    margin: 1.25rem 0 0.75rem 0;
+}
+
+.professional-report-content .report-h4 {
+    font-size: 1.1rem;
+    font-weight: 600;
+    color: var(--text-secondary);
+    margin: 1rem 0 0.5rem 0;
+}
+
+.professional-report-content .report-paragraph {
+    margin: 1rem 0;
+    color: var(--text);
+    line-height: 1.8;
+    text-align: justify;
+}
+
+.professional-report-content .report-list {
+    margin: 1rem 0;
+    padding-left: 2rem;
+    list-style-type: disc;
+}
+
+.professional-report-content .report-list-item {
+    margin: 0.5rem 0;
+    line-height: 1.8;
+    color: var(--text);
+}
+
+.professional-report-content .report-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 1.5rem 0;
+    font-size: 0.9rem;
+    box-shadow: var(--shadow);
+    border-radius: 8px;
+    overflow: hidden;
+}
+
+.professional-report-content .report-table-cell {
+    padding: 0.75rem 1rem;
+    border: 1px solid var(--border);
+    text-align: left;
+}
+
+.professional-report-content .report-table tr:first-child .report-table-cell {
+    background-color: var(--bg-secondary);
+    font-weight: 600;
+    color: var(--text);
+}
+
+.professional-report-content .report-table tr:nth-child(even) {
+    background-color: var(--bg-soft);
+}
+
+.professional-report-content .report-code-block {
+    background-color: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 1rem;
+    margin: 1rem 0;
+    overflow-x: auto;
+    font-family: 'Courier New', monospace;
+    font-size: 0.85rem;
+    line-height: 1.6;
+}
+
+.professional-report-content .report-code-block code {
+    color: var(--text);
+    background: transparent;
+    padding: 0;
+}
+
+.professional-report-content .report-blockquote {
+    border-left: 4px solid var(--accent);
+    padding-left: 1.5rem;
+    margin: 1rem 0;
+    color: var(--text-secondary);
+    font-style: italic;
+    background-color: var(--accent-soft);
+    padding: 1rem 1.5rem;
+    border-radius: 4px;
+}
+
+.professional-report-content .report-hr {
+    border: none;
+    border-top: 2px solid var(--border);
+    margin: 2rem 0;
+}
+
+.professional-report-content strong {
+    font-weight: 600;
+    color: var(--text);
+}
+
+.professional-report-content em {
+    font-style: italic;
+    color: var(--text-secondary);
+}
+
+.professional-report-content a {
+    color: var(--accent);
+    text-decoration: none;
+    border-bottom: 1px solid transparent;
+    transition: all 0.2s ease;
+}
+
+.professional-report-content a:hover {
+    color: var(--accent-hover);
+    border-bottom-color: var(--accent);
+}
+
+/* Loading Spinner */
+.loading-spinner {
+    border: 3px solid var(--border-light);
+    border-top: 3px solid var(--accent);
+    border-radius: 50%;
+    width: 40px;
+    height: 40px;
+    animation: spin 1s linear infinite;
+    margin: 20px auto;
+    display: inline-block;
+    vertical-align: middle;
+}
+
+.loading-container {
+    text-align: center;
+    padding: 40px;
+}
+
+.loading-container p {
+    margin-top: 20px;
+    color: var(--text-secondary);
+    display: block;
+    animation: none;
+}
+
+@keyframes spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+}
+
 .report-modal-footer {
     display: flex;
     gap: 12px;

@@ -2118,9 +2118,9 @@ function scrollToMarkdownSection(chunkId) {
         const scrollContainer = parseContent;
         if (scrollContainer) {
             scrollContainer.scrollTo({
-                top: finalScroll,
-                behavior: 'smooth'
-            });
+            top: finalScroll,
+            behavior: 'smooth'
+        });
             
             // Also ensure the section is visible by scrolling it into view within the container
             // Use a small delay to ensure the container is ready

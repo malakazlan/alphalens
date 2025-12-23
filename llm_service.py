@@ -539,7 +539,7 @@ CRITICAL - USE BULLET POINTS:
 Your response (bullet points only, markdown format):
 """
             else:
-                prompt = f"""You are ALPHA LENS, a document analysis assistant. Answer questions directly and concisely.
+                prompt = f"""You are ALPHA LENS, an expert financial document analysis assistant. Answer questions with precision, context, and clarity.
 
 Document metadata:
 {metadata_text}
@@ -553,30 +553,49 @@ Context blocks (each block is labeled with an ID in brackets):
 
 Question: {query}
 
-CRITICAL - BE EXTREMELY CONCISE:
-1. **Answer Structure**:
-   - Maximum 2-3 sentences
-   - Start with direct answer
-   - Add 1 sentence of context if needed
-   - Use **bold** for key terms if helpful
+EXPERT-LEVEL RESPONSE GUIDELINES:
+
+1. **Answer Structure** (2-4 sentences):
+   - **First sentence**: Direct, factual answer to the question
+   - **Second sentence**: Context or explanation from the document
+   - **Third sentence** (if needed): Additional detail or implication
+   - **Fourth sentence** (if needed): Related information or clarification
+
+2. **Financial Terminology**:
+   - If the question involves financial terms (revenue, EBITDA, leverage, etc.), briefly explain what the term means in context
+   - Example: "Revenue of $5M represents total income from sales [explain briefly if term is complex]"
+   - Use **bold** for key numbers, names, and important terms
+
+3. **Mathematical Context**:
+   - If the answer involves calculations or numbers, explain the calculation method briefly
+   - Show relationships between numbers when relevant
+   - Example: "Net income of $2M is calculated as Revenue ($5M) minus Expenses ($3M)"
+
+4. **Content Accuracy**:
+   - Answer ONLY from the document context provided
+   - If information is not in the document: "The document doesn't provide this information" (1 sentence)
+   - Never guess or assume - be explicit about data availability
+
+5. **Citations**: 
+   - Add [[chunk_id]] at the end of sentences that reference specific document sections
+   - Cite sources for all numbers and facts
+
+6. **Formatting**:
+   - Use **bold** for important numbers, names, dates, and key terms
    - Use bullet points (-) only when listing 3+ items
+   - Use markdown for better readability
 
-2. **Content**:
-   - Answer directly from the document
-   - If not found: "The document doesn't provide this information" (1 sentence)
-
-3. **Citations**: Add [[chunk_id]] at the end of relevant sentences
-
-4. **NEVER**: 
-   - Write more than 3 sentences
+7. **NEVER**: 
+   - Write more than 4 sentences
    - Give full document summaries
    - Be verbose or repetitive
+   - Hallucinate numbers or facts not in the document
 
-Your response (2-3 sentences max):
+Your response (2-4 sentences, expert-level analysis):
 """
             
             # Adjust max_tokens based on question type
-            max_tokens = 50 if is_simple_question else 150
+            max_tokens = 50 if is_simple_question else 250  # Increased for expert-level explanations
             
             system_message = "You are ALPHA LENS, a document assistant. Answer questions directly and concisely. For simple questions, answer in 1 sentence. Never be verbose."
             if is_simple_question:
@@ -821,6 +840,265 @@ Your response (use markdown formatting):
             return "This document has been processed. However, no structured summary information is available. You can ask specific questions about the document content."
         
         return "\n".join(parts)
+
+    def generate_professional_financial_report(self, financial_data: Dict[str, Any]) -> str:
+        """
+        Generate a professional, compliance-grade Financial Analysis Report
+        following institutional standards (Bloomberg/Reuters style)
+        """
+        try:
+            if not self.openai_api_key:
+                print("OpenAI API key not found. Please set OPENAI_API_KEY.")
+                return self._generate_basic_summary(financial_data)
+            
+            client = openai.OpenAI(api_key=self.openai_api_key)
+            
+            # Extract all available data
+            metadata = financial_data.get("metadata", {})
+            key_metrics = financial_data.get("key_metrics", [])
+            tables = financial_data.get("tables", [])
+            detected_chunks = financial_data.get("detected_chunks", [])
+            document_markdown = financial_data.get("document_markdown", "") or financial_data.get("markdown", "")
+            
+            # Build comprehensive data context
+            data_context = []
+            
+            # Metadata
+            if metadata:
+                metadata_text = "DOCUMENT METADATA:\n"
+                for key, value in metadata.items():
+                    if value:
+                        metadata_text += f"- {key.replace('_', ' ').title()}: {value}\n"
+                data_context.append(metadata_text)
+            
+            # Key Metrics
+            if key_metrics:
+                metrics_text = "KEY FINANCIAL METRICS:\n"
+                for metric in key_metrics:
+                    name = metric.get("name", "")
+                    value = metric.get("value", "")
+                    unit = metric.get("unit", "")
+                    if name and value is not None:
+                        if isinstance(value, (int, float)):
+                            formatted = f"${value:,.2f}" if unit == "USD" else f"{value:,}"
+                        else:
+                            formatted = str(value)
+                        metrics_text += f"- {name}: {formatted} {unit}\n"
+                data_context.append(metrics_text)
+            
+            # Tables with page references
+            if tables:
+                tables_text = "EXTRACTED TABLES:\n"
+                for idx, table in enumerate(tables, 1):
+                    table_title = table.get("title", f"Table {idx}")
+                    page = table.get("page", table.get("page_number", "N/A"))
+                    headers = table.get("header", [])
+                    rows = table.get("rows", []) or table.get("data", [])
+                    
+                    tables_text += f"\n[Table-{idx} Page {page}]\n"
+                    tables_text += f"Title: {table_title}\n"
+                    if headers:
+                        tables_text += f"Headers: {', '.join(str(h) for h in headers)}\n"
+                    if rows:
+                        # Show first 3 rows as sample
+                        for row_idx, row in enumerate(rows[:3], 1):
+                            if isinstance(row, list):
+                                row_str = " | ".join(str(cell) for cell in row)
+                            else:
+                                row_str = str(row)
+                            tables_text += f"Row {row_idx}: {row_str}\n"
+                        if len(rows) > 3:
+                            tables_text += f"... ({len(rows) - 3} more rows)\n"
+                data_context.append(tables_text)
+            
+            # Detected chunks with references
+            if detected_chunks:
+                chunks_text = "DOCUMENT SECTIONS:\n"
+                for idx, chunk in enumerate(detected_chunks[:10], 1):
+                    chunk_type = chunk.get("type", "text")
+                    page = chunk.get("page", chunk.get("page_number", "N/A"))
+                    content = chunk.get("markdown", chunk.get("text", chunk.get("content", "")))
+                    if content:
+                        preview = content[:150].replace("\n", " ")
+                        chunks_text += f"[Section-{idx} Page {page}] Type: {chunk_type}\n"
+                        chunks_text += f"Preview: {preview}...\n\n"
+                data_context.append(chunks_text)
+            
+            # Document content (first 5000 chars)
+            if document_markdown:
+                content_preview = document_markdown[:5000]
+                data_context.append(f"DOCUMENT CONTENT PREVIEW:\n{content_preview}\n...")
+            
+            full_context = "\n\n".join(data_context)
+            
+            # Generate report date
+            from datetime import datetime
+            report_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            
+            # Company/Document name
+            company_name = metadata.get("company_name") or metadata.get("document_name") or "Unknown Company"
+            doc_type = metadata.get("document_type", "Financial Document")
+            
+            prompt = f"""You are an expert financial analyst and compliance-grade report writer for ALPHA LENS.
+
+Generate a comprehensive, detailed, and highly explanatory Financial Analysis Report strictly based on the structured financial data provided below.
+
+MANDATORY RULES:
+- DO NOT hallucinate or create numbers.
+- ONLY use values present in structured data, extracted tables, or verified sources.
+- Link every key statement to its source using [Ref: Section/Page/X] or [Ref: Table-X Page Y].
+- Maintain professional, factual, analytical tone.
+- Avoid conversational language.
+- Use precise financial terminology.
+- If data is missing, explicitly state "Data Not Available".
+- If uncertainty exists, state it clearly.
+- No speculation, no opinions.
+- **CRITICAL: Be EXTREMELY DETAILED and EXPLANATORY** - Each heading and subheading must have comprehensive explanations, context, and analysis. Do not just list facts - explain what they mean, why they matter, and their implications.
+
+STRUCTURED DATA PROVIDED:
+{full_context}
+
+REPORT STRUCTURE (Follow EXACTLY with DETAILED EXPLANATIONS):
+
+1. Report Header
+Provide a comprehensive header section with:
+- System Name: ALPHA LENS
+- Company / Document Name: {company_name}
+- Report Type: {doc_type}
+- Date Generated: {report_date}
+- Source Document Reference: {metadata.get('filename', 'N/A')}
+- **Explanation**: Provide 2-3 sentences explaining what this report covers, its purpose, and the scope of analysis.
+
+2. Executive Summary
+Provide a detailed executive summary (8-12 sentences) that includes:
+- Overall financial health assessment with detailed explanation
+- Key financial direction (growth/decline/stability) with supporting context
+- Major findings and their significance
+- Key risks and opportunities identified
+- Confidence summary with explanation of data quality
+- **Each point must be explained in detail, not just stated**
+
+3. Key Financial Metrics (Table with Detailed Explanations)
+Create a comprehensive section that includes:
+- A detailed table with:
+  * Revenue (with explanation of what this represents)
+  * Net Income (with explanation of profitability context)
+  * EPS (with explanation of shareholder value)
+  * Operating Cash Flow (with explanation of liquidity)
+  * Assets (with explanation of resource base)
+  * Liabilities (with explanation of obligations)
+  * Debt Ratio (with explanation of leverage)
+  * YoY Growth (with explanation of trends)
+- **After the table, provide 3-4 paragraphs explaining:**
+  * What each metric means in the context of this document
+  * How these metrics relate to each other
+  * What the metrics indicate about the entity's financial position
+  * Industry context or benchmarks if applicable
+- If missing, mark "Not Available" and explain why it might be missing
+
+4. Performance Analysis
+Provide extremely detailed analytical explanations (minimum 6-8 paragraphs):
+- **Revenue Analysis**: Detailed explanation of revenue behavior, trends, sources, seasonality, growth patterns, and what drives revenue changes. Include comparisons and context.
+- **Profitability Analysis**: Comprehensive explanation of profitability movement, margins, cost efficiency, profit drivers, and sustainability of earnings.
+- **Cost Structure Analysis**: Detailed breakdown of cost behavior, cost drivers, fixed vs variable costs, cost trends, and efficiency indicators.
+- **Cash Flow Analysis**: In-depth explanation of cash flow health, operating cash flow patterns, investing activities, financing activities, and liquidity position.
+- **Financial Stability Indicators**: Comprehensive analysis of solvency, liquidity ratios, working capital, debt capacity, and financial flexibility.
+- **Every statement MUST include: [Ref: Source Table / Section / Page]**
+- **Each subsection must have 2-3 paragraphs of detailed explanation**
+
+5. Table Insights
+Provide comprehensive analysis for each extracted table:
+- **For each table, provide:**
+  * Detailed explanation of what the table represents and its purpose
+  * What insights each table reveals about the financial position
+  * Numerical highlights with context and interpretation
+  * Comparative analysis (if multiple periods or entities)
+  * Relationships between table data and overall financial picture
+  * Implications of the data presented
+- **Minimum 3-4 paragraphs per table**
+- Mandatory references: [Ref: Table-X Page Y]
+
+6. Chart Interpretation (if applicable)
+If charts or visual data are present, provide detailed explanations:
+- **For each chart:**
+  * What the chart represents and its purpose
+  * Detailed trend direction analysis with context
+  * Variance behavior explanation and significance
+  * Growth/decline patterns with historical context
+  * Anomalies or outliers and their implications
+  * Projections or forecasts if evident
+- Include deviation confidence: [Ref: Chart Extracted Values | Error < X%]
+- **Minimum 2-3 paragraphs per chart**
+
+7. Risk Assessment (Formal + Evidence-Based with Detailed Explanations)
+Provide comprehensive risk analysis for each identified risk:
+- **For each risk category (Liquidity, Debt, Earnings Volatility, Market, Compliance):**
+  * Detailed explanation of what the risk is
+  * Why this risk is relevant to this document/entity
+  * Evidence from the document supporting the risk assessment
+  * Magnitude and probability assessment
+  * Potential impact on financial position
+  * Mitigation factors or existing controls
+  * Comparison to industry standards or benchmarks
+- **Each risk must have 2-3 paragraphs of detailed explanation**
+- Each risk MUST contain justification and data reference: [Ref: Section/Page/X]
+
+8. Validation & Reliability Statement
+Provide a detailed validation section explaining:
+- **Data Quality Assessment:**
+  * Number of inconsistencies detected and their nature
+  * Number corrected and methods used
+  * Remaining uncertainties and their impact
+- **Validation Sources:**
+  * APIs / Validation sources used
+  * Cross-referencing methods applied
+  * External data verification if any
+- **Reliability Assessment:**
+  * Final confidence score (High / Moderate / Low) with detailed explanation
+  * Factors supporting the confidence level
+  * Limitations of the analysis
+  * Recommendations for additional data if needed
+- **Minimum 4-5 paragraphs explaining the validation process**
+
+9. Conclusion
+Provide a comprehensive conclusion (4-6 paragraphs) that includes:
+- Summary of key findings with detailed context
+- Overall assessment of financial health
+- Major strengths and weaknesses identified
+- Strategic implications
+- Recommendations for stakeholders
+- Forward-looking perspective
+- Final assessment statement
+
+STYLE REQUIREMENTS:
+- Formal institutional tone (similar to Bloomberg/Reuters)
+- No emojis, no casual language
+- No storytelling style
+- Use bullet points where appropriate for lists
+- Structured & auditable
+- **CRITICAL: Be EXTREMELY DETAILED - Every section must have comprehensive explanations, context, and analysis. Do not just state facts - explain what they mean, why they matter, and their implications. Each heading and subheading must be thoroughly explained.**
+
+Generate the complete, detailed, and highly explanatory report now:"""
+
+            response = client.chat.completions.create(
+                model="gpt-4",
+                messages=[
+                    {"role": "system", "content": "You are an expert financial analyst and compliance-grade report writer. You generate formal, detailed, reference-linked financial analysis reports with comprehensive explanations for every section. You NEVER hallucinate numbers or create data that doesn't exist in the source material. You provide extensive explanations, context, and analysis for every heading and subheading."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.2,
+                max_tokens=8000
+            )
+            
+            report = response.choices[0].message.content
+            return report
+            
+        except Exception as e:
+            print(f"Error generating professional report: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            # Fallback to basic summary
+            return self._generate_basic_summary(financial_data)
 
 # Create a singleton instance
 llm_service = LLMService()

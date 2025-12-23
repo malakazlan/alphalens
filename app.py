@@ -15,7 +15,11 @@ import tempfile
 from document_processor import process_document
 from chat_engine import get_answer_from_document
 from config import settings
-from auth import sign_up, sign_in, sign_out, get_user, verify_token
+from auth import sign_up, sign_in, sign_out, get_user, verify_token, get_supabase_client
+from storage_service import storage_service
+from database_service import database_service
+from llm_service import llm_service
+import json
 
 app = FastAPI(title="ALPHA LENS - Financial Document Analyzer MVP")
 
@@ -28,11 +32,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# In-memory storage for MVP (replace with MongoDB in production)
-documents = {}
-processing_status = {}
 # Store user sessions (in production, use Redis or database)
 user_sessions = {}  # {access_token: user_id}
+# Note: Documents and processing status are now stored in Supabase Database
 
 # Mount static files for serving HTML
 app.mount("/static", StaticFiles(directory="static"), name="static") if os.path.exists("static") else None
@@ -241,99 +243,172 @@ async def upload_document(
     
     # Generate document ID
     document_id = str(uuid.uuid4())
-    
-    # Detect file extension from original filename
-    file_ext = os.path.splitext(file.filename)[1] if file.filename else '.pdf'
-    if not file_ext:
-        file_ext = '.pdf'  # Default to PDF if no extension
-    
-    # Save file to temporary location with correct extension
-    temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=file_ext)
-    temp_file_path = temp_file.name
+    user_id = current_user["id"]
     
     try:
-        # Write file content to temp file
+        # Read file content
+        file_content = await file.read()
+        
+        # Upload file to Supabase Storage
+        try:
+            storage_path = storage_service.upload_file(
+                user_id=user_id,
+                document_id=document_id,
+                file_content=file_content,
+                filename=file.filename or "document.pdf",
+                file_type="original"
+            )
+        except Exception as storage_error:
+            error_msg = f"Storage upload failed: {str(storage_error)}"
+            print(f"ERROR: {error_msg}")
+            raise HTTPException(
+                status_code=500, 
+                detail=f"Failed to upload file to storage. Make sure Supabase Storage bucket 'documents' exists. Error: {str(storage_error)}"
+            )
+        
+        # Create document record in database
+        try:
+            database_service.create_document(
+                user_id=user_id,
+                document_id=document_id,
+                filename=file.filename or "document.pdf",
+                file_path=storage_path,
+                status="uploaded"
+            )
+        except Exception as db_error:
+            error_msg = f"Database insert failed: {str(db_error)}"
+            print(f"ERROR: {error_msg}")
+            # Try to delete uploaded file from storage
+            try:
+                storage_service.delete_file(storage_path)
+            except:
+                pass
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to save document to database. Make sure the 'documents' table exists in Supabase. Run the SQL migration from migrations/001_create_documents_table.sql. Error: {str(db_error)}"
+            )
+        
+        # Update processing status
+        try:
+            database_service.update_processing_status(
+                document_id=document_id,
+                user_id=user_id,
+                status="uploaded",
+                progress=0,
+                message="Document uploaded, starting processing"
+            )
+        except Exception as status_error:
+            print(f"Warning: Failed to update status: {str(status_error)}")
+            # Continue anyway, status update is not critical
+        
+        # Create temporary file for processing (document processor needs local file)
+        file_ext = os.path.splitext(file.filename)[1] if file.filename else '.pdf'
+        if not file_ext:
+            file_ext = '.pdf'
+        
+        # Create temp file and write content
+        temp_file_path = tempfile.mktemp(suffix=file_ext)
         with open(temp_file_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
-        
-        # Store document info with user association
-        documents[document_id] = {
-            "filename": file.filename,
-            "file_path": temp_file_path,
-            "upload_time": "now",  # Use proper timestamp in production
-            "user_id": current_user["id"]  # Associate with user
-        }
-        
-        # Set initial processing status
-        processing_status[document_id] = {
-            "status": "uploaded",
-            "progress": 0,
-            "message": "Document uploaded, starting processing"
-        }
+            buffer.write(file_content)
         
         # Start processing in the background
         background_tasks.add_task(
             process_document_background, 
             document_id, 
+            user_id,
             temp_file_path
         )
         
         return {"document_id": document_id, "status": "processing"}
     
+    except HTTPException:
+        # Re-raise HTTP exceptions as-is
+        raise
     except Exception as e:
-        if os.path.exists(temp_file_path):
-            os.unlink(temp_file_path)
-        raise HTTPException(status_code=500, detail=str(e))
+        print(f"Error uploading document: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
 
-def process_document_background(document_id: str, file_path: str):
+def process_document_background(document_id: str, user_id: str, file_path: str):
     """Process document in the background and update status"""
     try:
         # Update status to processing
-        processing_status[document_id] = {
-            "status": "processing",
-            "progress": 10,
-            "message": "Started document processing"
-        }
+        database_service.update_processing_status(
+            document_id=document_id,
+            user_id=user_id,
+            status="processing",
+            progress=10,
+            message="Started document processing"
+        )
         
         # Update progress during processing
-        processing_status[document_id] = {
-            "status": "processing",
-            "progress": 30,
-            "message": "Calling Landing.AI ADE API..."
-        }
+        database_service.update_processing_status(
+            document_id=document_id,
+            user_id=user_id,
+            status="processing",
+            progress=30,
+            message="Calling Landing.AI ADE API..."
+        )
         
         # Process the document
         result = process_document(file_path)
         
         # Update progress
-        processing_status[document_id] = {
-            "status": "processing",
-            "progress": 90,
-            "message": "Finalizing document data..."
-        }
+        database_service.update_processing_status(
+            document_id=document_id,
+            user_id=user_id,
+            status="processing",
+            progress=90,
+            message="Finalizing document data..."
+        )
         
-        # Store the processing results
-        documents[document_id].update({
-            "processed_data": result,
-            "vector_store_path": f"./data/vector_stores/{document_id}"
-        })
+        # Upload processed data to Supabase Storage
+        processed_data_json = json.dumps(result, default=str)
+        processed_data_path = storage_service.upload_file(
+            user_id=user_id,
+            document_id=document_id,
+            file_content=processed_data_json.encode('utf-8'),
+            filename="processed_data.json",
+            file_type="processed"
+        )
+        
+        # Update document with processed data
+        database_service.update_processed_data(
+            document_id=document_id,
+            user_id=user_id,
+            processed_data_path=processed_data_path,
+            processed_data=result
+        )
         
         # Update status to complete
-        processing_status[document_id] = {
-            "status": "complete",
-            "progress": 100,
-            "message": "Document processing complete"
-        }
+        database_service.update_processing_status(
+            document_id=document_id,
+            user_id=user_id,
+            status="complete",
+            progress=100,
+            message="Document processing complete"
+        )
+        
+        # Clean up temporary file
+        if os.path.exists(file_path):
+            os.unlink(file_path)
         
         print(f"✓ Document {document_id} processing completed successfully")
     
     except Exception as e:
         # Update status to error
-        processing_status[document_id] = {
-            "status": "error",
-            "progress": 0,
-            "message": f"Error processing document: {str(e)}"
-        }
+        database_service.update_processing_status(
+            document_id=document_id,
+            user_id=user_id,
+            status="error",
+            progress=0,
+            message=f"Error processing document: {str(e)}"
+        )
+        
+        # Clean up temporary file
+        if os.path.exists(file_path):
+            os.unlink(file_path)
         
         # Log the error
         print(f"✗ Error processing document {document_id}: {str(e)}")
@@ -343,111 +418,152 @@ def process_document_background(document_id: str, file_path: str):
 @app.get("/documents/{document_id}/status")
 async def get_document_status(document_id: str, current_user: dict = Depends(get_current_user)):
     """Get the processing status of a document"""
-    if document_id not in processing_status:
+    user_id = current_user["id"]
+    
+    # Get document from database
+    document = database_service.get_document(document_id, user_id)
+    if not document:
         raise HTTPException(status_code=404, detail="Document not found")
     
-    # Verify document belongs to user
-    if document_id in documents and documents[document_id].get("user_id") != current_user["id"]:
-        raise HTTPException(status_code=403, detail="Access denied")
-    
-    return processing_status[document_id]
+    # Return status information
+    return {
+        "status": document.get("status", "unknown"),
+        "progress": document.get("progress", 0),
+        "message": document.get("status_message", "")
+    }
 
 @app.get("/documents/{document_id}")
 async def get_document(document_id: str, current_user: dict = Depends(get_current_user)):
     """Get document details and processed results"""
-    if document_id not in documents:
+    user_id = current_user["id"]
+    
+    # Get document from database
+    document = database_service.get_document(document_id, user_id)
+    if not document:
         raise HTTPException(status_code=404, detail="Document not found")
     
-    # Return document info excluding large data like vector stores
     doc_info = {
         "document_id": document_id,
-        "filename": documents[document_id]["filename"],
-        "status": processing_status[document_id]["status"],
+        "filename": document.get("filename"),
+        "status": document.get("status", "unknown"),
+        "upload_time": document.get("upload_time"),
     }
     
-    # Include summary if available
-    if "processed_data" in documents[document_id]:
-        doc_info["summary"] = documents[document_id]["processed_data"].get("summary", "")
-        
-        # Include key metrics if available
-        if "key_metrics" in documents[document_id]["processed_data"]:
-            doc_info["key_metrics"] = documents[document_id]["processed_data"]["key_metrics"]
-        
-        # Include extracted metadata for richer UI context
-        processed_data = documents[document_id]["processed_data"]
-        if "metadata" in processed_data:
-            doc_info["metadata"] = processed_data["metadata"]
-        if processed_data.get("markdown"):
-            doc_info["document_markdown"] = processed_data["markdown"]
-        if processed_data.get("detected_chunks"):
-            doc_info["detected_chunks"] = processed_data["detected_chunks"]
-        if processed_data.get("tables"):
-            doc_info["tables"] = processed_data["tables"]
+    # Load processed data from storage if available
+    processed_data_path = document.get("processed_data_path")
+    if processed_data_path:
+        try:
+            processed_data_bytes = storage_service.download_file(processed_data_path)
+            processed_data = json.loads(processed_data_bytes.decode('utf-8'))
+            
+            # Include processed data in response
+            doc_info["summary"] = processed_data.get("summary", "")
+            if "key_metrics" in processed_data:
+                doc_info["key_metrics"] = processed_data["key_metrics"]
+            if "metadata" in processed_data:
+                doc_info["metadata"] = processed_data["metadata"]
+            if processed_data.get("markdown"):
+                doc_info["document_markdown"] = processed_data["markdown"]
+            if processed_data.get("detected_chunks"):
+                doc_info["detected_chunks"] = processed_data["detected_chunks"]
+            if processed_data.get("tables"):
+                doc_info["tables"] = processed_data["tables"]
+        except Exception as e:
+            print(f"Error loading processed data: {str(e)}")
+            # Continue without processed data if loading fails
     
     return doc_info
 
 @app.get("/documents/{document_id}/file")
-async def download_document(document_id: str, current_user: dict = Depends(get_current_user)):
+async def download_document(document_id: str, request: Request, current_user: dict = Depends(get_current_user)):
     """Download the original file for preview (PDF or image)"""
-    if document_id not in documents:
+    user_id = current_user["id"]
+    
+    # Get document from database
+    document = database_service.get_document(document_id, user_id)
+    if not document:
         raise HTTPException(status_code=404, detail="Document not found")
     
-    # Verify document belongs to user
-    if documents[document_id].get("user_id") != current_user["id"]:
-        raise HTTPException(status_code=403, detail="Access denied")
-    
-    file_path = documents[document_id].get("file_path")
-    if not file_path or not os.path.exists(file_path):
+    file_path = document.get("file_path")
+    if not file_path:
         raise HTTPException(status_code=404, detail="Document file not found")
     
-    filename = documents[document_id].get("filename") or f"{document_id}.pdf"
+    filename = document.get("filename") or f"{document_id}.pdf"
     
-    # Detect media type from file extension
-    file_ext = os.path.splitext(filename)[1].lower()
-    media_type_map = {
-        '.pdf': 'application/pdf',
-        '.png': 'image/png',
-        '.jpg': 'image/jpeg',
-        '.jpeg': 'image/jpeg',
-        '.gif': 'image/gif',
-        '.bmp': 'image/bmp',
-        '.tiff': 'image/tiff',
-        '.webp': 'image/webp'
-    }
-    media_type = media_type_map.get(file_ext, 'application/octet-stream')
+    # Get access token from request for RLS
+    auth_header = request.headers.get("Authorization")
+    if auth_header and auth_header.startswith("Bearer "):
+        access_token = auth_header.split(" ")[1]
+    else:
+        access_token = request.cookies.get("access_token")
     
-    return FileResponse(path=file_path, media_type=media_type, filename=filename)
+    try:
+        # Download file from Supabase Storage (with user token for RLS)
+        file_content = storage_service.download_file(file_path, access_token=access_token)
+        
+        # Detect media type from file extension
+        file_ext = os.path.splitext(filename)[1].lower()
+        media_type_map = {
+            '.pdf': 'application/pdf',
+            '.png': 'image/png',
+            '.jpg': 'image/jpeg',
+            '.jpeg': 'image/jpeg',
+            '.gif': 'image/gif',
+            '.bmp': 'image/bmp',
+            '.tiff': 'image/tiff',
+            '.webp': 'image/webp'
+        }
+        media_type = media_type_map.get(file_ext, 'application/octet-stream')
+        
+        # Create temporary file for response
+        temp_file_path = tempfile.mktemp(suffix=file_ext)
+        with open(temp_file_path, "wb") as f:
+            f.write(file_content)
+        
+        # Return file response (temp file will be cleaned up by OS eventually)
+        # For production, consider using streaming response or keeping files in storage
+        return FileResponse(path=temp_file_path, media_type=media_type, filename=filename)
+    except Exception as e:
+        print(f"Error downloading file: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to download file: {str(e)}")
 
 @app.post("/documents/chat", response_model=ChatResponse)
 async def chat_with_document(query: ChatQuery, current_user: dict = Depends(get_current_user)):
     """Chat with a processed document"""
     document_id = query.document_id
+    user_id = current_user["id"]
     
-    # Check if document exists
-    if document_id not in documents:
+    # Get document from database
+    document = database_service.get_document(document_id, user_id)
+    if not document:
         raise HTTPException(status_code=404, detail="Document not found")
     
-    # Verify document belongs to user
-    if documents[document_id].get("user_id") != current_user["id"]:
-        raise HTTPException(status_code=403, detail="Access denied")
-    
     # Check if document processing is complete
-    if processing_status[document_id]["status"] != "complete":
+    if document.get("status") != "complete":
         raise HTTPException(
             status_code=400, 
-            detail=f"Document processing not complete. Current status: {processing_status[document_id]['status']}"
+            detail=f"Document processing not complete. Current status: {document.get('status')}"
         )
     
-    # Get answer from document
-    vector_store_path = documents[document_id].get("vector_store_path")
-    if not vector_store_path:
-        raise HTTPException(status_code=400, detail="Vector store not found for document")
+    # Load processed data from storage
+    processed_data_path = document.get("processed_data_path")
+    if not processed_data_path:
+        raise HTTPException(status_code=400, detail="Processed data not found for document")
+    
+    try:
+        processed_data_bytes = storage_service.download_file(processed_data_path)
+        processed_data = json.loads(processed_data_bytes.decode('utf-8'))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to load processed data: {str(e)}")
+    
+    # Vector store path (still local for now)
+    vector_store_path = f"./data/vector_stores/{document_id}"
     
     # Query the document
     answer_data = get_answer_from_document(
         query.query,
         vector_store_path,
-        documents[document_id]["processed_data"]
+        processed_data
     )
     
     return {
@@ -458,36 +574,134 @@ async def chat_with_document(query: ChatQuery, current_user: dict = Depends(get_
         "source": answer_data.get("source", "local_llm")
     }
 
+@app.get("/documents/{document_id}/report")
+async def generate_professional_report(document_id: str, current_user: dict = Depends(get_current_user)):
+    """Generate a professional financial analysis report for a document"""
+    user_id = current_user["id"]
+    
+    # Get document from database
+    document = database_service.get_document(document_id, user_id)
+    if not document:
+        raise HTTPException(status_code=404, detail="Document not found")
+    
+    # Check if document processing is complete
+    if document.get("status") != "complete":
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Document processing not complete. Current status: {document.get('status')}"
+        )
+    
+    # Load processed data from storage
+    processed_data_path = document.get("processed_data_path")
+    if not processed_data_path:
+        raise HTTPException(status_code=400, detail="Processed data not found for document")
+    
+    try:
+        processed_data_bytes = storage_service.download_file(processed_data_path)
+        processed_data = json.loads(processed_data_bytes.decode('utf-8'))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to load processed data: {str(e)}")
+    
+    # Generate professional report using LLM
+    try:
+        professional_report = llm_service.generate_professional_financial_report(processed_data)
+        return {
+            "document_id": document_id,
+            "filename": document.get("filename", "Unknown"),
+            "report": professional_report,
+            "generated_at": document.get("upload_time")
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to generate report: {str(e)}")
+
 @app.get("/documents")
-async def list_documents(current_user: dict = Depends(get_current_user)):
+async def list_documents(request: Request, current_user: dict = Depends(get_current_user)):
     """List all uploaded documents for the current user"""
+    user_id = current_user["id"]
+    
+    # Get access token from request for RLS
+    auth_header = request.headers.get("Authorization")
+    if auth_header and auth_header.startswith("Bearer "):
+        access_token = auth_header.split(" ")[1]
+    else:
+        access_token = request.cookies.get("access_token")
+    
+    print(f"📋 Loading documents for user: {user_id}")
+    
+    # Get all documents for user from database (with access token for RLS)
+    documents_list = database_service.get_user_documents(user_id, access_token=access_token)
+    
+    print(f"📋 Database returned {len(documents_list)} documents")
+    
     results = []
-    for doc_id, doc_info in documents.items():
-        # Only return documents belonging to the current user
-        if doc_info.get("user_id") == current_user["id"]:
-            # Get status from processing_status, default to "processing" if not found
-            status_info = processing_status.get(doc_id, {"status": "processing", "progress": 0, "message": "Processing..."})
-            
-            result = {
-                "document_id": doc_id,
-                "filename": doc_info["filename"],
-                "status": status_info["status"],
-                "upload_time": doc_info.get("upload_time", "unknown")
-            }
-            
-            # Include processed data if available
-            if "processed_data" in doc_info:
-                processed_data = doc_info["processed_data"]
+    for doc in documents_list:
+        result = {
+            "document_id": doc.get("id"),
+            "filename": doc.get("filename"),
+            "status": doc.get("status", "unknown"),
+            "upload_time": doc.get("upload_time", "unknown")
+        }
+        
+        # Load processed data if available (but don't fail if it's missing)
+        processed_data_path = doc.get("processed_data_path")
+        if processed_data_path:
+            try:
+                # Use user token for RLS when downloading processed data
+                processed_data_bytes = storage_service.download_file(processed_data_path, access_token=access_token)
+                processed_data = json.loads(processed_data_bytes.decode('utf-8'))
+                
                 if processed_data.get("markdown"):
                     result["document_markdown"] = processed_data["markdown"]
                 if processed_data.get("detected_chunks"):
                     result["detected_chunks"] = processed_data["detected_chunks"]
-                if processed_data.get("metadata"):
-                    result["metadata"] = processed_data["metadata"]
                 if processed_data.get("tables"):
                     result["tables"] = processed_data["tables"]
-            
-            results.append(result)
+                if processed_data.get("metadata"):
+                    result["metadata"] = processed_data["metadata"]
+            except Exception as e:
+                print(f"⚠ Warning: Error loading processed data for {doc.get('id')}: {str(e)}")
+                # Continue without processed data - document still exists
+        
+        results.append(result)
+    
+    print(f"✓ Returning {len(results)} documents to frontend")
+    return results
+
+# Debug endpoint to test Supabase connection
+@app.get("/test/supabase")
+async def test_supabase(current_user: dict = Depends(get_current_user)):
+    """Test Supabase database and storage connection"""
+    import traceback
+    results = {
+        "user_id": current_user["id"],
+        "database_test": None,
+        "storage_test": None,
+        "documents_count": 0
+    }
+    
+    # Test database
+    try:
+        docs = database_service.get_user_documents(current_user["id"])
+        results["database_test"] = "SUCCESS"
+        results["documents_count"] = len(docs)
+        results["documents"] = docs[:5]  # First 5 docs
+    except Exception as e:
+        results["database_test"] = f"ERROR: {str(e)}"
+        results["database_traceback"] = traceback.format_exc()
+    
+    # Test storage
+    try:
+        # Try to list files (this will fail if bucket doesn't exist)
+        from auth import get_supabase_client
+        client = get_supabase_client()
+        files = client.storage.from_("documents").list(current_user["id"], limit=1)
+        results["storage_test"] = "SUCCESS"
+        results["storage_bucket_exists"] = True
+    except Exception as e:
+        results["storage_test"] = f"ERROR: {str(e)}"
+        results["storage_traceback"] = traceback.format_exc()
+        results["storage_bucket_exists"] = False
+    
     return results
 
 # Serve login page

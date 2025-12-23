@@ -21,10 +21,42 @@ function getAuthHeadersSafe() {
 
 /**
  * Generate a professional markdown report from document data
+ * This now calls the backend API to generate a professional financial analysis report
+ * @param {Object} docData - Document data object
+ * @returns {Promise<string>} Formatted markdown report
+ */
+async function generateReportMarkdown(docData) {
+    if (!docData || !docData.document_id) return '';
+    
+    try {
+        const apiBase = typeof API_BASE_URL !== 'undefined' ? API_BASE_URL : window.location.origin;
+        const headers = getAuthHeadersSafe();
+        
+        // Call the professional report generation endpoint
+        const response = await fetch(`${apiBase}/documents/${docData.document_id}/report`, {
+            credentials: 'include',
+            headers: headers
+        });
+        
+        if (!response.ok) {
+            throw new Error(`Failed to generate report: ${response.statusText}`);
+        }
+        
+        const reportData = await response.json();
+        return reportData.report || '';
+    } catch (error) {
+        console.error('Error generating professional report:', error);
+        // Fallback to basic report if API fails
+        return generateBasicReportMarkdown(docData);
+    }
+}
+
+/**
+ * Generate a basic markdown report (fallback)
  * @param {Object} docData - Document data object
  * @returns {string} Formatted markdown report
  */
-function generateReportMarkdown(docData) {
+function generateBasicReportMarkdown(docData) {
     if (!docData) return '';
     
     const filename = docData.filename || 'Unknown Document';
@@ -35,7 +67,7 @@ function generateReportMarkdown(docData) {
     let report = `# Document Report: ${filename}\n\n`;
     
     // Document Information Section
-    report += `## 📄 Document Information\n\n`;
+    report += `## Document Information\n\n`;
     report += `- **File Name**: ${filename}\n`;
     report += `- **Upload Date**: ${uploadDate}\n`;
     report += `- **Status**: ${status}\n`;
@@ -43,88 +75,18 @@ function generateReportMarkdown(docData) {
     
     // Executive Summary
     if (docData.summary) {
-        report += `## 📊 Executive Summary\n\n`;
+        report += `## Executive Summary\n\n`;
         report += `${docData.summary}\n\n`;
     }
     
     // Key Metrics
     if (docData.key_metrics && docData.key_metrics.length > 0) {
-        report += `## 🔢 Key Metrics\n\n`;
+        report += `## Key Metrics\n\n`;
         docData.key_metrics.forEach(metric => {
             const value = metric.value || 'N/A';
             const unit = metric.unit ? ` ${metric.unit}` : '';
             report += `- **${metric.name}**: ${value}${unit}\n`;
         });
-        report += `\n`;
-    }
-    
-    // Key Findings from Chunks
-    if (docData.detected_chunks && docData.detected_chunks.length > 0) {
-        report += `## 🔍 Key Findings\n\n`;
-        
-        // Group chunks by type
-        const textChunks = docData.detected_chunks.filter(c => 
-            (c.type || 'text').toLowerCase() === 'text'
-        );
-        const tableChunks = docData.detected_chunks.filter(c => 
-            (c.type || '').toLowerCase() === 'table'
-        );
-        
-        if (textChunks.length > 0) {
-            report += `### Text Sections\n\n`;
-            textChunks.slice(0, 5).forEach((chunk, idx) => {
-                const content = chunk.markdown || chunk.text || chunk.content || '';
-                if (content.trim()) {
-                    const preview = content.substring(0, 200).replace(/\n/g, ' ');
-                    report += `${idx + 1}. ${preview}${content.length > 200 ? '...' : ''}\n\n`;
-                }
-            });
-        }
-        
-        if (tableChunks.length > 0) {
-            report += `### Tables Detected\n\n`;
-            report += `Found ${tableChunks.length} table(s) in the document.\n\n`;
-        }
-    }
-    
-    // Tables Section
-    if (docData.tables && docData.tables.length > 0) {
-        report += `## 📋 Extracted Tables\n\n`;
-        docData.tables.forEach((table, idx) => {
-            report += `### Table ${idx + 1}\n\n`;
-            if (table.title) {
-                report += `**Title**: ${table.title}\n\n`;
-            }
-            if (table.data && Array.isArray(table.data)) {
-                // Convert table data to markdown table
-                const markdownTable = convertTableToMarkdown(table.data);
-                report += markdownTable + '\n\n';
-            }
-        });
-    }
-    
-    // Detailed Content
-    if (docData.document_markdown) {
-        report += `## 📝 Detailed Content\n\n`;
-        // Truncate if too long, show first 2000 chars
-        const content = docData.document_markdown;
-        if (content.length > 2000) {
-            report += content.substring(0, 2000) + '\n\n';
-            report += `*[Content truncated. Full content available in analyzer view.]*\n\n`;
-        } else {
-            report += content + '\n\n';
-        }
-    }
-    
-    // Metadata
-    if (docData.metadata) {
-        report += `## ℹ️ Additional Information\n\n`;
-        if (docData.metadata.author) {
-            report += `- **Author**: ${docData.metadata.author}\n`;
-        }
-        if (docData.metadata.created_date) {
-            report += `- **Created**: ${docData.metadata.created_date}\n`;
-        }
         report += `\n`;
     }
     
@@ -275,8 +237,7 @@ function renderReports(documents) {
     `;
     
     uniqueCompletedDocs.forEach(doc => {
-        const reportMarkdown = generateReportMarkdown(doc);
-        const preview = reportMarkdown.substring(0, 150) + '...';
+        const preview = `Professional Financial Analysis Report for ${doc.filename || doc.document_id}`;
         
         html += `
             <div class="report-card" data-document-id="${doc.document_id}">
@@ -342,37 +303,48 @@ async function viewReport(documentId) {
         const apiBase = typeof API_BASE_URL !== 'undefined' ? API_BASE_URL : window.location.origin;
         const headers = getAuthHeadersSafe();
         
-        const response = await fetch(`${apiBase}/documents/${documentId}`, {
-            credentials: 'include',
-            headers: headers
-        });
-        
-        if (!response.ok) throw new Error('Failed to load document');
-        
-        const docData = await response.json();
-        const reportMarkdown = generateReportMarkdown(docData);
-        
-        // Show modal
+        // Show loading state
         const modal = document.getElementById('report-viewer-modal');
         const modalTitle = document.getElementById('report-modal-title');
         const modalBody = document.getElementById('report-modal-body');
         
         if (modal && modalTitle && modalBody) {
-            modalTitle.textContent = `Report: ${docData.filename || documentId}`;
+            modalTitle.textContent = 'Generating Report...';
+            modalBody.innerHTML = '<div class="loading-container"><div class="loading-spinner"></div><p>Generating professional financial analysis report...</p></div>';
+            modal.style.display = 'flex';
+        }
+        
+        // Get document data
+        const docResponse = await fetch(`${apiBase}/documents/${documentId}`, {
+            credentials: 'include',
+            headers: headers
+        });
+        
+        if (!docResponse.ok) throw new Error('Failed to load document');
+        
+        const docData = await docResponse.json();
+        
+        // Generate professional report
+        const reportMarkdown = await generateReportMarkdown(docData);
+        
+        if (modal && modalTitle && modalBody) {
+            modalTitle.textContent = `Financial Analysis Report: ${docData.filename || documentId}`;
             
-            // Convert markdown to HTML
+            // Convert markdown to HTML with professional styling
             const htmlContent = convertMarkdownToHTML(reportMarkdown);
             modalBody.innerHTML = htmlContent;
             
             // Store current document for export
             modal.dataset.documentId = documentId;
             modal.dataset.documentData = JSON.stringify(docData);
-            
-            modal.style.display = 'flex';
+            modal.dataset.reportMarkdown = reportMarkdown;
         }
     } catch (error) {
         console.error('Error viewing report:', error);
-        alert('Failed to load report. Please try again.');
+        const modalBody = document.getElementById('report-modal-body');
+        if (modalBody) {
+            modalBody.innerHTML = `<div style="text-align: center; padding: 40px; color: var(--error);"><p>Failed to load report: ${error.message}</p><p>Please try again.</p></div>`;
+        }
     }
 }
 
@@ -406,8 +378,8 @@ async function exportReport(documentId, format) {
         const docData = await response.json();
         
         if (format === 'markdown') {
-            const markdown = generateReportMarkdown(docData);
-            downloadFile(markdown, `${docData.filename || documentId}.md`, 'text/markdown');
+            const markdown = await generateReportMarkdown(docData);
+            downloadFile(markdown, `${docData.filename || documentId}_Financial_Report.md`, 'text/markdown');
         } else if (format === 'json') {
             const json = JSON.stringify(docData, null, 2);
             downloadFile(json, `${docData.filename || documentId}.json`, 'application/json');
@@ -425,40 +397,136 @@ async function exportReport(documentId, format) {
  * Export current report from modal
  * @param {string} format - Export format
  */
-function exportCurrentReport(format) {
+async function exportCurrentReport(format) {
     const modal = document.getElementById('report-viewer-modal');
     if (!modal) return;
     
     const documentId = modal.dataset.documentId;
-    if (documentId) {
-        exportReport(documentId, format);
+    const reportMarkdown = modal.dataset.reportMarkdown;
+    
+    if (format === 'markdown' && reportMarkdown) {
+        // Use cached report if available
+        const docData = JSON.parse(modal.dataset.documentData || '{}');
+        downloadFile(reportMarkdown, `${docData.filename || documentId}_Financial_Report.md`, 'text/markdown');
+    } else if (documentId) {
+        await exportReport(documentId, format);
     }
 }
 
 /**
- * Convert markdown to HTML (simple implementation)
+ * Convert markdown to HTML with professional styling
  * @param {string} markdown - Markdown text
  * @returns {string} HTML content
  */
 function convertMarkdownToHTML(markdown) {
-    // Simple markdown to HTML converter
-    // For production, use a library like 'marked'
-    let html = markdown
-        .replace(/^# (.*$)/gim, '<h1>$1</h1>')
-        .replace(/^## (.*$)/gim, '<h2>$1</h2>')
-        .replace(/^### (.*$)/gim, '<h3>$1</h3>')
-        .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
-        .replace(/^\* (.*$)/gim, '<li>$1</li>')
-        .replace(/\n\n/g, '</p><p>')
-        .replace(/\n/g, '<br>');
+    if (!markdown) return '<p>No report content available.</p>';
     
-    // Wrap in paragraphs
-    html = '<p>' + html + '</p>';
+    let html = markdown;
     
-    // Fix list items
-    html = html.replace(/(<li>.*<\/li>)/g, '<ul>$1</ul>');
+    // Code blocks first (preserve them)
+    const codeBlockPlaceholders = [];
+    html = html.replace(/```([\s\S]*?)```/g, (match, code) => {
+        const placeholder = `__CODE_BLOCK_${codeBlockPlaceholders.length}__`;
+        codeBlockPlaceholders.push(escapeHtml(code.trim()));
+        return placeholder;
+    });
     
-    return html;
+    // Escape HTML to prevent XSS
+    html = escapeHtml(html);
+    
+    // Restore code blocks
+    codeBlockPlaceholders.forEach((code, idx) => {
+        html = html.replace(`__CODE_BLOCK_${idx}__`, `<pre class="report-code-block"><code>${code}</code></pre>`);
+    });
+    
+    // Headers
+    html = html.replace(/^# (.*$)/gim, '<h1 class="report-h1">$1</h1>');
+    html = html.replace(/^## (.*$)/gim, '<h2 class="report-h2">$1</h2>');
+    html = html.replace(/^### (.*$)/gim, '<h3 class="report-h3">$1</h3>');
+    html = html.replace(/^#### (.*$)/gim, '<h4 class="report-h4">$1</h4>');
+    
+    // Bold
+    html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+    
+    // Italic
+    html = html.replace(/(?<!\*)\*([^*\n]+)\*(?!\*)/g, '<em>$1</em>');
+    
+    // Links
+    html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+    
+    // Blockquotes
+    html = html.replace(/^> (.+)$/gim, '<blockquote class="report-blockquote">$1</blockquote>');
+    
+    // Horizontal rules
+    html = html.replace(/^---$/gim, '<hr class="report-hr">');
+    
+    // Tables (markdown table format)
+    html = html.replace(/\|(.+)\|/g, (match, content) => {
+        const cells = content.split('|').map(c => c.trim()).filter(c => c);
+        if (cells.length > 0) {
+            // Check if it's a header separator
+            if (cells.every(c => /^:?-+:?$/.test(c))) {
+                return ''; // Skip separator rows
+            }
+            return '<tr>' + cells.map(cell => `<td class="report-table-cell">${cell}</td>`).join('') + '</tr>';
+        }
+        return match;
+    });
+    
+    // Wrap consecutive table rows in table
+    html = html.replace(/(<tr>[\s\S]*?<\/tr>(?:\s*<tr>[\s\S]*?<\/tr>)*)/g, (match) => {
+        return `<table class="report-table">${match}</table>`;
+    });
+    
+    // Lists (unordered)
+    const lines = html.split('\n');
+    const processedLines = [];
+    let inList = false;
+    
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        const listMatch = line.match(/^[\*\-] (.+)$/);
+        const orderedMatch = line.match(/^\d+\. (.+)$/);
+        
+        if (listMatch || orderedMatch) {
+            if (!inList) {
+                processedLines.push(listMatch ? '<ul class="report-list">' : '<ol class="report-list">');
+                inList = true;
+            }
+            const itemText = listMatch ? listMatch[1] : orderedMatch[1];
+            processedLines.push(`<li class="report-list-item">${itemText}</li>`);
+        } else {
+            if (inList) {
+                processedLines.push(listMatch ? '</ul>' : '</ol>');
+                inList = false;
+            }
+            processedLines.push(line);
+        }
+    }
+    
+    if (inList) {
+        processedLines.push('</ul>');
+    }
+    
+    html = processedLines.join('\n');
+    
+    // Paragraphs (double newlines)
+    html = html.split(/\n\n+/).map(para => {
+        para = para.trim();
+        if (!para) return '';
+        // Don't wrap if it's already a block element
+        if (/^<(h[1-6]|ul|ol|pre|blockquote|hr|table|p)/.test(para)) {
+            return para;
+        }
+        return `<p class="report-paragraph">${para}</p>`;
+    }).join('\n');
+    
+    // Single newlines within paragraphs become <br>
+    html = html.replace(/(<p class="report-paragraph">[\s\S]*?)<\/p>/g, (match, content) => {
+        return content.replace(/\n/g, '<br>') + '</p>';
+    });
+    
+    return `<div class="professional-report-content">${html}</div>`;
 }
 
 /**
