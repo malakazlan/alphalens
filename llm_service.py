@@ -363,10 +363,10 @@ class LLMService:
                         
                         metrics_context += f"- {name}: {formatted_value}\n"
             
-            # Create a more conversational prompt
-            prompt = f"""You are ALPHA LENS, a friendly and helpful financial document assistant. Your goal is to answer questions about financial documents in a conversational, helpful way.
+            # Create a concise prompt
+            prompt = f"""You are ALPHA LENS, a document assistant. Answer questions directly and concisely.
 
-Document Type: {financial_data.get("metadata", {}).get("document_type", "Financial Document")}
+Document Type: {financial_data.get("metadata", {}).get("document_type", "Document")}
 Document Context:
 {context}
 
@@ -374,15 +374,26 @@ Document Context:
 
 User Question: "{query}"
 
-Instructions:
-1. Answer in a friendly, conversational tone
-2. Keep answers SHORT and DIRECT - maximum 2 sentences unless detailed information is needed
-3. If the answer is clearly in the document, provide it directly and concisely
-4. If the exact answer isn't in the document, briefly tell the user what you know from the document
-5. If the document doesn't contain ANY information related to the question, say so briefly: "The document doesn't provide this information."
-6. Avoid long explanations - be concise and to the point
+CRITICAL - BE EXTREMELY BRIEF:
+1. **Simple Questions** (names, dates, amounts, what/where/when):
+   - Answer in 1 sentence: "Your name is [name]" or "The amount is [amount]" or "The date is [date]"
+   - NO explanations, NO summaries
 
-Your response:
+2. **General Questions**:
+   - Maximum 2 sentences
+   - Use **bold** only for key numbers/names
+   - Use bullet points (-) only if listing 3+ items
+
+3. **Follow-up Questions** (like "what did I ask"):
+   - Answer what was asked previously in 1-2 sentences
+   - Don't repeat document summaries
+
+4. **NEVER**:
+   - Write more than 2-3 sentences
+   - Give full document summaries for simple questions
+   - Be verbose
+
+Your response (BE BRIEF):
 """
             
             # Call OpenAI API
@@ -391,11 +402,11 @@ Your response:
             response = client.chat.completions.create(
                 model="gpt-3.5-turbo",
                 messages=[
-                    {"role": "system", "content": "You are ALPHA LENS, a friendly and helpful financial document assistant."},
+                    {"role": "system", "content": "You are ALPHA LENS, a document assistant. Answer questions directly and concisely. For simple questions, answer in 1 sentence. Never be verbose."},
                     {"role": "user", "content": prompt}
                 ],
-                temperature=0.7,  # Slightly higher for more conversational tone
-                max_tokens=200
+                temperature=0.2,
+                max_tokens=150
             )
             
             # Extract the answer from the response
@@ -414,6 +425,8 @@ Your response:
         key_metrics: List[Dict[str, Any]],
         context_blocks: List[Dict[str, Any]],
         financial_data: Dict[str, Any] = None,
+        is_simple_question: bool = False,
+        wants_list_format: bool = False,
     ) -> str:
         """Generate a finance-grounded response with explicit citation instructions."""
         try:
@@ -466,7 +479,26 @@ Your response:
                     for row in table_rows:
                         tables_context += f"{row}\n"
             
-            prompt = f"""You are ALPHA LENS, a senior financial analyst and document expert. You specialize in analyzing financial documents, invoices, fee bills, financial statements, and related documents.
+            # Adjust prompt based on question type
+            if is_simple_question:
+                prompt = f"""Answer this question in 1 sentence maximum. NO explanations, NO summaries.
+
+Context:
+{context_text or 'N/A'}
+
+Question: {query}
+
+Answer format:
+- For names: "Your name is [name]" or "The name is [name]"
+- For dates: "The date is [date]"
+- For amounts: "The amount is [amount]"
+- For "what did I ask": Answer what was asked previously in 1 sentence
+- If not found: "The document doesn't provide this information"
+
+Your answer (1 sentence only):
+"""
+            elif wants_list_format:
+                prompt = f"""You are ALPHA LENS, a document analysis assistant. Format your answer as bullet points.
 
 Document metadata:
 {metadata_text}
@@ -480,27 +512,84 @@ Context blocks (each block is labeled with an ID in brackets):
 
 Question: {query}
 
-CRITICAL INSTRUCTIONS:
-- Answer as a finance expert with deep knowledge of financial documents, accounting, and business analysis.
-- Base your answer ONLY on the context blocks and document data provided above.
-- Keep answers SHORT and DIRECT - maximum 2-3 sentences unless the question requires detailed explanation.
-- For specific questions (amounts, dates, names), provide the exact value directly (e.g., "149,990" not "The amount is 149,990").
-- For general questions about the document, provide concise answers using available data.
-- If specific information isn't in context blocks, use the document metadata, tables, and detected chunks to answer.
-- ALWAYS cite the supporting context by appending [[chunk_id]] at the end of relevant sentences.
-- Keep the tone professional, expert, and helpful - never apologetic.
-- If the document doesn't contain the information, say so briefly: "The document doesn't provide this information."
-- Be concise - avoid long explanations unless necessary.
+CRITICAL - USE BULLET POINTS:
+1. **Format**: Answer MUST be in bullet point format using markdown:
+   - Start each point with "- " (dash and space)
+   - Each bullet should be on a new line
+   - Use 3-8 bullet points maximum
+   - Each point should be 1 sentence or short phrase
+   - Example:
+     - Point 1 about the document
+     - Point 2 about the document
+     - Point 3 about the document
+
+2. **Content**:
+   - Extract key information from the document
+   - Each bullet should cover a different aspect/topic
+   - Be specific and concise
+   - Use **bold** for important numbers or names within bullets
+
+3. **Citations**: Add [[chunk_id]] at the end of relevant bullets
+
+4. **NEVER**: 
+   - Write in paragraph form
+   - Use more than 8 bullets
+   - Be verbose
+
+Your response (bullet points only, markdown format):
 """
+            else:
+                prompt = f"""You are ALPHA LENS, a document analysis assistant. Answer questions directly and concisely.
+
+Document metadata:
+{metadata_text}
+
+Key metrics:
+{metrics_text}
+{tables_context}
+
+Context blocks (each block is labeled with an ID in brackets):
+{context_text or 'N/A'}
+
+Question: {query}
+
+CRITICAL - BE EXTREMELY CONCISE:
+1. **Answer Structure**:
+   - Maximum 2-3 sentences
+   - Start with direct answer
+   - Add 1 sentence of context if needed
+   - Use **bold** for key terms if helpful
+   - Use bullet points (-) only when listing 3+ items
+
+2. **Content**:
+   - Answer directly from the document
+   - If not found: "The document doesn't provide this information" (1 sentence)
+
+3. **Citations**: Add [[chunk_id]] at the end of relevant sentences
+
+4. **NEVER**: 
+   - Write more than 3 sentences
+   - Give full document summaries
+   - Be verbose or repetitive
+
+Your response (2-3 sentences max):
+"""
+            
+            # Adjust max_tokens based on question type
+            max_tokens = 50 if is_simple_question else 150
+            
+            system_message = "You are ALPHA LENS, a document assistant. Answer questions directly and concisely. For simple questions, answer in 1 sentence. Never be verbose."
+            if is_simple_question:
+                system_message = "You are ALPHA LENS. Answer in exactly 1 sentence. NO explanations, NO summaries, just the answer."
             
             response = client.chat.completions.create(
                 model="gpt-3.5-turbo",
                 messages=[
-                    {"role": "system", "content": "You are ALPHA LENS, a senior financial analyst who cites the provided context."},
+                    {"role": "system", "content": system_message},
                     {"role": "user", "content": prompt}
                 ],
-                temperature=0.2,
-                max_tokens=250
+                temperature=0.1,
+                max_tokens=max_tokens
             )
             
             return response.choices[0].message.content
@@ -649,23 +738,30 @@ CRITICAL INSTRUCTIONS:
             # Combine all context
             full_context = "\n\n".join(context_parts)
             
-            prompt = f"""You are ALPHA LENS, a senior financial analyst. You MUST analyze the following document data and provide a comprehensive summary.
+            prompt = f"""You are ALPHA LENS, a senior financial analyst. Analyze the document data and provide a comprehensive, well-formatted summary like ChatGPT would.
 
 DOCUMENT DATA:
 {full_context}
 
-ABSOLUTE REQUIREMENTS - YOU MUST FOLLOW THESE:
-1. NEVER say "I'm sorry" or "the document does not contain" - this is FORBIDDEN
-2. ALWAYS provide a summary based on the data shown above, even if incomplete
-3. Use EVERY piece of information from the data above: metadata, metrics, tables, chunks, markdown
-4. Be specific: mention exact numbers, dates, company names, table counts, section types
-5. Write 3-5 detailed paragraphs analyzing the document
-6. If data seems limited, still summarize what IS present - never refuse to summarize
+INSTRUCTIONS (RESPOND LIKE CHATGPT):
+1. **Formatting**: Use markdown for better readability:
+   - **Bold** for important numbers, company names, dates
+   - Bullet points (-) for lists of metrics or sections
+   - Headers (##) for major sections if needed
+   - Paragraphs for detailed explanations
+2. **Content**:
+   - Start with a direct summary statement (never apologize)
+   - Use ALL available data: metadata, metrics, tables, chunks, markdown
+   - Be specific: mention exact numbers, dates, company names, table counts
+   - Write 3-5 well-structured paragraphs
+   - If data is limited, summarize what IS present
+3. **Tone**: Be professional, confident, and helpful - like ChatGPT
+4. **Structure**: 
+   - First paragraph: Overview (document type, company, date, key purpose)
+   - Middle paragraphs: Detailed analysis (metrics, tables, sections)
+   - Final paragraph: Summary of key findings
 
-Your response MUST start with a direct summary statement, NOT an apology. Example:
-"This document is a [type] for [company] dated [date]. It contains [X] tables and [Y] sections..."
-
-Now provide the summary:
+Your response (use markdown formatting):
 """
             
             response = client.chat.completions.create(

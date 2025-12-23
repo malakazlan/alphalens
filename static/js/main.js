@@ -148,7 +148,20 @@ function showFeature(feature) {
         if (finbotSection) finbotSection.style.display = 'block';
         updateNavLinks('chatbot');
     } else if (feature === 'reports') {
-        if (reportsSection) reportsSection.style.display = 'block';
+        if (reportsSection) {
+            reportsSection.style.display = 'block';
+            // Load and render reports when section is shown
+            if (typeof loadReports === 'function') {
+                loadReports();
+            } else {
+                // Fallback: load reports after a short delay to ensure module is loaded
+                setTimeout(() => {
+                    if (typeof loadReports === 'function') {
+                        loadReports();
+                    }
+                }, 100);
+            }
+        }
         updateNavLinks('reports');
     } else if (feature === 'optimizer') {
         if (optimizerSection) optimizerSection.style.display = 'block';
@@ -219,38 +232,60 @@ window.addEventListener('DOMContentLoaded', async () => {
 function initializeSidebar() {
     const sidebarToggle = document.getElementById('sidebar-toggle');
     const sidebarCloseBtn = document.getElementById('sidebar-close-btn');
-    const dashboard = document.getElementById('analyzer-section');
+    const resultState = document.getElementById('analyzer-result-state');
+    const dashboard = resultState ? resultState.querySelector('.dashboard') : null;
     const sidebar = document.getElementById('workspace-sidebar');
     
-    if (!sidebarToggle || !sidebarCloseBtn || !dashboard || !sidebar) return;
+    if (!sidebarToggle || !sidebarCloseBtn || !dashboard || !sidebar) {
+        console.warn('Sidebar elements not found');
+        return;
+    }
     
     // Load saved sidebar state from localStorage
+    // Default to open (visible) unless explicitly saved as collapsed
     const savedState = localStorage.getItem('sidebar-collapsed');
     if (savedState === 'true') {
         dashboard.classList.add('sidebar-collapsed');
-    }
-    
-    // Toggle sidebar
-    function toggleSidebar() {
-        dashboard.classList.toggle('sidebar-collapsed');
-        const isCollapsed = dashboard.classList.contains('sidebar-collapsed');
-        localStorage.setItem('sidebar-collapsed', isCollapsed.toString());
+    } else {
+        // Ensure sidebar is visible by default
+        dashboard.classList.remove('sidebar-collapsed');
+        localStorage.setItem('sidebar-collapsed', 'false');
     }
     
     // Open sidebar
     function openSidebar() {
         dashboard.classList.remove('sidebar-collapsed');
         localStorage.setItem('sidebar-collapsed', 'false');
+        updateSidebarToggleVisibility();
     }
     
     // Close sidebar
     function closeSidebar() {
         dashboard.classList.add('sidebar-collapsed');
         localStorage.setItem('sidebar-collapsed', 'true');
+        updateSidebarToggleVisibility();
     }
     
     sidebarToggle.addEventListener('click', openSidebar);
     sidebarCloseBtn.addEventListener('click', closeSidebar);
+    
+    // Update toggle button visibility
+    updateSidebarToggleVisibility();
+}
+
+// Function to update sidebar toggle button visibility
+function updateSidebarToggleVisibility() {
+    const sidebarToggle = document.getElementById('sidebar-toggle');
+    const resultState = document.getElementById('analyzer-result-state');
+    const dashboard = resultState ? resultState.querySelector('.dashboard') : null;
+    
+    if (!sidebarToggle || !dashboard) return;
+    
+    if (dashboard.classList.contains('sidebar-collapsed')) {
+        sidebarToggle.style.display = 'flex';
+    } else {
+        sidebarToggle.style.display = 'none';
+    }
 }
 
 // Resizer functionality for main content panels (Landing.AI style)
@@ -450,6 +485,25 @@ function showAnalyzerResultState() {
     setTimeout(() => {
         initializeSidebar();
         initializeResizer();
+        
+        // Force sidebar to be visible
+        const dashboard = resultState.querySelector('.dashboard');
+        const sidebar = document.getElementById('workspace-sidebar');
+        if (dashboard && sidebar) {
+            // Remove collapsed class if it exists
+            dashboard.classList.remove('sidebar-collapsed');
+            // Force visibility with inline styles
+            sidebar.style.display = 'flex';
+            sidebar.style.visibility = 'visible';
+            sidebar.style.opacity = '1';
+            sidebar.style.transform = 'translateX(0)';
+            sidebar.style.minWidth = '260px';
+            sidebar.style.maxWidth = '260px';
+            sidebar.style.width = '260px';
+            // Ensure it's in the grid
+            sidebar.style.gridColumn = '1';
+            sidebar.style.position = 'relative';
+        }
     }, 100);
 }
 
@@ -609,40 +663,7 @@ async function waitForProcessing(documentId) {
 function loadPresavedDocuments() {
     // Load documents from API and populate the pre-saved docs list
     loadDocuments().then(() => {
-        const documentList = document.getElementById('document-list');
-        const presavedList = document.getElementById('presaved-docs-list');
-        
-        if (!documentList || !presavedList) return;
-        
-        const docs = Array.from(documentList.querySelectorAll('.document-item'));
-        presavedList.innerHTML = '';
-        
-        docs.forEach(docItem => {
-            const docName = docItem.querySelector('.doc-name')?.textContent || 'Unknown';
-            const docMeta = docItem.querySelector('.doc-meta')?.textContent || '';
-            const docId = docItem.getAttribute('data-document-id');
-            
-            if (docId) {
-                const presavedItem = document.createElement('div');
-                presavedItem.className = 'presaved-doc-item';
-                presavedItem.innerHTML = `
-                    <h4 class="presaved-doc-name">${docName}</h4>
-                    <p class="presaved-doc-meta">${docMeta}</p>
-                `;
-                presavedItem.addEventListener('click', async () => {
-                    showAnalyzerLoadingState();
-                    try {
-                        await selectDocument(docId);
-                        showAnalyzerResultState();
-                    } catch (error) {
-                        console.error('Error loading document:', error);
-                        showAnalyzerInitialState();
-                        alert('Failed to load document. Please try again.');
-                    }
-                });
-                presavedList.appendChild(presavedItem);
-            }
-        });
+        // updatePresavedDocuments will be called from displayDocuments
     });
 }
 
@@ -763,6 +784,43 @@ async function loadDocuments() {
     }
 }
 
+// Helper function to deduplicate documents by filename (keep most recent)
+function deduplicateDocuments(documents) {
+    if (!documents || documents.length === 0) return [];
+    
+    // Create a map to store the most recent document for each filename
+    const uniqueDocs = new Map();
+    
+    documents.forEach(doc => {
+        const filename = doc.filename || doc.document_id;
+        const existingDoc = uniqueDocs.get(filename);
+        
+        // If no existing doc for this filename, or this one is newer, use this one
+        if (!existingDoc) {
+            uniqueDocs.set(filename, doc);
+        } else {
+            // Compare upload times to keep the most recent
+            const existingTime = existingDoc.upload_time || existingDoc.document_id;
+            const currentTime = doc.upload_time || doc.document_id;
+            
+            // If current doc is newer (or same but prefer current), replace
+            if (currentTime >= existingTime) {
+                uniqueDocs.set(filename, doc);
+            }
+        }
+    });
+    
+    // Convert map to array and sort by upload time (newest first)
+    const result = Array.from(uniqueDocs.values());
+    result.sort((a, b) => {
+        const timeA = a.upload_time || a.document_id;
+        const timeB = b.upload_time || b.document_id;
+        return timeB.localeCompare(timeA); // Descending order (newest first)
+    });
+    
+    return result;
+}
+
 // Function to display documents
 function displayDocuments(documents) {
     if (!documentList) {
@@ -777,20 +835,26 @@ function displayDocuments(documents) {
         if (heroDocCount) {
             heroDocCount.textContent = '0';
         }
+        // Clear pre-saved documents
+        updatePresavedDocuments([]);
         return;
     }
+    
+    // Deduplicate documents by filename
+    const uniqueDocuments = deduplicateDocuments(documents);
     
     documentList.innerHTML = '';
     // Only update hero-doc-count if it exists (homepage only)
     const heroDocCount = document.getElementById('hero-doc-count');
     if (heroDocCount) {
-        heroDocCount.textContent = documents.length;
+        heroDocCount.textContent = uniqueDocuments.length;
     }
     
-    documents.forEach(doc => {
+    uniqueDocuments.forEach(doc => {
         const listItem = document.createElement('li');
         listItem.className = 'document-item';
         listItem.dataset.id = doc.document_id;
+        listItem.setAttribute('data-document-id', doc.document_id);
         listItem.innerHTML = `
             <p class="doc-name">${doc.filename || doc.document_id}</p>
             <p class="doc-meta">Uploaded ${doc.upload_time || 'unknown'}</p>
@@ -802,6 +866,46 @@ function displayDocuments(documents) {
         listItem.addEventListener('click', () => selectDocument(doc.document_id));
         
         documentList.appendChild(listItem);
+    });
+    
+    // Update pre-saved documents list
+    updatePresavedDocuments(documents);
+}
+
+// Function to update pre-saved documents section
+function updatePresavedDocuments(documents) {
+    const presavedList = document.getElementById('presaved-docs-list');
+    if (!presavedList) return;
+    
+    presavedList.innerHTML = '';
+    
+    if (documents.length === 0) {
+        presavedList.innerHTML = '<p class="doc-meta" style="padding: 12px; color: var(--text-secondary);">No documents yet</p>';
+        return;
+    }
+    
+    // Deduplicate documents by filename (keep most recent)
+    const uniqueDocuments = deduplicateDocuments(documents);
+    
+    uniqueDocuments.forEach(doc => {
+        const presavedItem = document.createElement('div');
+        presavedItem.className = 'presaved-doc-item';
+        presavedItem.innerHTML = `
+            <h4 class="presaved-doc-name">${doc.filename || doc.document_id}</h4>
+            <p class="presaved-doc-meta">${doc.status === 'complete' ? 'Ready' : 'Processing...'}</p>
+        `;
+        presavedItem.addEventListener('click', async () => {
+            showAnalyzerLoadingState();
+            try {
+                await selectDocument(doc.document_id);
+                showAnalyzerResultState();
+            } catch (error) {
+                console.error('Error loading document:', error);
+                showAnalyzerInitialState();
+                alert('Failed to load document. Please try again.');
+            }
+        });
+        presavedList.appendChild(presavedItem);
     });
 }
 
@@ -1244,6 +1348,129 @@ function escapeHtml(text) {
         .replace(/>/g, '&gt;')
         .replace(/"/g, '&quot;')
         .replace(/'/g, '&#39;');
+}
+
+// Convert markdown to HTML for chat messages (ChatGPT-like formatting)
+function renderMarkdown(text) {
+    if (!text) return '';
+    
+    let html = text;
+    
+    // Code blocks first (before escaping, to preserve code)
+    html = html.replace(/```([\s\S]*?)```/g, (match, code) => {
+        const escapedCode = escapeHtml(code.trim());
+        return `<pre><code>${escapedCode}</code></pre>`;
+    });
+    
+    // Escape HTML to prevent XSS (but preserve code blocks)
+    const codeBlockPlaceholders = [];
+    html = html.replace(/<pre><code>([\s\S]*?)<\/code><\/pre>/g, (match, code) => {
+        const placeholder = `__CODE_BLOCK_${codeBlockPlaceholders.length}__`;
+        codeBlockPlaceholders.push(code);
+        return placeholder;
+    });
+    
+    html = escapeHtml(html);
+    
+    // Restore code blocks
+    codeBlockPlaceholders.forEach((code, idx) => {
+        html = html.replace(`__CODE_BLOCK_${idx}__`, `<pre><code>${code}</code></pre>`);
+    });
+    
+    // Headers
+    html = html.replace(/^### (.*$)/gim, '<h3>$1</h3>');
+    html = html.replace(/^## (.*$)/gim, '<h2>$1</h2>');
+    html = html.replace(/^# (.*$)/gim, '<h1>$1</h1>');
+    
+    // Inline code (single backticks) - but not inside code blocks
+    html = html.replace(/`([^`\n]+)`/g, '<code>$1</code>');
+    
+    // Bold (**text**)
+    html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+    
+    // Italic (*text*) - but not if it's part of **text**
+    html = html.replace(/(?<!\*)\*([^*\n]+)\*(?!\*)/g, '<em>$1</em>');
+    
+    // Links [text](url)
+    html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+    
+    // Blockquotes (> text)
+    html = html.replace(/^> (.+)$/gim, '<blockquote>$1</blockquote>');
+    
+    // Horizontal rules
+    html = html.replace(/^---$/gim, '<hr>');
+    
+    // Process lists - split by lines first
+    const lines = html.split('\n');
+    const processedLines = [];
+    let inList = false;
+    let listType = null; // 'ul' or 'ol'
+    
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        // Match bullet points: - or * followed by space
+        const unorderedMatch = line.match(/^[\*\-]\s+(.+)$/);
+        // Match ordered lists: number. followed by space
+        const orderedMatch = line.match(/^\d+\.\s+(.+)$/);
+        
+        if (unorderedMatch || orderedMatch) {
+            const itemText = unorderedMatch ? unorderedMatch[1] : orderedMatch[1];
+            const currentListType = unorderedMatch ? 'ul' : 'ol';
+            
+            if (!inList || listType !== currentListType) {
+                // Close previous list if exists
+                if (inList) {
+                    processedLines.push(`</${listType}>`);
+                }
+                // Start new list
+                processedLines.push(`<${currentListType}>`);
+                inList = true;
+                listType = currentListType;
+            }
+            // Process markdown within list items (bold, italic, etc.)
+            let itemHtml = itemText;
+            itemHtml = itemHtml.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+            itemHtml = itemHtml.replace(/(?<!\*)\*([^*\n]+)\*(?!\*)/g, '<em>$1</em>');
+            itemHtml = itemHtml.replace(/`([^`\n]+)`/g, '<code>$1</code>');
+            processedLines.push(`<li>${itemHtml}</li>`);
+        } else {
+            // Close list if we were in one
+            if (inList) {
+                processedLines.push(`</${listType}>`);
+                inList = false;
+                listType = null;
+            }
+            // Only add non-empty lines
+            if (line.trim()) {
+                processedLines.push(line);
+            }
+        }
+    }
+    
+    // Close list if still open
+    if (inList) {
+        processedLines.push(`</${listType}>`);
+    }
+    
+    html = processedLines.join('\n');
+    
+    // Paragraphs (double newlines) - but preserve block elements
+    html = html.split(/\n\n+/).map(para => {
+        para = para.trim();
+        if (!para) return '';
+        // Don't wrap if it's already a block element
+        if (/^<(h[1-6]|ul|ol|pre|blockquote|hr|p)/.test(para)) {
+            return para;
+        }
+        return `<p>${para}</p>`;
+    }).join('\n');
+    
+    // Single newlines within paragraphs become <br>
+    html = html.replace(/(<p>[\s\S]*?)<\/p>/g, (match, content) => {
+        return content.replace(/\n/g, '<br>') + '</p>';
+    });
+    
+    return html;
 }
 
 // Format markdown like Landing.AI - structured with numbered sections and proper table rendering
@@ -1857,7 +2084,10 @@ function scrollToMarkdownSection(chunkId) {
         }
         
         // Get the section's position relative to markdown-view
-        const sectionOffsetTop = section.offsetTop;
+        // Use getBoundingClientRect for accurate positioning
+        const sectionRect = section.getBoundingClientRect();
+        const containerRect = parseContent.getBoundingClientRect();
+        const sectionOffsetTop = sectionRect.top - containerRect.top + parseContent.scrollTop;
         const markdownViewOffsetTop = markdownView.offsetTop || 0;
         const sectionRelativeTop = sectionOffsetTop - markdownViewOffsetTop;
         
@@ -1884,10 +2114,29 @@ function scrollToMarkdownSection(chunkId) {
         });
         
         // Scroll ONLY the right panel (parse-content), NOT the whole page
-        parseContent.scrollTo({
-            top: finalScroll,
-            behavior: 'smooth'
-        });
+        // Ensure we're scrolling the correct container (parse-content, not the page)
+        const scrollContainer = parseContent;
+        if (scrollContainer) {
+            scrollContainer.scrollTo({
+                top: finalScroll,
+                behavior: 'smooth'
+            });
+            
+            // Also ensure the section is visible by scrolling it into view within the container
+            // Use a small delay to ensure the container is ready
+            setTimeout(() => {
+                try {
+                    section.scrollIntoView({ 
+                        behavior: 'smooth', 
+                        block: 'center',
+                        inline: 'nearest'
+                    });
+                } catch (e) {
+                    // Fallback if scrollIntoView fails
+                    console.warn('scrollIntoView failed, using scrollTo only');
+                }
+            }, 50);
+        }
         
         // Highlight the section
         highlightMarkdownSection(chunkId);
@@ -2608,6 +2857,12 @@ async function sendChatMessage() {
         chatSendButton.disabled = true;
     }
     
+    // Add typing indicator
+    const typingIndicator = document.createElement('div');
+    typingIndicator.className = 'message response typing-indicator';
+    typingIndicator.innerHTML = '<div class="typing-dots"><span></span><span></span><span></span></div>';
+    chatMessages.appendChild(typingIndicator);
+    
     // Scroll to bottom
     chatMessages.scrollTop = chatMessages.scrollHeight;
     
@@ -2653,9 +2908,10 @@ async function sendChatMessage() {
         const responseMessage = document.createElement('div');
         responseMessage.className = 'message response';
         
-        // Format answer - if it's a simple number, display it prominently
-        let answerHtml = escapeHtml(data.answer);
+        // Format answer with markdown rendering
+        let answerHtml = '';
         const numericMatch = data.answer.match(/^[\d,]+(?:\.\d+)?$/);
+        
         if (numericMatch && data.sources && data.sources.length > 0) {
             // If answer is just a number and we have sources, show it with icon
             answerHtml = `
@@ -2665,7 +2921,14 @@ async function sendChatMessage() {
                 </div>
             `;
         } else {
-            answerHtml = `<div>${escapeHtml(data.answer)}</div>`;
+            // Render markdown for rich formatting
+            answerHtml = renderMarkdown(data.answer);
+        }
+        
+        // Remove typing indicator
+        const typingIndicator = chatMessages.querySelector('.typing-indicator');
+        if (typingIndicator) {
+            typingIndicator.remove();
         }
         
         responseMessage.innerHTML = `
@@ -2685,6 +2948,12 @@ async function sendChatMessage() {
         chatMessages.scrollTop = chatMessages.scrollHeight;
     } catch (error) {
         console.error('Error getting answer:', error);
+        
+        // Remove typing indicator
+        const typingIndicator = chatMessages.querySelector('.typing-indicator');
+        if (typingIndicator) {
+            typingIndicator.remove();
+        }
         
         const errorMessage = document.createElement('div');
         errorMessage.className = 'message response';

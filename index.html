@@ -209,19 +209,20 @@
                         <line x1="3" y1="18" x2="21" y2="18"></line>
                     </svg>
                 </button>
-                <button class="back-to-cards-btn" id="back-to-cards-btn" title="Back to Cards">
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                        <path d="M19 12H5M12 19l-7-7 7-7"></path>
-                    </svg>
-                    <span>Back</span>
-                </button>
                 
                 <div class="dashboard">
                     <aside class="control-panel glass-card" id="workspace-sidebar">
                         <div class="sidebar-header">
-                            <div>
-                                <div class="panel-title">Workspace</div>
-                                <p class="doc-meta">Track ingestion & switch between documents.</p>
+                            <div class="sidebar-header-left">
+                                <button class="back-to-cards-btn-inline" id="back-to-cards-btn" title="Back to Cards">
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                        <path d="M19 12H5M12 19l-7-7 7-7"></path>
+                                    </svg>
+                                </button>
+                                <div>
+                                    <div class="panel-title">Workspace</div>
+                                    <p class="doc-meta">Track ingestion & switch between documents.</p>
+                                </div>
                             </div>
                             <button class="sidebar-close-btn" id="sidebar-close-btn" title="Close Sidebar">
                                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -235,9 +236,25 @@
                             <div id="user-info" style="font-size: 0.95rem; font-weight: 500; color: var(--text); margin-top: 4px;">-</div>
                         </div>
                         <div id="document-status"></div>
-                        <ul id="document-list" class="document-list">
-                            <!-- Populated dynamically -->
-                        </ul>
+                        
+                        <!-- Recent Files Section -->
+                        <div class="recent-files-section">
+                            <div class="recent-files-header">
+                                <div class="recent-files-icon">
+                                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                        <!-- Two overlapping documents icon -->
+                                        <rect x="9" y="2" width="12" height="16" rx="2" fill="none"></rect>
+                                        <path d="M5 6H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-1"></path>
+                                        <path d="M9 2v4h4"></path>
+                                        <path d="M5 10v4h4"></path>
+                                    </svg>
+                                </div>
+                                <h3 class="recent-files-title">Recent Files</h3>
+                            </div>
+                            <ul id="document-list" class="document-list">
+                                <!-- Populated dynamically -->
+                            </ul>
+                        </div>
                     </aside>
 
                     <div class="main-content-area">
@@ -463,5 +480,6 @@
         });
     </script>
     <script src="/static/js/main.js?v=1.0"></script>
+    <script src="/static/js/modules/reports.js?v=1.0"></script>
 </body>
 </html>

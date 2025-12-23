@@ -108,6 +108,14 @@ def get_answer_from_document(
             "source": "general_knowledge"
         }
     
+    # Check if user wants bullet points or list format
+    list_format_keywords = [
+        "in bullets", "in bullet points", "as bullets", "as bullet points",
+        "in a list", "as a list", "list", "bullets", "bullet points",
+        "in points", "as points", "point form", "bullet form"
+    ]
+    wants_list_format = any(keyword in query_lower for keyword in list_format_keywords)
+    
     # Check if this is a summarization request (more comprehensive detection)
     summary_keywords = [
         "summarize", "summary", "overview", "what is this document", "tell me about this document",
@@ -147,6 +155,21 @@ def get_answer_from_document(
             "source": "gpt-3.5-turbo"
         }
     
+    # Check if this is a simple question (name, date, amount, what/where/when)
+    simple_question_patterns = [
+        r'what is (my|the) name',
+        r'what is (my|the) (date|amount|value|number)',
+        r'who (am i|is)',
+        r'when (is|was)',
+        r'where (is|was)',
+        r'how much',
+        r'what (did|do) i (ask|said)',
+        r'what (was|did) (i|you) (ask|say)',
+        r'what (did|do) (i|you) (ask|say) (above|before)',
+    ]
+    
+    is_simple_question = any(re.search(pattern, query_lower) for pattern in simple_question_patterns)
+    
     relevant_chunks = similarity_search(query, vector_store_path, top_k=8)
     context_blocks = build_context_blocks(relevant_chunks, financial_data)
     
@@ -174,12 +197,19 @@ def get_answer_from_document(
                 "text": metrics_text
             })
     
+    # For simple questions, use a more direct approach
+    if is_simple_question:
+        # Use fewer context blocks for simple questions
+        context_blocks = context_blocks[:3]
+    
     answer_text = llm_service.generate_finance_response(
         query=query,
         metadata=financial_data.get("metadata", {}),
         key_metrics=financial_data.get("key_metrics", []),
         context_blocks=context_blocks,
-        financial_data=financial_data
+        financial_data=financial_data,
+        is_simple_question=is_simple_question,
+        wants_list_format=wants_list_format
     )
     
     # Check if answer contains "I'm sorry" or similar - if so, use fallback

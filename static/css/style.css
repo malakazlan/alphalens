@@ -941,24 +941,33 @@ button:hover {
 }
 
 /* Back Button */
-.back-to-cards-btn {
-    position: absolute;
-    top: 4px;
-    left: 4px;
-    z-index: 1001;
+/* Back button in sidebar header */
+.back-to-cards-btn-inline {
     display: flex;
     align-items: center;
-    gap: 6px;
-    padding: 8px 12px;
-    background: var(--card);
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    padding: 0;
+    background: transparent;
     border: 1px solid var(--border);
     border-radius: 6px;
     cursor: pointer;
     color: var(--text-secondary);
     transition: all 0.2s ease;
-    box-shadow: var(--shadow);
-    font-size: 0.85rem;
-    font-weight: 500;
+    flex-shrink: 0;
+    margin-top: 2px;
+}
+
+.back-to-cards-btn-inline:hover {
+    background: var(--accent-soft);
+    border-color: var(--accent);
+    color: var(--accent);
+}
+
+/* Legacy back button (hidden) */
+.back-to-cards-btn {
+    display: none;
 }
 
 .back-to-cards-btn:hover {
@@ -972,14 +981,23 @@ button:hover {
 .analyzer-result-state {
     width: 100%;
     position: relative;
+    display: block !important;
+}
+
+.analyzer-result-state[style*="display: none"] {
+    display: none !important;
+}
+
+.analyzer-result-state[style*="display: block"] {
+    display: block !important;
 }
 
 .analyzer-result-state .dashboard {
     display: grid !important;
-    grid-template-columns: 220px 1fr !important;
-    gap: 4px;
+    grid-template-columns: 260px 1fr !important;
+    gap: 0;
     margin: 0;
-    padding: 4px;
+    padding: 0;
     min-height: 100%;
     max-height: 100%;
     height: 100%;
@@ -992,36 +1010,71 @@ button:hover {
     box-sizing: border-box;
 }
 
+/* Force sidebar visibility in result state */
+.analyzer-result-state .dashboard .control-panel {
+    display: flex !important;
+    visibility: visible !important;
+    opacity: 1 !important;
+    transform: translateX(0) !important;
+    min-width: 260px !important;
+    max-width: 260px !important;
+    width: 260px !important;
+}
+
 .dashboard.sidebar-collapsed {
     grid-template-columns: 0 1fr !important;
+    transition: grid-template-columns 0.3s ease;
 }
 
 .dashboard.sidebar-collapsed .control-panel {
-    width: 0;
+    min-width: 0;
+    max-width: 0;
     padding: 0;
+    margin: 0;
     border: none;
     overflow: hidden;
     opacity: 0;
     pointer-events: none;
+    transform: translateX(-100%);
+    transition: transform 0.3s ease, opacity 0.3s ease, min-width 0.3s ease, max-width 0.3s ease;
+}
+
+/* Ensure main content area adjusts properly when sidebar collapses */
+.dashboard.sidebar-collapsed .main-content-area {
+    margin-left: 0;
+    width: 100%;
+    transition: margin-left 0.3s ease, width 0.3s ease;
 }
 
 .sidebar-toggle {
-    position: absolute;
-    left: 12px;
-    top: 12px;
-    z-index: 1000;
+    position: fixed;
+    left: 8px;
+    top: 72px;
+    z-index: 1002;
     display: none;
     align-items: center;
     justify-content: center;
-    width: 40px;
-    height: 40px;
+    width: 36px;
+    height: 36px;
     background: var(--card);
     border: 1px solid var(--border);
     border-radius: 8px;
     cursor: pointer;
     color: var(--text-secondary);
     transition: all 0.2s ease;
-    box-shadow: var(--shadow);
+    box-shadow: var(--shadow-lg);
+}
+
+/* Show toggle button when sidebar is collapsed */
+.dashboard.sidebar-collapsed ~ .sidebar-toggle,
+.analyzer-result-state:has(.dashboard.sidebar-collapsed) .sidebar-toggle {
+    display: flex !important;
+}
+
+/* Hide toggle when sidebar is open */
+.dashboard:not(.sidebar-collapsed) ~ .sidebar-toggle,
+.analyzer-result-state:not(:has(.dashboard.sidebar-collapsed)) .sidebar-toggle {
+    display: none !important;
 }
 
 .dashboard.sidebar-collapsed .sidebar-toggle {
@@ -1041,6 +1094,13 @@ button:hover {
     align-items: flex-start;
     margin-bottom: 12px;
     gap: 8px;
+}
+
+.sidebar-header-left {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    flex: 1;
 }
 
 .sidebar-close-btn {
@@ -1166,6 +1226,13 @@ button:hover {
     min-width: 0;
 }
 
+/* Ensure workspace sidebar is visible */
+#workspace-sidebar.control-panel {
+    display: flex !important;
+    visibility: visible !important;
+    opacity: 1 !important;
+}
+
 /* Ensure parse panel card takes full height */
 .parse-panel-section .glass-card {
     height: 100%;
@@ -1176,7 +1243,7 @@ button:hover {
 }
 
 .control-panel {
-    display: flex;
+    display: flex !important;
     flex-direction: column;
     gap: 6px;
     min-height: 0;
@@ -1187,7 +1254,25 @@ button:hover {
     width: 100%;
     box-sizing: border-box;
     flex: 1;
-    transition: width 0.3s ease, opacity 0.3s ease, padding 0.3s ease;
+    transition: transform 0.3s ease, opacity 0.3s ease, min-width 0.3s ease, max-width 0.3s ease;
+    position: relative;
+    background: var(--card);
+    border-right: 1px solid var(--border);
+    opacity: 1 !important;
+    transform: translateX(0) !important;
+    visibility: visible !important;
+    min-width: 260px;
+    max-width: 260px;
+}
+
+/* Ensure sidebar is visible when dashboard is not collapsed */
+.dashboard:not(.sidebar-collapsed) .control-panel {
+    display: flex !important;
+    opacity: 1 !important;
+    visibility: visible !important;
+    transform: translateX(0) !important;
+    min-width: 260px !important;
+    max-width: 260px !important;
 }
 
 .panel-title {
@@ -1198,10 +1283,42 @@ button:hover {
     letter-spacing: -0.01em;
 }
 
+/* Recent Files Section */
+.recent-files-section {
+    margin-top: 16px;
+}
+
+.recent-files-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 12px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--border);
+}
+
+.recent-files-icon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
+    color: var(--text-secondary);
+    flex-shrink: 0;
+}
+
+.recent-files-title {
+    font-size: 0.9rem;
+    font-weight: 600;
+    color: var(--text);
+    margin: 0;
+    letter-spacing: -0.01em;
+}
+
 .document-list {
     list-style: none;
     padding: 0;
-    margin: 12px 0 0;
+    margin: 0;
     display: flex;
     flex-direction: column;
     gap: 8px;
@@ -1635,11 +1752,18 @@ button:hover {
 .document-header-bar {
     display: flex;
     align-items: center;
+    justify-content: space-between;
     gap: 6px;
     padding: 6px 8px;
     border-bottom: 1px solid var(--border);
     background: var(--bg-soft);
     margin-bottom: 0;
+    position: relative;
+}
+
+.document-header-bar .upload-icon-btn {
+    order: 3;
+    margin-left: auto;
 }
 
 .upload-icon-btn {
@@ -1687,6 +1811,10 @@ button:hover {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    order: 1;
+    margin-right: auto;
+    text-overflow: ellipsis;
+    white-space: nowrap;
     min-width: 0;
 }
 
@@ -1695,6 +1823,9 @@ button:hover {
     align-items: center;
     gap: 8px;
     flex-shrink: 0;
+    order: 2;
+    margin-left: auto;
+    margin-right: 8px;
 }
 
 .page-nav-btn {
@@ -2218,12 +2349,12 @@ button:hover {
 .chat-messages {
     flex: 1;
     overflow-y: auto;
-    padding: 20px;
+    padding: 24px;
     background: var(--card);
     min-height: 0;
     display: none; /* Hidden by default, shown when messages exist */
     flex-direction: column;
-    gap: 16px;
+    gap: 24px;
 }
 
 .chat-messages:not(:empty) {
@@ -2234,12 +2365,137 @@ button:hover {
     display: flex;
     flex-direction: column;
     gap: 8px;
-    padding: 12px 16px;
+    padding: 16px 20px;
     border-radius: 12px;
-    line-height: 1.6;
+    line-height: 1.75;
     max-width: 85%;
     word-wrap: break-word;
     animation: fadeIn 0.3s ease;
+    font-size: 15px;
+    letter-spacing: 0.01em;
+}
+
+/* Markdown formatting within messages */
+.message p {
+    margin: 0.5em 0;
+}
+
+.message p:first-child {
+    margin-top: 0;
+}
+
+.message p:last-child {
+    margin-bottom: 0;
+}
+
+.message strong {
+    font-weight: 600;
+    color: inherit;
+}
+
+.message em {
+    font-style: italic;
+}
+
+.message code {
+    background: rgba(0, 0, 0, 0.1);
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-family: 'Courier New', monospace;
+    font-size: 0.9em;
+}
+
+.message pre {
+    background: rgba(0, 0, 0, 0.05);
+    padding: 12px 16px;
+    border-radius: 8px;
+    overflow-x: auto;
+    margin: 12px 0;
+    font-family: 'Courier New', monospace;
+    font-size: 0.9em;
+    line-height: 1.5;
+}
+
+.message pre code {
+    background: none;
+    padding: 0;
+}
+
+.message ul, .message ol {
+    margin: 8px 0;
+    padding-left: 24px;
+}
+
+.message li {
+    margin: 4px 0;
+}
+
+.message blockquote {
+    border-left: 3px solid rgba(0, 0, 0, 0.2);
+    padding-left: 16px;
+    margin: 12px 0;
+    color: var(--text-secondary);
+    font-style: italic;
+}
+
+.message h1, .message h2, .message h3 {
+    margin: 16px 0 8px 0;
+    font-weight: 600;
+}
+
+.message h1 {
+    font-size: 1.5em;
+}
+
+.message h2 {
+    font-size: 1.3em;
+}
+
+.message h3 {
+    font-size: 1.1em;
+}
+
+/* Typing indicator */
+.typing-indicator {
+    opacity: 0.7;
+}
+
+.typing-dots {
+    display: flex;
+    gap: 4px;
+    align-items: center;
+    padding: 8px 0;
+}
+
+.typing-dots span {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--text-secondary);
+    animation: typingDot 1.4s infinite ease-in-out;
+}
+
+.typing-dots span:nth-child(1) {
+    animation-delay: 0s;
+}
+
+.typing-dots span:nth-child(2) {
+    animation-delay: 0.2s;
+}
+
+.typing-dots span:nth-child(3) {
+    animation-delay: 0.4s;
+}
+
+@keyframes typingDot {
+    0%, 60%, 100% {
+        transform: translateY(0);
+        opacity: 0.7;
+    }
+    30% {
+        transform: translateY(-10px);
+        opacity: 1;
+    }
 }
 
 @keyframes fadeIn {
@@ -2254,11 +2510,22 @@ button:hover {
 }
 
 .message.query {
-    background: #10b981; /* Green background */
+    background: linear-gradient(135deg, #10b981 0%, #059669 100%);
     color: white;
     align-self: flex-end;
     margin-left: auto;
     border-bottom-right-radius: 4px;
+    box-shadow: 0 2px 8px rgba(16, 185, 129, 0.2);
+}
+
+.message.query code {
+    background: rgba(255, 255, 255, 0.2);
+    color: white;
+}
+
+.message.query pre {
+    background: rgba(255, 255, 255, 0.15);
+    color: white;
 }
 
 .message.response {
@@ -2267,6 +2534,7 @@ button:hover {
     align-self: flex-start;
     border-bottom-left-radius: 4px;
     border: 1px solid var(--border);
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
 }
 
 .message strong {
@@ -3172,6 +3440,286 @@ button:hover {
     
     .control-panel {
         padding: 16px;
+    }
+}
+
+/* Reports Section Styles */
+.reports-container {
+    max-width: 1400px;
+    margin: 0 auto;
+    padding: 24px;
+}
+
+.reports-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 32px;
+    gap: 20px;
+}
+
+.reports-title {
+    font-size: 2rem;
+    font-weight: 600;
+    color: var(--text);
+    margin: 0;
+    letter-spacing: -0.01em;
+}
+
+.reports-search {
+    padding: 10px 16px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--card);
+    color: var(--text);
+    font-size: 0.95rem;
+    min-width: 250px;
+    transition: all 0.2s ease;
+}
+
+.reports-search:focus {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px rgba(5, 150, 105, 0.1);
+}
+
+.reports-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+    gap: 20px;
+}
+
+.report-card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px;
+    transition: all 0.2s ease;
+    cursor: pointer;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.report-card:hover {
+    transform: translateY(-4px);
+    box-shadow: var(--shadow-lg);
+    border-color: var(--accent);
+}
+
+.report-card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 12px;
+}
+
+.report-card-title {
+    font-size: 1.1rem;
+    font-weight: 600;
+    color: var(--text);
+    margin: 0;
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.report-card-content {
+    flex: 1;
+}
+
+.report-card-meta {
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+    margin: 0 0 12px 0;
+}
+
+.report-card-preview {
+    font-size: 0.9rem;
+    color: var(--text-secondary);
+    line-height: 1.6;
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+}
+
+.report-card-actions {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.report-view-btn,
+.report-export-btn {
+    padding: 8px 16px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--card);
+    color: var(--text);
+    font-size: 0.85rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.report-view-btn {
+    background: var(--accent);
+    color: white;
+    border-color: var(--accent);
+}
+
+.report-view-btn:hover {
+    background: var(--accent-hover);
+    transform: translateY(-1px);
+}
+
+.report-export-btn:hover {
+    background: var(--accent-soft);
+    border-color: var(--accent);
+    color: var(--accent);
+}
+
+/* Report Modal */
+.report-modal {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.5);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 2000;
+    padding: 20px;
+}
+
+.report-modal-content {
+    background: var(--card);
+    border-radius: 12px;
+    max-width: 900px;
+    width: 100%;
+    max-height: 90vh;
+    display: flex;
+    flex-direction: column;
+    box-shadow: var(--shadow-lg);
+}
+
+.report-modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 20px 24px;
+    border-bottom: 1px solid var(--border);
+}
+
+.report-modal-header h2 {
+    font-size: 1.5rem;
+    font-weight: 600;
+    color: var(--text);
+    margin: 0;
+}
+
+.report-modal-close {
+    background: none;
+    border: none;
+    font-size: 2rem;
+    color: var(--text-secondary);
+    cursor: pointer;
+    width: 32px;
+    height: 32px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 6px;
+    transition: all 0.2s ease;
+}
+
+.report-modal-close:hover {
+    background: var(--bg-soft);
+    color: var(--text);
+}
+
+.report-modal-body {
+    padding: 24px;
+    overflow-y: auto;
+    flex: 1;
+    color: var(--text);
+    line-height: 1.8;
+}
+
+.report-modal-body h1,
+.report-modal-body h2,
+.report-modal-body h3 {
+    color: var(--text);
+    margin-top: 24px;
+    margin-bottom: 12px;
+}
+
+.report-modal-body h1 {
+    font-size: 2rem;
+    border-bottom: 2px solid var(--border);
+    padding-bottom: 12px;
+}
+
+.report-modal-body h2 {
+    font-size: 1.5rem;
+}
+
+.report-modal-body h3 {
+    font-size: 1.25rem;
+}
+
+.report-modal-body ul,
+.report-modal-body ol {
+    margin: 12px 0;
+    padding-left: 24px;
+}
+
+.report-modal-body li {
+    margin: 6px 0;
+}
+
+.report-modal-body table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 16px 0;
+}
+
+.report-modal-body table th,
+.report-modal-body table td {
+    padding: 10px;
+    border: 1px solid var(--border);
+    text-align: left;
+}
+
+.report-modal-body table th {
+    background: var(--bg-soft);
+    font-weight: 600;
+}
+
+.report-modal-footer {
+    display: flex;
+    gap: 12px;
+    padding: 20px 24px;
+    border-top: 1px solid var(--border);
+    justify-content: flex-end;
+}
+
+@media (max-width: 768px) {
+    .reports-grid {
+        grid-template-columns: 1fr;
+    }
+    
+    .reports-header {
+        flex-direction: column;
+        align-items: stretch;
+    }
+    
+    .report-modal-content {
+        max-height: 95vh;
     }
 }
 
