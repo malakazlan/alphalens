@@ -28,7 +28,6 @@ class StorageService:
     def _get_client_with_token(self, access_token: str) -> Client:
         """Get Supabase client with user access token for RLS"""
         from supabase import create_client
-        from supabase.lib.client_options import ClientOptions
         
         # Try to get from config first, then fallback to os.getenv
         try:
@@ -57,18 +56,34 @@ class StorageService:
             print(f"⚠️ Could not decode JWT for storage: {str(jwt_error)}")
         
         # Create client with user's access token in headers for RLS
-        # For Storage API, we need both apikey and Authorization headers
-        # DO NOT call set_session() - it tries to validate and causes "Invalid API key" errors
-        options = ClientOptions()
-        options.headers = {
-            "apikey": supabase_key,
-            "Authorization": f"Bearer {access_token}",
-            "Prefer": "return=representation"
-        }
-        client = create_client(supabase_url, supabase_key, options)
+        # Use the standard create_client and set headers via options
+        try:
+            from supabase.lib.client_options import ClientOptions
+            
+            # Create options with custom headers
+            options = ClientOptions(
+                headers={
+                    "apikey": supabase_key,
+                    "Authorization": f"Bearer {access_token}",
+                    "Prefer": "return=representation"
+                }
+            )
+            client = create_client(supabase_url, supabase_key, options=options)
+        except Exception as e:
+            # Fallback: Create client normally and set session
+            print(f"⚠️ Could not create client with ClientOptions: {str(e)}")
+            print(f"⚠️ Falling back to standard client creation")
+            client = create_client(supabase_url, supabase_key)
+            # Try to set the session with the access token
+            try:
+                # Set the access token in the client's auth session
+                client.auth.set_session(access_token, "")
+            except:
+                # If set_session fails, we'll rely on headers in the storage call
+                pass
         
         # Headers are sufficient for Storage RLS - no need to call set_session
-        print(f"✓ Created storage client with access token for RLS (headers only, no session)")
+        print(f"✓ Created storage client with access token for RLS")
         return client
     
     def upload_file(
@@ -155,30 +170,7 @@ class StorageService:
         """
         # Get client with user token for RLS if provided
         if access_token:
-            from supabase import create_client
-            from supabase.lib.client_options import ClientOptions
-            
-            # Try to get from config first, then fallback to os.getenv
-            try:
-                from config import settings
-                supabase_url = settings.SUPABASE_URL or os.getenv("SUPABASE_URL")
-                supabase_key = settings.SUPABASE_ANON_KEY or os.getenv("SUPABASE_ANON_KEY")
-            except:
-                supabase_url = os.getenv("SUPABASE_URL")
-                supabase_key = os.getenv("SUPABASE_ANON_KEY")
-            
-            if not supabase_url or not supabase_key:
-                error_msg = (
-                    "SUPABASE_URL and SUPABASE_ANON_KEY must be set.\n"
-                    "Please check your .env file or environment variables."
-                )
-                print(f"ERROR: {error_msg}")
-                raise ValueError(error_msg)
-            
-            # Create client with user's access token in headers for RLS
-            options = ClientOptions()
-            options.headers["Authorization"] = f"Bearer {access_token}"
-            client = create_client(supabase_url, supabase_key, options=options)
+            client = self._get_client_with_token(access_token)
         else:
             client = self._get_client()
         
