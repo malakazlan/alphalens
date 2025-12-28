@@ -51,22 +51,25 @@ class DatabaseService:
             
             # Create client with user's access token for RLS
             # The Supabase Python client needs the Authorization header set correctly
-            # We'll create the client normally, then update the Authorization header
-            # This ensures the client's internal PostgREST client uses the user's token
-            options = ClientOptions()
-            # Set the Authorization header with user's JWT token
-            # The client will use this for all PostgREST requests (RLS)
-            options.headers = {
-                "Authorization": f"Bearer {access_token}",
-                "Prefer": "return=representation"
-            }
-            # Create client - it will use supabase_key for apiKey header automatically
-            client = create_client(supabase_url, supabase_key, options)
-            
-            # Also update the client's options directly to ensure it's set
-            # This is needed because the client might override headers during initialization
-            if hasattr(client, 'options') and hasattr(client.options, 'headers'):
-                client.options.headers["Authorization"] = f"Bearer {access_token}"
+            # ClientOptions is a dataclass - we need to update headers, not replace them
+            try:
+                options = ClientOptions()
+                # Update headers dict (it's already initialized with default headers)
+                options.headers.update({
+                    "Authorization": f"Bearer {access_token}",
+                    "Prefer": "return=representation"
+                })
+                # Create client - it will use supabase_key for apiKey header automatically
+                client = create_client(supabase_url, supabase_key, options=options)
+            except Exception as e:
+                # Fallback: Create client normally and manually set headers
+                print(f"⚠️ Could not create client with ClientOptions: {str(e)}")
+                print(f"⚠️ Falling back to standard client creation")
+                client = create_client(supabase_url, supabase_key)
+                # Manually update the client's headers
+                if hasattr(client, 'options') and hasattr(client.options, 'headers'):
+                    client.options.headers["Authorization"] = f"Bearer {access_token}"
+                    client.options.headers["Prefer"] = "return=representation"
             
             # Verify the key format (for debugging)
             if len(supabase_key) < 50:
