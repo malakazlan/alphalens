@@ -68,7 +68,7 @@ uvicorn app:app --reload
 - GitHub repository with your code
 - Render account (free tier available)
 
-### Steps
+### Quick Deployment Steps
 
 1. **Push your code to GitHub**:
 ```bash
@@ -89,26 +89,27 @@ git push origin main
    - **Build Command**: `pip install -r requirements.txt`
    - **Start Command**: `uvicorn app:app --host 0.0.0.0 --port $PORT`
 
-4. **Add Environment Variables**:
-   - `LANDING_AI_API_KEY`: Your Landing.AI API key
+4. **Add Environment Variables** (Required):
+   - `VISION_AGENT_API_KEY`: Your Landing.AI API key
    - `OPENAI_API_KEY`: Your OpenAI API key
    - `SUPABASE_URL`: Your Supabase project URL
    - `SUPABASE_ANON_KEY`: Your Supabase anon key
-   - `PYTHON_VERSION`: `3.11.0`
+   - `PYTHON_VERSION`: `3.11.0` (optional, defaults in render.yaml)
 
 5. **Deploy**:
    - Click "Create Web Service"
    - Render will automatically build and deploy your application
    - Your app will be available at `https://alpha-lens.onrender.com` (or your custom domain)
 
-### Using render.yaml (Alternative)
+### Using render.yaml (Recommended)
 
-If you prefer using the `render.yaml` file:
+The project includes a `render.yaml` file for automated deployment:
 
 1. Ensure `render.yaml` is in your repository root
 2. In Render Dashboard, select "New +" → "Blueprint"
 3. Connect your GitHub repository
 4. Render will automatically detect and use `render.yaml`
+5. Add environment variables in Render dashboard (they won't be synced from render.yaml for security)
 
 ## Project Structure
 

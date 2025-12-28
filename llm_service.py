@@ -493,7 +493,7 @@ Answer format:
 - For dates: "The date is [date]"
 - For amounts: "The amount is [amount]"
 - For "what did I ask": Answer what was asked previously in 1 sentence
-- If not found: "The document doesn't provide this information"
+- If not found: "I cannot find the answer in the provided document."
 
 Your answer (1 sentence only):
 """
@@ -573,7 +573,7 @@ EXPERT-LEVEL RESPONSE GUIDELINES:
 
 4. **Content Accuracy**:
    - Answer ONLY from the document context provided
-   - If information is not in the document: "The document doesn't provide this information" (1 sentence)
+   - If information is not in the document: "I cannot find the answer in the provided document." (exact phrase)
    - Never guess or assume - be explicit about data availability
 
 5. **Citations**: 
@@ -1099,6 +1099,70 @@ Generate the complete, detailed, and highly explanatory report now:"""
             traceback.print_exc()
             # Fallback to basic summary
             return self._generate_basic_summary(financial_data)
+    
+    def enhance_trend_analysis(self, query: str, trend_data: str, financial_data: Dict[str, Any]) -> Optional[str]:
+        """Enhance trend analysis with LLM explanation."""
+        try:
+            if not self.openai_api_key:
+                return None
+            
+            client = openai.OpenAI(api_key=self.openai_api_key)
+            
+            prompt = f"""You are a financial analyst. Analyze these financial trends and provide a clear, concise explanation.
+
+Trend Data:
+{trend_data}
+
+User Query: {query}
+
+Provide a 2-3 sentence explanation of the trends, focusing on what they mean and their significance. Be specific and reference the data provided."""
+            
+            response = client.chat.completions.create(
+                model="gpt-3.5-turbo",
+                messages=[
+                    {"role": "system", "content": "You are a financial analyst. Explain financial trends clearly and concisely."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.3,
+                max_tokens=200
+            )
+            
+            return response.choices[0].message.content.strip()
+        except Exception as e:
+            print(f"Error enhancing trend analysis: {e}")
+            return None
+    
+    def enhance_comparison(self, query: str, comparison_data: str, financial_data: Dict[str, Any]) -> Optional[str]:
+        """Enhance comparison analysis with LLM explanation."""
+        try:
+            if not self.openai_api_key:
+                return None
+            
+            client = openai.OpenAI(api_key=self.openai_api_key)
+            
+            prompt = f"""You are a financial analyst. Analyze this financial comparison and provide a clear, concise explanation.
+
+Comparison Data:
+{comparison_data}
+
+User Query: {query}
+
+Provide a 2-3 sentence explanation of the comparison, highlighting key differences and their significance. Be specific and reference the data provided."""
+            
+            response = client.chat.completions.create(
+                model="gpt-3.5-turbo",
+                messages=[
+                    {"role": "system", "content": "You are a financial analyst. Explain financial comparisons clearly and concisely."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.3,
+                max_tokens=200
+            )
+            
+            return response.choices[0].message.content.strip()
+        except Exception as e:
+            print(f"Error enhancing comparison: {e}")
+            return None
 
 # Create a singleton instance
 llm_service = LLMService()

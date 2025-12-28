@@ -6,6 +6,10 @@ import os
 from typing import Optional, BinaryIO
 from supabase import Client
 from auth import get_supabase_client
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 
 class StorageService:
@@ -21,13 +25,60 @@ class StorageService:
             self.client = get_supabase_client()
         return self.client
     
+    def _get_client_with_token(self, access_token: str) -> Client:
+        """Get Supabase client with user access token for RLS"""
+        from supabase import create_client
+        from supabase.lib.client_options import ClientOptions
+        
+        # Try to get from config first, then fallback to os.getenv
+        try:
+            from config import settings
+            supabase_url = settings.SUPABASE_URL or os.getenv("SUPABASE_URL")
+            supabase_key = settings.SUPABASE_ANON_KEY or os.getenv("SUPABASE_ANON_KEY")
+        except:
+            supabase_url = os.getenv("SUPABASE_URL")
+            supabase_key = os.getenv("SUPABASE_ANON_KEY")
+        
+        if not supabase_url or not supabase_key:
+            error_msg = (
+                "SUPABASE_URL and SUPABASE_ANON_KEY must be set.\n"
+                "Please check your .env file or environment variables."
+            )
+            print(f"ERROR: {error_msg}")
+            raise ValueError(error_msg)
+        
+        # Decode JWT to verify user_id (for debugging)
+        try:
+            import jwt
+            decoded = jwt.decode(access_token, options={"verify_signature": False})
+            token_user_id = decoded.get("sub")
+            print(f"🔍 Storage: JWT user_id from token: {token_user_id}")
+        except Exception as jwt_error:
+            print(f"⚠️ Could not decode JWT for storage: {str(jwt_error)}")
+        
+        # Create client with user's access token in headers for RLS
+        # For Storage API, we need both apikey and Authorization headers
+        # DO NOT call set_session() - it tries to validate and causes "Invalid API key" errors
+        options = ClientOptions()
+        options.headers = {
+            "apikey": supabase_key,
+            "Authorization": f"Bearer {access_token}",
+            "Prefer": "return=representation"
+        }
+        client = create_client(supabase_url, supabase_key, options)
+        
+        # Headers are sufficient for Storage RLS - no need to call set_session
+        print(f"✓ Created storage client with access token for RLS (headers only, no session)")
+        return client
+    
     def upload_file(
         self, 
         user_id: str, 
         document_id: str, 
         file_content: bytes, 
         filename: str,
-        file_type: str = "original"
+        file_type: str = "original",
+        access_token: Optional[str] = None
     ) -> str:
         """
         Upload a file to Supabase Storage
@@ -38,19 +89,34 @@ class StorageService:
             file_content: File content as bytes
             filename: Original filename
             file_type: Type of file ('original' or 'processed')
+            access_token: User's JWT access token (required for RLS policies)
             
         Returns:
             Storage path of uploaded file
         """
-        client = self._get_client()
+        # Get client with user token for RLS if provided
+        if access_token:
+            client = self._get_client_with_token(access_token)
+        else:
+            client = self._get_client()
         
         # Create storage path: {user_id}/{document_id}/{file_type}_{filename}
+        # IMPORTANT: The first folder MUST match auth.uid() for RLS policies to work
         file_extension = os.path.splitext(filename)[1]
         storage_filename = f"{file_type}{file_extension}"
         storage_path = f"{user_id}/{document_id}/{storage_filename}"
         
+        print(f"🔍 Storage upload: path={storage_path}, user_id={user_id}, bucket={self.bucket_name}")
+        if access_token:
+            print(f"🔍 Storage: Using access token for RLS")
+        else:
+            print(f"⚠️ Storage: WARNING - No access token provided! RLS will block upload!")
+        
         try:
             # Upload file to Supabase Storage
+            # The Storage API will check RLS policies:
+            # - bucket_id must be 'documents'
+            # - First folder (user_id) must match auth.uid() from JWT token
             response = client.storage.from_(self.bucket_name).upload(
                 path=storage_path,
                 file=file_content,
@@ -91,12 +157,23 @@ class StorageService:
         if access_token:
             from supabase import create_client
             from supabase.lib.client_options import ClientOptions
-            import os
-            supabase_url = os.getenv("SUPABASE_URL")
-            supabase_key = os.getenv("SUPABASE_ANON_KEY")
+            
+            # Try to get from config first, then fallback to os.getenv
+            try:
+                from config import settings
+                supabase_url = settings.SUPABASE_URL or os.getenv("SUPABASE_URL")
+                supabase_key = settings.SUPABASE_ANON_KEY or os.getenv("SUPABASE_ANON_KEY")
+            except:
+                supabase_url = os.getenv("SUPABASE_URL")
+                supabase_key = os.getenv("SUPABASE_ANON_KEY")
             
             if not supabase_url or not supabase_key:
-                raise ValueError("SUPABASE_URL and SUPABASE_ANON_KEY must be set")
+                error_msg = (
+                    "SUPABASE_URL and SUPABASE_ANON_KEY must be set.\n"
+                    "Please check your .env file or environment variables."
+                )
+                print(f"ERROR: {error_msg}")
+                raise ValueError(error_msg)
             
             # Create client with user's access token in headers for RLS
             options = ClientOptions()
@@ -212,4 +289,3 @@ class StorageService:
 
 # Create singleton instance
 storage_service = StorageService()
-

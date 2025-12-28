@@ -27,8 +27,15 @@ Thumbs.db
 
 # Data and temporary files
 data/
+data/extracted/
+data/vector_stores/
+data/raw_docs/
+data/final_outputs/
 *.tmp
 *.log
+*.json
+!package.json
+!package-lock.json
 
 # Build files
 dist/

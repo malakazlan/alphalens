@@ -1,7 +1,8 @@
 import os
 import json
 import re
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional, Tuple
+from datetime import datetime
 
 from vector_store import similarity_search
 from llm_service import llm_service
@@ -13,6 +14,10 @@ except ImportError:
 
 MAX_CONTEXT_CHARS = 8000
 CITATION_PATTERN = re.compile(r"\[\[([^\]]+)\]\]")
+
+# In-memory conversation history (in production, use Redis or database)
+# Format: {document_id: [{query: str, answer: str, timestamp: str}, ...]}
+conversation_history: Dict[str, List[Dict[str, Any]]] = {}
 
 
 def is_query_relevant_to_document(query: str, financial_data: Dict[str, Any] = None) -> bool:
@@ -160,10 +165,40 @@ def is_math_question(query: str) -> bool:
     return False
 
 
+def classify_query_intent(query: str, financial_data: Dict[str, Any] = None) -> str:
+    """Classify the intent of a query to determine how to handle it."""
+    query_lower = query.lower().strip()
+    
+    # Check for trend analysis
+    trend_keywords = ["trend", "change", "increase", "decrease", "growth", "decline", "over time", "period", "year over year", "yoy"]
+    if any(keyword in query_lower for keyword in trend_keywords):
+        return "trend"
+    
+    # Check for comparison
+    comparison_keywords = ["compare", "difference", "vs", "versus", "between", "contrast", "similar", "different"]
+    if any(keyword in query_lower for keyword in comparison_keywords):
+        return "comparison"
+    
+    # Check for calculation
+    calculation_keywords = ["calculate", "compute", "total", "sum", "average", "percentage", "ratio", "percent"]
+    if any(keyword in query_lower for keyword in calculation_keywords):
+        return "calculation"
+    
+    # Check for summary
+    summary_keywords = ["summarize", "summary", "overview", "what is this document", "tell me about this document"]
+    if any(keyword in query_lower for keyword in summary_keywords):
+        return "summary"
+    
+    # Default intent
+    return "financial_analysis"
+
+
 def get_answer_from_document(
     query: str,
     vector_store_path: str,
-    financial_data: Dict[str, Any] = None
+    financial_data: Dict[str, Any] = None,
+    document_id: Optional[str] = None,
+    conversation_history_context: Optional[str] = None
 ) -> Dict[str, Any]:
     """Return a finance-grounded answer plus citation metadata with visual references."""
     if not financial_data:
@@ -174,131 +209,83 @@ def get_answer_from_document(
         else:
             financial_data = {}
     
-    # Check if query is relevant to the document
     query_lower = query.lower().strip()
+    intent = classify_query_intent(query, financial_data)
     
-    # Check for math questions first
+    # Helper to create result dict
+    def create_result(answer: str, source: str, sources: List[Dict] = None, follow_ups: List[str] = None) -> Dict[str, Any]:
+        result = {
+            "answer": answer,
+            "sources": sources or [],
+            "source": source,
+            "intent": intent,
+            "follow_up_suggestions": follow_ups or generate_follow_up_suggestions(query, answer, financial_data, intent)
+        }
+        if document_id:
+            save_conversation(document_id, query, answer)
+        return result
+    
+    # Handle special question types
     if is_math_question(query):
-        answer = handle_math_question(query)
-        return {
-            "answer": answer,
-            "sources": [],
-            "source": "math_calculator"
-        }
+        return create_result(handle_math_question(query), "math_calculator", follow_ups=[])
     
-    # Check for financial term questions (should be answered even if not in doc)
     if is_financial_term_question(query):
-        answer = handle_financial_term_question(query)
-        return {
-            "answer": answer,
-            "sources": [],
-            "source": "financial_glossary"
-        }
+        return create_result(handle_financial_term_question(query), "financial_glossary")
     
-    # Check for general knowledge questions (not about document)
     if not is_query_relevant_to_document(query, financial_data):
-        # Handle irrelevant questions directly and briefly
-        answer = handle_irrelevant_question(query)
-        return {
-            "answer": answer,
-            "sources": [],
-            "source": "general_knowledge"
-        }
+        return create_result(handle_irrelevant_question(query), "general_knowledge", follow_ups=[])
     
-    # Check if user wants bullet points or list format
-    list_format_keywords = [
-        "in bullets", "in bullet points", "as bullets", "as bullet points",
-        "in a list", "as a list", "list", "bullets", "bullet points",
-        "in points", "as points", "point form", "bullet form"
-    ]
-    wants_list_format = any(keyword in query_lower for keyword in list_format_keywords)
+    # Handle intent-based analysis
+    if intent == 'trend':
+        trend_analysis = analyze_financial_trends(financial_data, query)
+        if trend_analysis:
+            enhanced = llm_service.enhance_trend_analysis(query, trend_analysis, financial_data)
+            answer = enhanced or trend_analysis
+            return create_result(answer, "trend_analysis", sources=extract_summary_citations(financial_data)[:3])
     
-    # Check if this is a summarization request (more comprehensive detection)
-    summary_keywords = [
-        "summarize", "summary", "overview", "what is this document", "tell me about this document",
-        "give me a summary", "document summary", "brief overview", "explain the document",
-        "explain this document", "what does this document", "describe the document",
-        "document overview", "summarize and explain", "explain and summarize", "explain about",
-        "explain doc", "what are", "what components", "what sections", "document components",
-        "document sections", "file sections", "many section", "can you summarize"
-    ]
-    # Also check for very short queries or queries with typos that might be summary requests
-    is_summary_request = any(keyword in query_lower for keyword in summary_keywords)
+    if intent == 'comparison':
+        comparison_result = compare_financial_metrics(financial_data, query)
+        if comparison_result:
+            enhanced = llm_service.enhance_comparison(query, comparison_result, financial_data)
+            answer = enhanced or comparison_result
+            return create_result(answer, "comparison_analysis", sources=extract_summary_citations(financial_data)[:3])
     
-    # Additional check: if query is very short or seems like a general question about the document
-    if not is_summary_request and len(query_lower.split()) <= 5:
-        # Check for common summary request patterns even with typos
-        if any(word in query_lower for word in ["summ", "expl", "doc", "file", "about", "what", "component", "section"]):
-            is_summary_request = True
-    
-    if is_summary_request:
-        # Ensure we have financial_data
-        if not financial_data:
-            financial_data = {}
-        
-        # Generate comprehensive summary using LLM with full document data
+    # Handle summary requests
+    summary_keywords = ["summarize", "summary", "overview", "what is this document", "tell me about this document"]
+    if any(kw in query_lower for kw in summary_keywords):
         summary = llm_service.generate_document_summary(financial_data)
-        
-        # Ensure we got a valid summary
         if not summary or len(summary.strip()) < 10:
-            # Fallback: generate basic summary from available data
             summary = _generate_fallback_summary(financial_data)
-        
-        # Get citations from key sections
-        citations = extract_summary_citations(financial_data)
-        return {
-            "answer": summary,
-            "sources": citations,
-            "source": "gpt-3.5-turbo"
-        }
+        return create_result(summary, "gpt-3.5-turbo", sources=extract_summary_citations(financial_data))
     
-    # Check if this is a simple question (name, date, amount, what/where/when)
-    simple_question_patterns = [
-        r'what is (my|the) name',
-        r'what is (my|the) (date|amount|value|number)',
-        r'who (am i|is)',
-        r'when (is|was)',
-        r'where (is|was)',
-        r'how much',
-        r'what (did|do) i (ask|said)',
-        r'what (was|did) (i|you) (ask|say)',
-        r'what (did|do) (i|you) (ask|say) (above|before)',
-    ]
+    # Check preferences
+    wants_list_format = any(kw in query_lower for kw in ["in bullets", "in bullet points", "as bullets", "in a list", "list"])
+    simple_patterns = [r'what is (my|the) (name|date|amount|value|number)', r'who (am i|is)', r'when (is|was)', r'where (is|was)', r'how much']
+    is_simple_question = any(re.search(p, query_lower) for p in simple_patterns)
     
-    is_simple_question = any(re.search(pattern, query_lower) for pattern in simple_question_patterns)
-    
+    # Search and build context
     relevant_chunks = similarity_search(query, vector_store_path, top_k=8)
     context_blocks = build_context_blocks(relevant_chunks, financial_data)
     
-    # Enhance context blocks with financial_data if context is sparse
+    # Enhance context if sparse
     if len(context_blocks) < 3 and financial_data:
-        # Add metadata, key metrics, and tables as context blocks
         if financial_data.get("metadata"):
             context_blocks.append({
-                "id": "metadata",
-                "title": "Document Metadata",
-                "page": None,
-                "source": "metadata",
-                "text": json.dumps(financial_data.get("metadata", {}), indent=2)
+                "id": "metadata", "title": "Document Metadata", "page": None,
+                "source": "metadata", "text": json.dumps(financial_data.get("metadata", {}), indent=2)
             })
         if financial_data.get("key_metrics"):
-            metrics_text = "\n".join([
-                f"{m.get('name', '')}: {m.get('value', '')} {m.get('unit', '')}"
-                for m in financial_data.get("key_metrics", [])[:5]
-            ])
+            metrics_text = "\n".join([f"{m.get('name', '')}: {m.get('value', '')} {m.get('unit', '')}" 
+                                      for m in financial_data.get("key_metrics", [])[:5]])
             context_blocks.append({
-                "id": "key_metrics",
-                "title": "Key Financial Metrics",
-                "page": None,
-                "source": "metrics",
-                "text": metrics_text
+                "id": "key_metrics", "title": "Key Financial Metrics", "page": None,
+                "source": "metrics", "text": metrics_text
             })
     
-    # For simple questions, use a more direct approach
     if is_simple_question:
-        # Use fewer context blocks for simple questions
         context_blocks = context_blocks[:3]
     
+    # Generate answer
     answer_text = llm_service.generate_finance_response(
         query=query,
         metadata=financial_data.get("metadata", {}),
@@ -309,34 +296,17 @@ def get_answer_from_document(
         wants_list_format=wants_list_format
     )
     
-    # Check if answer contains "I'm sorry" or similar - if so, use fallback
-    if not answer_text or "I'm sorry" in answer_text or "does not contain" in answer_text.lower() or "not provided" in answer_text.lower():
-        # Try fallback with full financial_data
+    # Fallback if answer is poor
+    if not answer_text or any(phrase in answer_text.lower() for phrase in ["i'm sorry", "does not contain", "not provided"]):
         fallback_context = build_fallback_context(financial_data, relevant_chunks)
         fallback_answer = llm_service.generate_response(query, fallback_context, financial_data)
-        
-        # If still no good answer, generate from financial_data directly
-        if not fallback_answer or "I'm sorry" in fallback_answer or "does not contain" in fallback_answer.lower():
-            # Generate answer directly from financial_data
+        if not fallback_answer or any(phrase in fallback_answer.lower() for phrase in ["i'm sorry", "does not contain"]):
             fallback_answer = _generate_answer_from_financial_data(query, financial_data)
-        
-        return {
-            "answer": fallback_answer,
-            "sources": extract_summary_citations(financial_data)[:3],  # Provide some citations
-            "source": "local_llm"
-        }
+        return create_result(fallback_answer, "local_llm", sources=extract_summary_citations(financial_data)[:3])
     
-    clean_answer, citations = extract_citations_with_visual_refs(
-        answer_text, 
-        context_blocks, 
-        financial_data,
-        query
-    )
-    return {
-        "answer": clean_answer or answer_text,
-        "sources": citations,
-        "source": "gpt-3.5-turbo"
-    }
+    # Extract citations and return
+    clean_answer, citations = extract_citations_with_visual_refs(answer_text, context_blocks, financial_data, query)
+    return create_result(clean_answer or answer_text, "gpt-3.5-turbo", sources=citations)
 
 
 def build_context_blocks(relevant_chunks: List[Dict[str, Any]], financial_data: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -452,11 +422,12 @@ def extract_citations_with_visual_refs(
                 chunk_text = chunk.get("text", "") or chunk.get("markdown", "")
                 value = extract_numeric_value(chunk_text)
             
-            # Build visual reference string
+            # Build visual reference string (matching Landing.AI format)
             page_label = f"Page {page + 1}" if isinstance(page, int) else "Page 1"
             type_label = "table, cell" if is_table else "text"
-            value_label = f" | {value}" if value else ""
+            value_label = f" | {value}" if value else " |"
             
+            # Format: "Page 1. table, cell | 149,990" (matching Landing.AI)
             visual_ref = f"{page_label}. {type_label}{value_label}"
             
             citations.append({
@@ -470,29 +441,37 @@ def extract_citations_with_visual_refs(
             })
     
     # If no citations but we have an answer value, try to find matching chunks
+    # Landing.AI shows multiple references even if they're the same
     if not citations and answer_value:
-        # Search for chunks containing the value
+        # Search for ALL chunks containing the value (not just first one)
+        matching_chunks = []
         for chunk in detected_chunks:
             chunk_text = chunk.get("text", "") or chunk.get("markdown", "")
-            if answer_value in chunk_text or str(answer_value).replace(",", "") in chunk_text.replace(",", ""):
-                page = chunk.get("page", 0)
-                chunk_type = chunk.get("type", "text")
-                is_table = chunk_type == "table"
-                
-                page_label = f"Page {page + 1}" if isinstance(page, int) else "Page 1"
-                type_label = "table, cell" if is_table else "text"
-                visual_ref = f"{page_label}. {type_label} | {answer_value}"
-                
-                citations.append({
-                    "chunk_id": chunk.get("id", ""),
-                    "title": chunk.get("type", "Reference"),
-                    "page": page,
-                    "text": chunk_text[:240],
-                    "type": chunk_type,
-                    "visual_ref": visual_ref,
-                    "value": answer_value
-                })
-                break
+            # Check if value appears in chunk (handle comma formatting)
+            value_str = str(answer_value).replace(",", "")
+            chunk_clean = chunk_text.replace(",", "")
+            if value_str in chunk_clean or answer_value in chunk_text:
+                matching_chunks.append(chunk)
+        
+        # Add all matching chunks (like Landing.AI shows multiple refs)
+        for chunk in matching_chunks[:5]:  # Limit to 5 to avoid too many
+            page = chunk.get("page", 0)
+            chunk_type = chunk.get("type", "text")
+            is_table = chunk_type == "table"
+            
+            page_label = f"Page {page + 1}" if isinstance(page, int) else "Page 1"
+            type_label = "table, cell" if is_table else "text"
+            visual_ref = f"{page_label}. {type_label} | {answer_value}"
+            
+            citations.append({
+                "chunk_id": chunk.get("id", ""),
+                "title": chunk.get("type", "Reference"),
+                "page": page,
+                "text": (chunk.get("text", "") or chunk.get("markdown", ""))[:240],
+                "type": chunk_type,
+                "visual_ref": visual_ref,
+                "value": answer_value
+            })
     
     clean_text = CITATION_PATTERN.sub('', answer_text or '').strip()
     clean_text = re.sub(r'\s+', ' ', clean_text)
@@ -697,50 +676,10 @@ def _generate_fallback_summary(financial_data: Dict[str, Any]) -> str:
 
 
 def handle_math_question(query: str) -> str:
-    """Handle math questions with calculation."""
-    query_lower = query.lower().strip()
-    
-    # Try to extract math expression
-    math_match = re.search(r'(\d+)\s*([+\-*/]|plus|minus|times|divided by|multiplied by)\s*(\d+)', query_lower)
-    if math_match:
-        try:
-            num1 = int(math_match.group(1))
-            operator_str = math_match.group(2)
-            num2 = int(math_match.group(3))
-            
-            # Convert word operators to symbols
-            operator_map = {
-                'plus': '+',
-                'minus': '-',
-                'times': '*',
-                'multiplied by': '*',
-                'divided by': '/'
-            }
-            operator = operator_map.get(operator_str, operator_str)
-            
-            if operator == '+':
-                result = num1 + num2
-            elif operator == '-':
-                result = num1 - num2
-            elif operator == '*':
-                result = num1 * num2
-            elif operator == '/':
-                if num2 == 0:
-                    return "Division by zero is undefined.\n\n*Note: This question is not related to the document content.*"
-                result = num1 / num2
-            else:
-                return f"I can help with that, but this question is not related to the document. Please ask questions about the document content instead."
-            
-            # Format result (remove .0 for whole numbers)
-            if isinstance(result, float) and result.is_integer():
-                result = int(result)
-            
-            return f"{result}\n\n*Note: This question is not related to the document content.*"
-        except Exception as e:
-            print(f"Error calculating math: {e}")
-            pass
-    
-    return f"I can help with that, but this question is not related to the document. Please ask questions about the document content instead."
+    """Handle math questions - treat as document-unrelated like Landing.AI."""
+    # Landing.AI treats math questions as "cannot find in document"
+    # This makes sense for a document-focused system
+    return "I cannot find the answer in the provided document."
 
 def handle_financial_term_question(query: str) -> str:
     """Handle financial term definition questions with expert explanation."""
@@ -791,30 +730,8 @@ Term to explain: {term}"""
 
 def handle_irrelevant_question(query: str) -> str:
     """Handle general knowledge questions that are not related to the document."""
-    try:
-        if openai:
-            from config import settings
-            
-            api_key = settings.OPENAI_API_KEY or os.environ.get("OPENAI_API_KEY")
-            if api_key:
-                client = openai.OpenAI(api_key=api_key)
-                response = client.chat.completions.create(
-                    model="gpt-3.5-turbo",
-                    messages=[
-                        {"role": "system", "content": "You are a helpful assistant. Answer questions directly and concisely in exactly 1 sentence maximum. Be factual and brief."},
-                        {"role": "user", "content": query}
-                    ],
-                    temperature=0.3,
-                    max_tokens=80
-                )
-                answer = response.choices[0].message.content.strip()
-                return f"{answer}\n\n*Note: This question is not related to the document content.*"
-    except Exception as e:
-        print(f"Error handling irrelevant question: {e}")
-        pass
-    
-    # Fallback for irrelevant questions
-    return f"I can help with that, but this question is not related to the document. Please ask questions about the document content instead."
+    # Use consistent message like Landing.AI
+    return "I cannot find the answer in the provided document."
 
 
 def build_fallback_context(financial_data: Dict[str, Any], relevant_chunks: List[Dict[str, Any]]) -> str:
@@ -846,3 +763,101 @@ def build_fallback_context(financial_data: Dict[str, Any], relevant_chunks: List
             break
     
     return "\n\n".join(parts)
+
+
+def analyze_financial_trends(financial_data: Dict[str, Any], query: str) -> Optional[str]:
+    """Analyze financial trends from the document data."""
+    # Basic trend analysis implementation
+    # This can be enhanced later with more sophisticated analysis
+    key_metrics = financial_data.get("key_metrics", [])
+    if not key_metrics:
+        return None
+    
+    # Simple trend detection based on query
+    query_lower = query.lower()
+    trend_info = []
+    
+    for metric in key_metrics:
+        name = metric.get("name", "").lower()
+        value = metric.get("value")
+        if value and any(term in name for term in query_lower.split()):
+            trend_info.append(f"{metric.get('name')}: {value} {metric.get('unit', '')}")
+    
+    if trend_info:
+        return "Trend analysis: " + "; ".join(trend_info[:5])
+    return None
+
+
+def compare_financial_metrics(financial_data: Dict[str, Any], query: str) -> Optional[str]:
+    """Compare financial metrics from the document."""
+    # Basic comparison implementation
+    key_metrics = financial_data.get("key_metrics", [])
+    if len(key_metrics) < 2:
+        return None
+    
+    # Simple comparison based on query
+    query_lower = query.lower()
+    metrics_to_compare = []
+    
+    for metric in key_metrics[:5]:  # Limit to 5 metrics
+        name = metric.get("name", "")
+        value = metric.get("value")
+        if value is not None:
+            metrics_to_compare.append(f"{name}: {value} {metric.get('unit', '')}")
+    
+    if metrics_to_compare:
+        return "Comparison: " + " | ".join(metrics_to_compare)
+    return None
+
+
+def generate_follow_up_suggestions(query: str, answer: str, financial_data: Dict[str, Any], intent: str) -> List[str]:
+    """Generate follow-up question suggestions based on the query and answer."""
+    suggestions = []
+    
+    # Generate context-aware suggestions
+    if intent == "trend":
+        suggestions = [
+            "What are the key trends in this document?",
+            "Show me revenue trends",
+            "What changed over time?"
+        ]
+    elif intent == "comparison":
+        suggestions = [
+            "Compare revenue and expenses",
+            "What are the differences?",
+            "Show me comparisons"
+        ]
+    elif "revenue" in query.lower() or "income" in query.lower():
+        suggestions = [
+            "What are the expenses?",
+            "What is the net income?",
+            "Show me the profit margin"
+        ]
+    elif "asset" in query.lower():
+        suggestions = [
+            "What are the liabilities?",
+            "What is the equity?",
+            "Show me the balance sheet"
+        ]
+    else:
+        suggestions = [
+            "What is the summary of this document?",
+            "What are the key metrics?",
+            "Explain the main findings"
+        ]
+    
+    return suggestions[:3]  # Return max 3 suggestions
+
+
+def get_conversation_context(document_id: str) -> str:
+    """Get conversation history context for a document."""
+    # TODO: Implement conversation history retrieval
+    # For now, return empty string
+    return ""
+
+
+def save_conversation(document_id: str, query: str, answer: str) -> None:
+    """Save conversation to history."""
+    # TODO: Implement conversation history saving
+    # For now, just log it
+    print(f"Conversation saved: {document_id} - Q: {query[:50]}...")

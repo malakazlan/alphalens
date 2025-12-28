@@ -6,7 +6,12 @@ from typing import Optional, Dict, Any, List
 from supabase import Client
 from auth import get_supabase_client
 from datetime import datetime
+from dotenv import load_dotenv
 import uuid
+import os
+
+# Load environment variables from .env file
+load_dotenv()
 
 
 class DatabaseService:
@@ -25,28 +30,51 @@ class DatabaseService:
         # If we have a user token, create a client with that token for RLS
         if access_token:
             from supabase import create_client
-            import os
-            supabase_url = os.getenv("SUPABASE_URL")
-            supabase_key = os.getenv("SUPABASE_ANON_KEY")
+            from supabase.lib.client_options import ClientOptions
+            
+            # Try to get from config first, then fallback to os.getenv
+            try:
+                from config import settings
+                supabase_url = settings.SUPABASE_URL or os.getenv("SUPABASE_URL")
+                supabase_key = settings.SUPABASE_ANON_KEY or os.getenv("SUPABASE_ANON_KEY")
+            except:
+                supabase_url = os.getenv("SUPABASE_URL")
+                supabase_key = os.getenv("SUPABASE_ANON_KEY")
             
             if not supabase_url or not supabase_key:
-                raise ValueError("SUPABASE_URL and SUPABASE_ANON_KEY must be set")
+                error_msg = (
+                    "SUPABASE_URL and SUPABASE_ANON_KEY must be set.\n"
+                    "Please check your .env file or environment variables."
+                )
+                print(f"ERROR: {error_msg}")
+                raise ValueError(error_msg)
             
             # Create client with user's access token for RLS
-            # The Supabase client needs the token in the Authorization header
-            client = create_client(supabase_url, supabase_key)
-            # Set the access token in the client's auth session
-            try:
-                # Set the session using the access token
-                # Note: set_session typically needs both access_token and refresh_token
-                # But for RLS, we can set just the access token in headers
-                client.auth.set_session(access_token=access_token, refresh_token="")
-            except:
-                # If set_session fails, try setting it directly in headers
-                try:
-                    client.options.headers["Authorization"] = f"Bearer {access_token}"
-                except:
-                    pass
+            # The Supabase Python client needs the Authorization header set correctly
+            # We'll create the client normally, then update the Authorization header
+            # This ensures the client's internal PostgREST client uses the user's token
+            options = ClientOptions()
+            # Set the Authorization header with user's JWT token
+            # The client will use this for all PostgREST requests (RLS)
+            options.headers = {
+                "Authorization": f"Bearer {access_token}",
+                "Prefer": "return=representation"
+            }
+            # Create client - it will use supabase_key for apiKey header automatically
+            client = create_client(supabase_url, supabase_key, options)
+            
+            # Also update the client's options directly to ensure it's set
+            # This is needed because the client might override headers during initialization
+            if hasattr(client, 'options') and hasattr(client.options, 'headers'):
+                client.options.headers["Authorization"] = f"Bearer {access_token}"
+            
+            # Verify the key format (for debugging)
+            if len(supabase_key) < 50:
+                print(f"⚠️ WARNING: SUPABASE_ANON_KEY seems too short ({len(supabase_key)} chars)")
+            else:
+                print(f"✓ SUPABASE_ANON_KEY length: {len(supabase_key)} chars")
+            
+            print(f"✓ Created Supabase client with access token for RLS")
             return client
         
         # Otherwise use the default client (for service operations)
@@ -60,7 +88,8 @@ class DatabaseService:
         document_id: str,
         filename: str,
         file_path: str,
-        status: str = "uploaded"
+        status: str = "uploaded",
+        access_token: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Create a new document record in database
@@ -71,11 +100,13 @@ class DatabaseService:
             filename: Original filename
             file_path: Storage path to file
             status: Initial status
+            access_token: User's JWT access token (required for RLS policies)
             
         Returns:
             Created document record
         """
-        client = self._get_client()
+        # Use user token for RLS
+        client = self._get_client(access_token=access_token)
         
         document_data = {
             "id": document_id,
@@ -89,33 +120,86 @@ class DatabaseService:
         }
         
         try:
+            print(f"🔍 Inserting document with user_id: {user_id}, document_id: {document_id}")
+            if access_token:
+                print(f"🔍 Using access token for RLS: {access_token[:30]}...")
+                # Verify the user_id in the token matches the user_id we're inserting
+                try:
+                    import jwt
+                    decoded = jwt.decode(access_token, options={"verify_signature": False})
+                    token_user_id = decoded.get("sub")
+                    print(f"🔍 User ID from JWT token: {token_user_id}")
+                    print(f"🔍 User ID being inserted: {user_id}")
+                    if str(token_user_id) != str(user_id):
+                        print(f"⚠️ WARNING: JWT user_id ({token_user_id}) doesn't match insert user_id ({user_id})!")
+                        print(f"⚠️ This will cause RLS policy to fail!")
+                except Exception as jwt_error:
+                    print(f"⚠️ Could not decode JWT: {str(jwt_error)}")
+            else:
+                print(f"⚠️ WARNING: No access token provided - RLS may block insert!")
+            
+            print(f"🔍 Document data: {document_data}")
             response = client.table("documents").insert(document_data).execute()
+            
+            print(f"🔍 Insert response: {response}")
+            print(f"🔍 Response data: {response.data}")
+            
             if response.data and len(response.data) > 0:
+                print(f"✓ Document created successfully in database")
                 return response.data[0]
             else:
                 error_msg = "Failed to create document record - no data returned"
                 print(f"ERROR: {error_msg}")
                 print(f"Response: {response}")
+                print(f"Response data: {response.data}")
                 raise Exception(error_msg)
         except Exception as e:
             error_msg = f"Error creating document in database: {str(e)}"
             print(f"ERROR: {error_msg}")
+            print(f"Document data being inserted: {document_data}")
             import traceback
             traceback.print_exc()
             raise Exception(error_msg)
     
-    def get_document(self, document_id: str, user_id: str) -> Optional[Dict[str, Any]]:
+    def get_document_by_filename(self, user_id: str, filename: str, access_token: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """
+        Get a document by filename for a user (check for duplicates)
+        
+        Args:
+            user_id: User ID
+            filename: Document filename
+            access_token: User's JWT access token (required for RLS policies)
+            
+        Returns:
+            Document record if found, None otherwise
+        """
+        client = self._get_client(access_token=access_token)
+        
+        try:
+            user_id_str = str(user_id)
+            response = client.table("documents").select("*").eq("user_id", user_id_str).eq("filename", filename).limit(1).execute()
+            
+            if response.data and len(response.data) > 0:
+                return response.data[0]
+            return None
+        except Exception as e:
+            print(f"Error checking for duplicate document: {str(e)}")
+            return None
+    
+    def get_document(self, document_id: str, user_id: str, access_token: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """
         Get a document by ID (with user verification)
         
         Args:
             document_id: Document ID
             user_id: User ID for verification
+            access_token: User's JWT access token (required for RLS policies)
             
         Returns:
             Document record or None
         """
-        client = self._get_client()
+        # Get client with user token for RLS
+        client = self._get_client(access_token=access_token)
         
         try:
             response = client.table("documents").select("*").eq("id", document_id).eq("user_id", user_id).execute()
@@ -124,6 +208,8 @@ class DatabaseService:
             return None
         except Exception as e:
             print(f"Error getting document from database: {str(e)}")
+            import traceback
+            traceback.print_exc()
             return None
     
     def get_user_documents(self, user_id: str, access_token: Optional[str] = None) -> List[Dict[str, Any]]:
@@ -183,7 +269,8 @@ class DatabaseService:
         self,
         document_id: str,
         user_id: str,
-        updates: Dict[str, Any]
+        updates: Dict[str, Any],
+        access_token: Optional[str] = None
     ) -> Optional[Dict[str, Any]]:
         """
         Update a document record
@@ -192,11 +279,13 @@ class DatabaseService:
             document_id: Document ID
             user_id: User ID for verification
             updates: Dictionary of fields to update
+            access_token: User's JWT access token (required for RLS policies)
             
         Returns:
             Updated document record or None
         """
-        client = self._get_client()
+        # Use user token for RLS
+        client = self._get_client(access_token=access_token)
         
         # Add updated_at timestamp
         updates["updated_at"] = datetime.utcnow().isoformat()
@@ -216,7 +305,8 @@ class DatabaseService:
         user_id: str,
         status: str,
         progress: int = 0,
-        message: str = ""
+        message: str = "",
+        access_token: Optional[str] = None
     ) -> bool:
         """
         Update document processing status
@@ -227,6 +317,7 @@ class DatabaseService:
             status: New status
             progress: Progress percentage (0-100)
             message: Status message
+            access_token: User's JWT access token (required for RLS policies)
             
         Returns:
             True if successful
@@ -242,7 +333,7 @@ class DatabaseService:
         if message:
             updates["status_message"] = message
         
-        result = self.update_document(document_id, user_id, updates)
+        result = self.update_document(document_id, user_id, updates, access_token=access_token)
         return result is not None
     
     def update_processed_data(
@@ -250,7 +341,8 @@ class DatabaseService:
         document_id: str,
         user_id: str,
         processed_data_path: str,
-        processed_data: Dict[str, Any]
+        processed_data: Dict[str, Any],
+        access_token: Optional[str] = None
     ) -> bool:
         """
         Update document with processed data
@@ -260,6 +352,7 @@ class DatabaseService:
             user_id: User ID
             processed_data_path: Path to processed data file in storage
             processed_data: Processed data dictionary
+            access_token: User's JWT access token (required for RLS policies)
             
         Returns:
             True if successful
@@ -271,7 +364,7 @@ class DatabaseService:
             "updated_at": datetime.utcnow().isoformat()
         }
         
-        result = self.update_document(document_id, user_id, updates)
+        result = self.update_document(document_id, user_id, updates, access_token=access_token)
         return result is not None
     
     def delete_document(self, document_id: str, user_id: str) -> bool:

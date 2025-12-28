@@ -1,8 +1,12 @@
 -- Migration: Create documents table for Supabase
 -- Run this in your Supabase SQL Editor
+-- This creates the table, indexes, and RLS policies from scratch
+
+-- Drop table if it exists (for fresh start)
+DROP TABLE IF EXISTS documents CASCADE;
 
 -- Create documents table
-CREATE TABLE IF NOT EXISTS documents (
+CREATE TABLE documents (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
   filename TEXT NOT NULL,
@@ -19,12 +23,18 @@ CREATE TABLE IF NOT EXISTS documents (
 );
 
 -- Create indexes for faster queries
-CREATE INDEX IF NOT EXISTS idx_documents_user_id ON documents(user_id);
-CREATE INDEX IF NOT EXISTS idx_documents_status ON documents(status);
-CREATE INDEX IF NOT EXISTS idx_documents_upload_time ON documents(upload_time DESC);
+CREATE INDEX idx_documents_user_id ON documents(user_id);
+CREATE INDEX idx_documents_status ON documents(status);
+CREATE INDEX idx_documents_upload_time ON documents(upload_time DESC);
 
 -- Enable Row Level Security (RLS)
 ALTER TABLE documents ENABLE ROW LEVEL SECURITY;
+
+-- Drop existing policies if they exist (to avoid conflicts)
+DROP POLICY IF EXISTS "Users can view own documents" ON documents;
+DROP POLICY IF EXISTS "Users can insert own documents" ON documents;
+DROP POLICY IF EXISTS "Users can update own documents" ON documents;
+DROP POLICY IF EXISTS "Users can delete own documents" ON documents;
 
 -- Create policy: Users can only see their own documents
 CREATE POLICY "Users can view own documents"
@@ -46,3 +56,5 @@ CREATE POLICY "Users can delete own documents"
   ON documents FOR DELETE
   USING (auth.uid() = user_id);
 
+-- Verify table was created
+SELECT 'Table created successfully!' AS status;

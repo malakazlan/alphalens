@@ -4,6 +4,11 @@ Authentication utilities using Supabase
 import os
 from typing import Optional, Dict, Any
 from supabase import create_client, Client
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
+
 try:
     from config import settings
 except ImportError:
@@ -19,13 +24,35 @@ def get_supabase_client() -> Client:
     """Get or create Supabase client"""
     global supabase
     if supabase is None:
-        supabase_url = os.getenv("SUPABASE_URL")
-        supabase_key = os.getenv("SUPABASE_ANON_KEY")
+        # Use config settings if available, otherwise fallback to os.getenv
+        try:
+            from config import settings
+            supabase_url = settings.SUPABASE_URL or os.getenv("SUPABASE_URL")
+            supabase_key = settings.SUPABASE_ANON_KEY or os.getenv("SUPABASE_ANON_KEY")
+        except:
+            supabase_url = os.getenv("SUPABASE_URL")
+            supabase_key = os.getenv("SUPABASE_ANON_KEY")
         
         if not supabase_url or not supabase_key:
-            raise ValueError("SUPABASE_URL and SUPABASE_ANON_KEY must be set in .env file")
+            error_msg = (
+                "SUPABASE_URL and SUPABASE_ANON_KEY must be set in .env file.\n"
+                "Please check:\n"
+                "1. .env file exists in project root\n"
+                "2. SUPABASE_URL is set (e.g., https://xxxxx.supabase.co)\n"
+                "3. SUPABASE_ANON_KEY is set (get from Supabase Dashboard → Settings → API)\n"
+                f"Current SUPABASE_URL: {'SET' if supabase_url else 'NOT SET'}\n"
+                f"Current SUPABASE_ANON_KEY: {'SET' if supabase_key else 'NOT SET'}"
+            )
+            print(f"ERROR: {error_msg}")
+            raise ValueError(error_msg)
         
+        # Verify the key format (should be a long string)
+        if len(supabase_key) < 50:
+            print(f"⚠️ WARNING: SUPABASE_ANON_KEY seems too short ({len(supabase_key)} chars). It should be ~100+ characters.")
+        
+        print(f"✓ Loading Supabase client with URL: {supabase_url[:30]}...")
         supabase = create_client(supabase_url, supabase_key)
+        print(f"✓ Supabase client created successfully")
     
     return supabase
 
