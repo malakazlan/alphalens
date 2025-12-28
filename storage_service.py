@@ -60,27 +60,24 @@ class StorageService:
         try:
             from supabase.lib.client_options import ClientOptions
             
-            # Create options with custom headers
-            options = ClientOptions(
-                headers={
-                    "apikey": supabase_key,
-                    "Authorization": f"Bearer {access_token}",
-                    "Prefer": "return=representation"
-                }
-            )
+            # Create options - ClientOptions is a dataclass, headers is initialized with defaults
+            options = ClientOptions()
+            # Update headers dict (it's already initialized with default headers)
+            options.headers.update({
+                "apikey": supabase_key,
+                "Authorization": f"Bearer {access_token}",
+                "Prefer": "return=representation"
+            })
             client = create_client(supabase_url, supabase_key, options=options)
         except Exception as e:
-            # Fallback: Create client normally and set session
+            # Fallback: Create client normally and manually set headers
             print(f"⚠️ Could not create client with ClientOptions: {str(e)}")
-            print(f"⚠️ Falling back to standard client creation")
+            print(f"⚠️ Falling back to standard client creation with manual header setting")
             client = create_client(supabase_url, supabase_key)
-            # Try to set the session with the access token
-            try:
-                # Set the access token in the client's auth session
-                client.auth.set_session(access_token, "")
-            except:
-                # If set_session fails, we'll rely on headers in the storage call
-                pass
+            # Manually update the client's headers for storage operations
+            if hasattr(client, 'options') and hasattr(client.options, 'headers'):
+                client.options.headers["Authorization"] = f"Bearer {access_token}"
+                client.options.headers["apikey"] = supabase_key
         
         # Headers are sufficient for Storage RLS - no need to call set_session
         print(f"✓ Created storage client with access token for RLS")
