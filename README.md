@@ -135,12 +135,16 @@ alpha_lens/
 
 ## Environment Variables
 
-| Variable | Description | Required |
-|----------|-------------|----------|
-| `LANDING_AI_API_KEY` | Landing.AI ADE API key | Yes |
-| `OPENAI_API_KEY` | OpenAI API key for GPT-3.5-turbo | Yes |
-| `SUPABASE_URL` | Supabase project URL | Yes |
-| `SUPABASE_ANON_KEY` | Supabase anonymous key | Yes |
+| Variable | Description | Required | Default |
+|----------|-------------|----------|---------|
+| `VISION_AGENT_API_KEY` | Landing.AI ADE API key | ✅ Yes | - |
+| `OPENAI_API_KEY` | OpenAI API key for GPT-3.5-turbo | ✅ Yes | - |
+| `SUPABASE_URL` | Supabase project URL | ✅ Yes | - |
+| `SUPABASE_ANON_KEY` | Supabase anonymous key | ✅ Yes | - |
+| `ADE_ENDPOINT` | Landing.AI ADE endpoint | ❌ No | `https://api.va.landing.ai/v1/ade` |
+| `HOST` | Server host | ❌ No | `0.0.0.0` |
+| `PORT` | Server port | ❌ No | `8000` (Render sets automatically) |
+| `DEBUG` | Debug mode | ❌ No | `False` |
 
 ## Development
 

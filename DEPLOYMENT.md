@@ -34,17 +34,32 @@ All required files have been verified and updated for Render deployment.
 
 ## Environment Variables
 
-### Required (Set in Render Dashboard):
-- `VISION_AGENT_API_KEY` - Landing.AI API key
-- `OPENAI_API_KEY` - OpenAI API key
-- `SUPABASE_URL` - Supabase project URL
-- `SUPABASE_ANON_KEY` - Supabase anon key
+### Required (Must Set in Render Dashboard):
+These are **required** for the application to work:
 
-### Optional (Have defaults):
-- `PYTHON_VERSION` - Default: `3.11.0` (set in render.yaml)
-- `HOST` - Default: `0.0.0.0`
-- `PORT` - Set automatically by Render
-- `DEBUG` - Default: `False`
+- `VISION_AGENT_API_KEY` - Landing.AI ADE API key (required for document processing)
+- `OPENAI_API_KEY` - OpenAI API key (required for chat functionality)
+- `SUPABASE_URL` - Supabase project URL (required for authentication & database)
+- `SUPABASE_ANON_KEY` - Supabase anonymous key (required for authentication & database)
+
+### Optional (Have Defaults - Don't Need to Set):
+These have default values and work without setting:
+
+- `ADE_ENDPOINT` - Default: `https://api.va.landing.ai/v1/ade`
+- `HOST` - Default: `0.0.0.0` (Render uses this automatically)
+- `PORT` - Default: `8000` (Render sets `$PORT` automatically - don't override)
+- `DEBUG` - Default: `False` (set to `True` only for local development)
+- `VECTOR_DB_PATH` - Default: `./data/vector_stores`
+- `DOCUMENT_STORAGE_PATH` - Default: `./data/raw_docs`
+- `EXTRACTED_DATA_PATH` - Default: `./data/extracted`
+- `FINAL_OUTPUT_PATH` - Default: `./data/final_outputs`
+
+### Not Used (Can Ignore):
+These are in your .env but not used by the code:
+
+- `SUPABASE_SERVICE_ROLE_KEY` - Not used in current implementation
+- `ANTHROPIC_API_KEY` - Optional (only if using Claude instead of OpenAI)
+- `GOOGLE_API_KEY` - Optional (only if using Gemini instead of OpenAI)
 
 ## Deployment Steps
 
