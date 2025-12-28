@@ -7,7 +7,8 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.0
-      # Required Environment Variables (set these in Render Dashboard)
+      # Required Environment Variables - MUST be set in Render Dashboard
+      # These are marked sync: false so you set them manually for security
       - key: VISION_AGENT_API_KEY
         sync: false
       - key: OPENAI_API_KEY
@@ -16,12 +17,13 @@ services:
         sync: false
       - key: SUPABASE_ANON_KEY
         sync: false
-      # Optional - ADE endpoint (has default)
+      # Optional Environment Variables (have defaults)
       - key: ADE_ENDPOINT
         value: https://api.va.landing.ai/v1/ade
-      # Optional - Debug mode (set to False for production)
       - key: DEBUG
         value: "False"
+      - key: HOST
+        value: 0.0.0.0
     healthCheckPath: /
     plan: free
 
