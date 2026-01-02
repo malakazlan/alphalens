@@ -4,6 +4,35 @@
 // Analyzer State Management
 let currentAnalyzerState = 'initial'; // 'initial', 'loading', 'result'
 
+// URL Parameter Management
+function getUrlParams() {
+    const params = new URLSearchParams(window.location.search);
+    return {
+        document: params.get('document') || null,
+        state: params.get('state') || null,
+        tab: params.get('tab') || null
+    };
+}
+
+function updateUrlParams(params) {
+    const url = new URL(window.location);
+    Object.keys(params).forEach(key => {
+        if (params[key] !== null && params[key] !== undefined) {
+            url.searchParams.set(key, params[key]);
+        } else {
+            url.searchParams.delete(key);
+        }
+    });
+    // Update URL without reload
+    window.history.pushState({}, '', url);
+}
+
+function clearUrlParams() {
+    const url = new URL(window.location);
+    url.search = '';
+    window.history.pushState({}, '', url);
+}
+
 // State persistence functions
 function saveAnalyzerState() {
     const state = {
@@ -11,6 +40,28 @@ function saveAnalyzerState() {
         selectedDocumentId: typeof window.getSelectedDocumentId === 'function' ? window.getSelectedDocumentId() : null
     };
     sessionStorage.setItem('analyzerState', JSON.stringify(state));
+    
+    // Also update URL parameters - always update if we have a document
+    const urlParams = {};
+    if (state.selectedDocumentId) {
+        urlParams.document = state.selectedDocumentId;
+        // Update state in URL based on current analyzer state
+        if (currentAnalyzerState === 'result') {
+            urlParams.state = 'result';
+        } else if (currentAnalyzerState === 'loading') {
+            urlParams.state = 'loading';
+        }
+        // Keep existing tab if present, or don't set it
+        const currentUrlParams = getUrlParams();
+        if (currentUrlParams.tab) {
+            urlParams.tab = currentUrlParams.tab;
+        }
+    } else {
+        // No document selected - clear URL params
+        clearUrlParams();
+        return;
+    }
+    updateUrlParams(urlParams);
 }
 
 function restoreAnalyzerState() {
@@ -188,6 +239,15 @@ function showAnalyzerResultState() {
     
     currentAnalyzerState = 'result';
     saveAnalyzerState();
+    
+    // Update URL with active tab if available
+    const activeTab = document.querySelector('.main-tab.active');
+    if (activeTab) {
+        const tabName = activeTab.dataset.tab;
+        if (tabName) {
+            updateUrlParams({ tab: tabName });
+        }
+    }
     
     // Initialize sidebar and resizer when result state is shown
     setTimeout(() => {
@@ -443,4 +503,9 @@ window.getAnalyzerState = () => currentAnalyzerState;
 window.saveAnalyzerState = saveAnalyzerState;
 window.restoreAnalyzerState = restoreAnalyzerState;
 window.clearAnalyzerState = clearAnalyzerState;
+
+// Export URL parameter functions
+window.getUrlParams = getUrlParams;
+window.updateUrlParams = updateUrlParams;
+window.clearUrlParams = clearUrlParams;
 

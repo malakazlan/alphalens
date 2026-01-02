@@ -24,12 +24,20 @@ function showHomePage() {
 
 // Feature switching function
 function showFeature(feature) {
-    // Save analyzer state before switching away
+    // Save analyzer state before switching away (if we have a selected document)
     const currentSection = document.getElementById('analyzer-section');
     if (currentSection && currentSection.style.display !== 'none') {
         // We're currently on analyzer, save state before leaving
-        if (typeof saveAnalyzerState === 'function') {
-            saveAnalyzerState();
+        const getSelectedDocumentId = window.getSelectedDocumentId || (() => null);
+        const selectedDocId = getSelectedDocumentId();
+        const getAnalyzerState = window.getAnalyzerState || (() => 'initial');
+        const currentState = getAnalyzerState();
+        
+        // Only save state if we have a document selected and we're in result state
+        if (selectedDocId && currentState === 'result') {
+            if (typeof saveAnalyzerState === 'function') {
+                saveAnalyzerState();
+            }
         }
     }
     
@@ -70,72 +78,170 @@ function showFeature(feature) {
             analyzerSection.style.visibility = 'visible';
             analyzerSection.style.opacity = '1';
             
-            // Clear document content first
-            const markdownView = document.getElementById('markdown-view');
-            const jsonView = document.getElementById('json-content');
-            const pdfWrapper = document.getElementById('pdf-wrapper');
-            const selectedFileName = document.getElementById('selected-file-name');
+            // Check URL parameters first - if document ID is in URL, restore that state
+            const getUrlParams = window.getUrlParams || (() => ({}));
+            const urlParams = getUrlParams();
             
-            if (markdownView) markdownView.innerHTML = '';
-            if (jsonView) jsonView.textContent = '';
-            if (pdfWrapper) pdfWrapper.innerHTML = '';
-            if (selectedFileName) selectedFileName.textContent = 'No document selected';
+            // Also check sessionStorage for saved state (in case URL params were cleared)
+            const restoreAnalyzerState = window.restoreAnalyzerState || (() => null);
+            const savedState = restoreAnalyzerState();
             
-            // Clear chat messages
-            const chatMessages = document.getElementById('chat-messages');
-            if (chatMessages) {
-                chatMessages.innerHTML = '';
-                chatMessages.style.display = 'none';
+            // Determine which document to restore (priority: URL params > sessionStorage > none)
+            let documentToRestore = null;
+            let stateToRestore = null;
+            let tabToRestore = null;
+            
+            if (urlParams.document) {
+                // URL has document - use that (state is optional, default to 'result')
+                documentToRestore = urlParams.document;
+                stateToRestore = urlParams.state || 'result';
+                tabToRestore = urlParams.tab || null;
+            } else if (savedState && savedState.selectedDocumentId) {
+                // No URL params but we have saved state with a document - restore it
+                documentToRestore = savedState.selectedDocumentId;
+                stateToRestore = savedState.analyzerState || 'result';
+                // Update URL to reflect the restored state
+                if (typeof window.updateUrlParams === 'function') {
+                    window.updateUrlParams({
+                        document: documentToRestore,
+                        state: stateToRestore
+                    });
+                }
             }
             
-            // Clear selected document when showing initial state
-            if (typeof window.setSelectedDocumentId === 'function') {
-                window.setSelectedDocumentId(null);
+            // Only clear document content if we're NOT restoring
+            if (!documentToRestore) {
+                // Clear document content first
+                const markdownView = document.getElementById('markdown-view');
+                const jsonView = document.getElementById('json-content');
+                const pdfWrapper = document.getElementById('pdf-wrapper');
+                const selectedFileName = document.getElementById('selected-file-name');
+                
+                if (markdownView) markdownView.innerHTML = '';
+                if (jsonView) jsonView.textContent = '';
+                if (pdfWrapper) pdfWrapper.innerHTML = '';
+                if (selectedFileName) selectedFileName.textContent = 'No document selected';
+                
+                // Clear chat messages
+                const chatMessages = document.getElementById('chat-messages');
+                if (chatMessages) {
+                    chatMessages.innerHTML = '';
+                    chatMessages.style.display = 'none';
+                }
             }
             
-            // Clear any saved state when navigating to analyzer
-            // User can always select a document from the initial state
-            if (typeof clearAnalyzerState === 'function') {
-                clearAnalyzerState();
+            if (documentToRestore && stateToRestore) {
+                // We have a document to restore - restore that state instead of showing initial
+                // Set the selected document ID immediately so it's available
+                if (typeof window.setSelectedDocumentId === 'function') {
+                    window.setSelectedDocumentId(documentToRestore);
+                }
+                
+                if (typeof selectDocument === 'function') {
+                    // Load the document with cache enabled for instant restoration
+                    // selectDocument will check cache first and show instantly if available
+                    // No need to show loading state - selectDocument handles it intelligently
+                    selectDocument(documentToRestore, true).then(() => {
+                        // Ensure result state is shown after document loads (selectDocument should do this, but ensure it)
+                        if (stateToRestore === 'result') {
+                            // Double-check result state is shown
+                            setTimeout(() => {
+                                const getAnalyzerState = window.getAnalyzerState || (() => 'initial');
+                                if (getAnalyzerState() !== 'result') {
+                                    if (typeof showAnalyzerResultState === 'function') {
+                                        showAnalyzerResultState();
+                                    }
+                                }
+                                // Switch to tab if specified
+                                if (tabToRestore) {
+                                    const tab = document.querySelector(`[data-tab="${tabToRestore}"]`);
+                                    if (tab) {
+                                        tab.click();
+                                    }
+                                }
+                            }, 300);
+                        } else if (tabToRestore) {
+                            // Switch to tab if specified
+                            const tab = document.querySelector(`[data-tab="${tabToRestore}"]`);
+                            if (tab) {
+                                setTimeout(() => tab.click(), 200);
+                            }
+                        }
+                    }).catch(error => {
+                        console.error('Error restoring document:', error);
+                        // Fall back to initial state on error
+                        if (typeof showAnalyzerInitialState === 'function') {
+                            showAnalyzerInitialState();
+                        }
+                    });
+                }
+            } else {
+                // No document to restore - clear state and show initial
+                // Clear document content first
+                const markdownView = document.getElementById('markdown-view');
+                const jsonView = document.getElementById('json-content');
+                const pdfWrapper = document.getElementById('pdf-wrapper');
+                const selectedFileName = document.getElementById('selected-file-name');
+                
+                if (markdownView) markdownView.innerHTML = '';
+                if (jsonView) jsonView.textContent = '';
+                if (pdfWrapper) pdfWrapper.innerHTML = '';
+                if (selectedFileName) selectedFileName.textContent = 'No document selected';
+                
+                // Clear chat messages
+                const chatMessages = document.getElementById('chat-messages');
+                if (chatMessages) {
+                    chatMessages.innerHTML = '';
+                    chatMessages.style.display = 'none';
+                }
+                
+                // Clear selected document when showing initial state
+                if (typeof window.setSelectedDocumentId === 'function') {
+                    window.setSelectedDocumentId(null);
+                }
+                
+                // Clear any saved state when navigating to analyzer without a document
+                if (typeof clearAnalyzerState === 'function') {
+                    clearAnalyzerState();
+                }
+                
+                // Clear URL params when showing initial state
+                if (typeof window.clearUrlParams === 'function') {
+                    window.clearUrlParams();
+                }
+                
+                // Show initial state
+                if (typeof showAnalyzerInitialState === 'function') {
+                    showAnalyzerInitialState();
+                }
             }
             
-            // CRITICAL: Always show initial state when navigating to analyzer
-            // This ensures a clean start and avoids empty page issues
-            if (typeof showAnalyzerInitialState === 'function') {
-                showAnalyzerInitialState();
+            // Reload pre-saved documents to refresh the list (always do this)
+            // But only if we're not restoring a document (to avoid interference)
+            if (!documentToRestore) {
+                setTimeout(() => {
+                    if (typeof loadPresavedDocuments === 'function') {
+                        loadPresavedDocuments();
+                    }
+                    
+                    // Ensure analyzer section is visible
+                    if (analyzerSection) {
+                        analyzerSection.style.display = 'block';
+                    }
+                }, 50);
+            } else {
+                // If restoring, wait longer to ensure restoration completes first
+                setTimeout(() => {
+                    if (typeof loadPresavedDocuments === 'function') {
+                        loadPresavedDocuments();
+                    }
+                    
+                    // Ensure analyzer section is visible
+                    if (analyzerSection) {
+                        analyzerSection.style.display = 'block';
+                    }
+                }, 500);
             }
-            
-            // Double-check initial state is visible after a brief delay
-            setTimeout(() => {
-                const initialState = document.getElementById('analyzer-initial-state');
-                const resultState = document.getElementById('analyzer-result-state');
-                
-                // Force hide result state if it's still visible
-                if (resultState) {
-                    resultState.style.setProperty('display', 'none', 'important');
-                    resultState.style.setProperty('visibility', 'hidden', 'important');
-                    resultState.style.setProperty('opacity', '0', 'important');
-                    resultState.style.setProperty('z-index', '-1', 'important');
-                }
-                
-                // Force show initial state
-                if (initialState) {
-                    initialState.style.setProperty('display', 'block', 'important');
-                    initialState.style.setProperty('visibility', 'visible', 'important');
-                    initialState.style.setProperty('opacity', '1', 'important');
-                    initialState.style.setProperty('z-index', '10', 'important');
-                }
-                
-                // Ensure analyzer section is visible
-                if (analyzerSection) {
-                    analyzerSection.style.display = 'block';
-                }
-                
-                // Reload pre-saved documents to refresh the list
-                if (typeof loadPresavedDocuments === 'function') {
-                    loadPresavedDocuments();
-                }
-            }, 50);
         }
         updateNavLinks('analyzer');
         // Initialize analyzer functionality

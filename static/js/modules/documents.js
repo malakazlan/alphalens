@@ -356,7 +356,7 @@ function pollDocumentStatus() {
 }
 
 // Function to select a document
-async function selectDocument(documentId) {
+async function selectDocument(documentId, useCache = true) {
     selectedDocumentId = documentId;
     
     // Save selected document ID to state
@@ -364,9 +364,72 @@ async function selectDocument(documentId) {
         saveAnalyzerState();
     }
     
-    // If we're in initial state, show loading first
+    // Check for cached data first for instant restoration
+    let cachedDocument = null;
+    if (useCache) {
+        try {
+            const cacheKey = `doc_cache_${documentId}`;
+            const cachedData = sessionStorage.getItem(cacheKey);
+            if (cachedData) {
+                cachedDocument = JSON.parse(cachedData);
+                // Verify cache is still valid (has processed data)
+                if (cachedDocument && cachedDocument.detected_chunks && cachedDocument.detected_chunks.length > 0) {
+                    // Use cached data for instant display
+                    window.lastFullDocumentData = window.lastFullDocumentData || {};
+                    window.lastFullDocumentData[documentId] = cachedDocument;
+                    
+                    // Immediately update view with cached data
+                    if (typeof updateDocumentView === 'function') {
+                        updateDocumentView(cachedDocument);
+                    }
+                    
+                    // Ensure PDF/image is rendered (updateDocumentView should handle this, but ensure it)
+                    if (cachedDocument.status === 'complete' && typeof renderDocumentPreview === 'function') {
+                        renderDocumentPreview(cachedDocument);
+                    }
+                    
+                    // Show result state immediately
+                    if (typeof showAnalyzerResultState === 'function') {
+                        showAnalyzerResultState();
+                    }
+                    
+                    // Clear chat messages and show example prompts
+                    const chatMessages = document.getElementById('chat-messages');
+                    if (chatMessages) {
+                        chatMessages.innerHTML = '';
+                        chatMessages.style.display = 'none';
+                    }
+                    if (typeof updateExamplePrompts === 'function') {
+                        updateExamplePrompts(cachedDocument);
+                    }
+                    
+                    // Show initial greeting in chat (Landing.AI style)
+                    if (typeof window.showInitialGreeting === 'function') {
+                        setTimeout(() => {
+                            window.showInitialGreeting();
+                        }, 100);
+                    }
+                    
+                    // Highlight the selected document
+                    document.querySelectorAll('.document-item').forEach(item => {
+                        item.classList.remove('active');
+                        if (item.dataset.id === documentId) {
+                            item.classList.add('active');
+                        }
+                    });
+                    
+                    // Fetch fresh data in background (non-blocking)
+                    // Continue to fetch fresh data below...
+                }
+            }
+        } catch (e) {
+            console.warn('Failed to load cached document:', e);
+        }
+    }
+    
+    // If we're in initial state and no cache, show loading first
     const getAnalyzerState = window.getAnalyzerState || (() => 'initial');
-    if (getAnalyzerState() === 'initial') {
+    if (getAnalyzerState() === 'initial' && !cachedDocument) {
         if (typeof showAnalyzerLoadingState === 'function') {
             showAnalyzerLoadingState();
         }
@@ -378,14 +441,15 @@ async function selectDocument(documentId) {
         pollDocumentStatus();
     }
     
-    // Highlight the selected document
-    document.querySelectorAll('.document-item').forEach(item => {
-        item.classList.remove('active');
-        
-        if (item.dataset.id === documentId) {
-            item.classList.add('active');
-        }
-    });
+    // Highlight the selected document (if not already done from cache)
+    if (!cachedDocument) {
+        document.querySelectorAll('.document-item').forEach(item => {
+            item.classList.remove('active');
+            if (item.dataset.id === documentId) {
+                item.classList.add('active');
+            }
+        });
+    }
     
     try {
         const getAuthHeaders = window.getAuthHeaders || (() => ({}));
@@ -410,63 +474,86 @@ async function selectDocument(documentId) {
         window.lastFullDocumentData = window.lastFullDocumentData || {};
         window.lastFullDocumentData[documentId] = document;
         
-        // Update document view with full data (this also handles PDF rendering)
-        if (typeof updateDocumentView === 'function') {
-            updateDocumentView(document);
+        // Also cache in sessionStorage for instant restoration
+        try {
+            const cacheKey = `doc_cache_${documentId}`;
+            sessionStorage.setItem(cacheKey, JSON.stringify(document));
+        } catch (e) {
+            console.warn('Failed to cache document data:', e);
         }
         
-        // Note: renderDocumentPreview is already called by updateDocumentView, so no need to call it again here
-        
-        // Clear chat messages and show example prompts
-        const chatMessages = document.getElementById('chat-messages');
-        if (chatMessages) {
-            chatMessages.innerHTML = '';
-            chatMessages.style.display = 'none';
+        // Only update view if we didn't already show cached data
+        // (to avoid flickering, but update if data changed)
+        if (!cachedDocument || JSON.stringify(cachedDocument) !== JSON.stringify(document)) {
+            // Update document view with full data (this also handles PDF rendering)
+            if (typeof updateDocumentView === 'function') {
+                updateDocumentView(document);
+            }
+            
+            // Clear chat messages and show example prompts
+            const chatMessages = document.getElementById('chat-messages');
+            if (chatMessages) {
+                chatMessages.innerHTML = '';
+                chatMessages.style.display = 'none';
+            }
+            if (typeof updateExamplePrompts === 'function') {
+                updateExamplePrompts(document);
+            }
+            
+            // Show initial greeting in chat (Landing.AI style)
+            if (typeof window.showInitialGreeting === 'function') {
+                setTimeout(() => {
+                    window.showInitialGreeting();
+                }, 100);
+            }
         }
-        if (typeof updateExamplePrompts === 'function') {
-            updateExamplePrompts(document);
-        }
         
-        // Determine the correct state based on document status
-        if (document.status === 'complete' && document.detected_chunks) {
-            // Document is complete - show result state
-            if (typeof showAnalyzerResultState === 'function') {
-                showAnalyzerResultState();
-            }
-        } else if (document.status === 'processing') {
-            // Document is still processing - keep loading state
-            if (typeof showAnalyzerLoadingState === 'function') {
-                showAnalyzerLoadingState();
-            }
-        } else if (document.status === 'error') {
-            // Document has error - show initial state
-            if (typeof showAnalyzerInitialState === 'function') {
-                showAnalyzerInitialState();
-            }
-        } else {
-            // Default: if we have data, show result, otherwise keep loading
-            if (document.detected_chunks && document.detected_chunks.length > 0) {
+        // Determine the correct state based on document status (only if not already showing result from cache)
+        if (!cachedDocument) {
+            if (document.status === 'complete' && document.detected_chunks) {
+                // Document is complete - show result state
                 if (typeof showAnalyzerResultState === 'function') {
                     showAnalyzerResultState();
                 }
-            } else if (getAnalyzerState() === 'loading') {
-                // Keep loading state if we're already in loading
+            } else if (document.status === 'processing') {
+                // Document is still processing - keep loading state
                 if (typeof showAnalyzerLoadingState === 'function') {
                     showAnalyzerLoadingState();
+                }
+            } else if (document.status === 'error') {
+                // Document has error - show initial state
+                if (typeof showAnalyzerInitialState === 'function') {
+                    showAnalyzerInitialState();
+                }
+            } else {
+                // Default: if we have data, show result, otherwise keep loading
+                if (document.detected_chunks && document.detected_chunks.length > 0) {
+                    if (typeof showAnalyzerResultState === 'function') {
+                        showAnalyzerResultState();
+                    }
+                } else if (getAnalyzerState() === 'loading') {
+                    // Keep loading state if we're already in loading
+                    if (typeof showAnalyzerLoadingState === 'function') {
+                        showAnalyzerLoadingState();
+                    }
                 }
             }
         }
     } catch (error) {
         console.error('Error loading document details:', error);
-        const documentView = document.getElementById('document-view');
-        if (documentView) {
-            documentView.innerHTML = `<div class="status-banner error">Error loading document details: ${error.message}</div>`;
-        }
         
-        // If error occurred during loading, go back to initial state
-        if (getAnalyzerState() === 'loading') {
-            if (typeof showAnalyzerInitialState === 'function') {
-                showAnalyzerInitialState();
+        // If we have cached data, keep showing it even if fetch fails
+        if (!cachedDocument) {
+            const documentView = document.getElementById('document-view');
+            if (documentView) {
+                documentView.innerHTML = `<div class="status-banner error">Error loading document details: ${error.message}</div>`;
+            }
+            
+            // If error occurred during loading, go back to initial state
+            if (getAnalyzerState() === 'loading') {
+                if (typeof showAnalyzerInitialState === 'function') {
+                    showAnalyzerInitialState();
+                }
             }
         }
     }
@@ -653,6 +740,11 @@ function initializeAnalyzer() {
                 clearAnalyzerState();
             }
             
+            // Clear URL parameters when going back
+            if (typeof window.clearUrlParams === 'function') {
+                window.clearUrlParams();
+            }
+            
             // Show initial state - this must be called last to ensure proper display
             if (typeof showAnalyzerInitialState === 'function') {
                 showAnalyzerInitialState();
@@ -790,21 +882,30 @@ async function processFileUpload(file, action) {
             uploadStatus.innerHTML = '';
         }
         
-        // Load the document
-        await selectDocument(data.document_id);
-        
-        // Show result state
-        if (typeof showAnalyzerResultState === 'function') {
-            showAnalyzerResultState();
+        // Open results in a new tab/window with URL parameters
+        const resultUrl = new URL(window.location.origin + window.location.pathname);
+        resultUrl.searchParams.set('document', data.document_id);
+        resultUrl.searchParams.set('state', 'result');
+        if (action && action !== 'parse') {
+            resultUrl.searchParams.set('tab', action);
         }
         
-        // Switch to appropriate tab based on action
-        if (action === 'extract') {
-            const extractTab = document.querySelector('[data-tab="extract"]');
-            if (extractTab) extractTab.click();
-        } else if (action === 'chat') {
-            const chatTab = document.querySelector('[data-tab="chat"]');
-            if (chatTab) chatTab.click();
+        // Open new window
+        const newWindow = window.open(resultUrl.toString(), '_blank');
+        
+        // If popup was blocked, fall back to current window
+        if (!newWindow || newWindow.closed || typeof newWindow.closed === 'undefined') {
+            // Popup blocked - use current window instead
+            window.location.href = resultUrl.toString();
+        } else {
+            // Successfully opened new window - restore initial state in current window
+            if (typeof showAnalyzerInitialState === 'function') {
+                showAnalyzerInitialState();
+            }
+            // Clear upload status
+            if (uploadStatus) {
+                uploadStatus.innerHTML = '';
+            }
         }
         
     } catch (error) {

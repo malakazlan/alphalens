@@ -849,15 +849,41 @@ def generate_follow_up_suggestions(query: str, answer: str, financial_data: Dict
     return suggestions[:3]  # Return max 3 suggestions
 
 
-def get_conversation_context(document_id: str) -> str:
-    """Get conversation history context for a document."""
-    # TODO: Implement conversation history retrieval
-    # For now, return empty string
-    return ""
+def get_conversation_context(document_id: str, max_turns: int = 3) -> str:
+    """Get conversation history context for a document (last N turns)."""
+    if document_id not in conversation_history:
+        return ""
+    
+    history = conversation_history[document_id]
+    if not history:
+        return ""
+    
+    # Get last N turns (query-answer pairs)
+    recent_turns = history[-max_turns:] if len(history) > max_turns else history
+    
+    # Format as context string for LLM
+    context_parts = []
+    for turn in recent_turns:
+        context_parts.append(f"Q: {turn.get('query', '')}")
+        context_parts.append(f"A: {turn.get('answer', '')[:200]}...")  # Truncate long answers
+    
+    return "\n".join(context_parts)
 
 
 def save_conversation(document_id: str, query: str, answer: str) -> None:
     """Save conversation to history."""
-    # TODO: Implement conversation history saving
-    # For now, just log it
+    if document_id not in conversation_history:
+        conversation_history[document_id] = []
+    
+    # Add new conversation turn
+    conversation_history[document_id].append({
+        "query": query,
+        "answer": answer,
+        "timestamp": datetime.now().isoformat()
+    })
+    
+    # Limit history to last 20 turns per document (prevent memory bloat)
+    if len(conversation_history[document_id]) > 20:
+        conversation_history[document_id] = conversation_history[document_id][-20:]
+    
     print(f"Conversation saved: {document_id} - Q: {query[:50]}...")

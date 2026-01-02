@@ -388,6 +388,118 @@ function formatMarkdownLikeLandingAI(docData) {
     return html || '<p class="doc-meta">No structured content found</p>';
 }
 
+// Function to format JSON in a professional, structured way
+function formatStructuredJSON(docData) {
+    if (!docData) return '{}';
+    
+    // Build a clean, organized JSON structure
+    const structured = {
+        document: {
+            id: docData.document_id || null,
+            filename: docData.filename || null,
+            status: docData.status || null,
+            upload_time: docData.upload_time || null,
+            file_type: docData.file_type || null,
+            file_size: docData.file_size || null
+        },
+        metadata: {
+            ...(docData.metadata || {}),
+            page_count: docData.metadata?.page_count || null,
+            processing_time: docData.metadata?.processing_time || null
+        },
+        content: {
+            markdown: docData.document_markdown || '',
+            markdown_length: (docData.document_markdown || '').length
+        },
+        chunks: (() => {
+            const chunks = docData.detected_chunks || [];
+            const byType = {};
+            
+            const items = chunks.map(chunk => {
+                // Count by type
+                const type = chunk.type || 'unknown';
+                byType[type] = (byType[type] || 0) + 1;
+                
+                // Return clean chunk structure
+                return {
+                    id: chunk.chunk_id || null,
+                    type: type,
+                    page: chunk.page !== undefined ? chunk.page + 1 : null, // Convert to 1-based
+                    text: chunk.text || chunk.markdown || '',
+                    text_length: (chunk.text || chunk.markdown || '').length,
+                    bounding_box: chunk.bounding_box || null,
+                    confidence: chunk.confidence || null,
+                    metadata: {
+                        ...(chunk.metadata || {}),
+                        visual_ref: chunk.visual_ref || null
+                    }
+                };
+            });
+            
+            return {
+                total: chunks.length,
+                by_type: byType,
+                items: items
+            };
+        })(),
+        splits: {
+            total: (docData.splits || []).length,
+            items: (docData.splits || []).map(split => ({
+                id: split.split_id || null,
+                text: split.text || '',
+                text_length: (split.text || '').length,
+                chunk_ids: split.chunk_ids || [],
+                metadata: split.metadata || {}
+            }))
+        },
+        grounding: docData.grounding || {},
+        processing: {
+            status: docData.status || 'unknown',
+            processed_at: docData.processed_at || null,
+            processing_method: docData.processing_method || null
+        }
+    };
+    
+    // Remove null values and empty objects for cleaner output
+    const cleanStructured = removeEmptyValues(structured);
+    
+    // Format with proper indentation and sorting
+    return JSON.stringify(cleanStructured, (key, value) => {
+        // Sort keys alphabetically for consistency
+        if (value && typeof value === 'object' && !Array.isArray(value)) {
+            const sorted = {};
+            Object.keys(value).sort().forEach(k => {
+                sorted[k] = value[k];
+            });
+            return sorted;
+        }
+        return value;
+    }, 2);
+}
+
+// Helper function to remove null/empty values for cleaner JSON
+function removeEmptyValues(obj) {
+    if (Array.isArray(obj)) {
+        return obj.map(item => removeEmptyValues(item));
+    } else if (obj && typeof obj === 'object') {
+        const cleaned = {};
+        for (const [key, value] of Object.entries(obj)) {
+            if (value === null || value === undefined) {
+                continue; // Skip null/undefined
+            }
+            if (typeof value === 'object' && Object.keys(value).length === 0) {
+                continue; // Skip empty objects
+            }
+            if (Array.isArray(value) && value.length === 0) {
+                continue; // Skip empty arrays
+            }
+            cleaned[key] = removeEmptyValues(value);
+        }
+        return cleaned;
+    }
+    return obj;
+}
+
 // Function to update document view
 function updateDocumentView(docData) {
     console.log('Updating document view:', docData);
@@ -451,15 +563,9 @@ function updateDocumentView(docData) {
             setupMarkdownInteractivity();
         }
         
-        // Show JSON in Landing.AI format
-        const jsonData = {
-            markdown: docData.document_markdown || '',
-            chunks: docData.detected_chunks || [],
-            splits: docData.splits || [],
-            grounding: docData.grounding || {},
-            metadata: docData.metadata || {}
-        };
-        jsonView.textContent = JSON.stringify(jsonData, null, 2);
+        // Show JSON in professional, structured format
+        const structuredJson = formatStructuredJSON(docData);
+        jsonView.textContent = structuredJson;
         
         console.log('Parse panel updated with markdown and JSON');
     } else {
@@ -860,28 +966,45 @@ function renderCitationChips(citations) {
     if (!citations || citations.length === 0) return '';
     const escapeHtml = window.escapeHtml || ((t) => t);
     
-    // Group citations by visual reference to show duplicates
+    // Group citations by visual reference to show duplicates (Landing.AI style)
     const grouped = {};
     citations.forEach(citation => {
-        const key = citation.visual_ref || `${citation.page || 1}. ${citation.type || 'text'}`;
+        // Format like Landing.AI: "Page 1. table" or "8. text"
+        let visualRef = '';
+        if (citation.page !== undefined && citation.page !== null) {
+            const pageNum = parseInt(citation.page) + 1; // Convert 0-based to 1-based
+            const chunkType = (citation.type || 'text').toLowerCase();
+            visualRef = `Page ${pageNum}. ${chunkType}`;
+        } else if (citation.chunk_id) {
+            // Fallback: use chunk ID if page not available
+            const chunkType = (citation.type || 'text').toLowerCase();
+            visualRef = `${citation.chunk_id}. ${chunkType}`;
+        } else {
+            visualRef = citation.visual_ref || `${citation.type || 'text'}`;
+        }
+        
+        const key = visualRef;
         if (!grouped[key]) {
             grouped[key] = [];
         }
         grouped[key].push(citation);
     });
     
-    const citationItems = Object.entries(grouped).map(([visualRef, refs]) => {
-        const citation = refs[0]; // Use first citation for data
-        return `
-            <button
-                class="visual-reference-item"
-                data-citation-chunk="${citation.chunk_id || ''}"
-                data-page="${citation.page !== undefined ? citation.page : ''}"
-                title="${escapeHtml(citation.title || 'Reference')}"
-            >
-                ${escapeHtml(visualRef)} →
-            </button>
-        `;
+    // Create citation items (show all duplicates like Landing.AI)
+    const citationItems = Object.entries(grouped).flatMap(([visualRef, refs]) => {
+        // Show each reference separately (like Landing.AI shows duplicates)
+        return refs.map(citation => {
+            return `
+                <button
+                    class="visual-reference-item"
+                    data-citation-chunk="${citation.chunk_id || ''}"
+                    data-page="${citation.page !== undefined ? citation.page : ''}"
+                    title="${escapeHtml(citation.title || 'Reference')}"
+                >
+                    ${escapeHtml(visualRef)} →
+                </button>
+            `;
+        });
     }).join('');
     
     return `
@@ -889,7 +1012,6 @@ function renderCitationChips(citations) {
             <div class="visual-references-title">Visual reference for the answer:</div>
             <div class="visual-references-list">
                 ${citationItems}
-                <button class="clear-references-btn" onclick="clearVisualReferences()">Clear</button>
             </div>
         </div>
     `;

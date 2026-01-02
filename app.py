@@ -724,12 +724,17 @@ async def chat_with_document(query: ChatQuery, request: Request, current_user: d
     # Vector store path (still local for now)
     vector_store_path = f"./data/vector_stores/{document_id}"
     
+    # Get conversation history for context (if available)
+    from chat_engine import get_conversation_context
+    conversation_context = get_conversation_context(document_id)
+    
     # Query the document with conversation context
     answer_data = get_answer_from_document(
         query.query,
         vector_store_path,
         processed_data,
-        document_id=document_id
+        document_id=document_id,
+        conversation_history_context=conversation_context
     )
     
     return {

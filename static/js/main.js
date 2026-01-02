@@ -100,6 +100,16 @@ if (fileSelectBtn) {
     });
 }
 
+// Function to initialize chat listeners
+function initializeChatButton() {
+    // Use the chat module's initialization function if available
+    if (typeof window.initializeChatButton === 'function') {
+        window.initializeChatButton();
+    } else {
+        console.warn('Chat module initialization function not available yet');
+    }
+}
+
 // Tab switching functionality - Top level tabs (Parse, Extract, Chat)
 document.querySelectorAll('.main-tab').forEach(tab => {
     tab.addEventListener('click', () => {
@@ -116,6 +126,29 @@ document.querySelectorAll('.main-tab').forEach(tab => {
         const activeContent = document.getElementById(`${tabName}-tab-content`);
         if (activeContent) {
             activeContent.style.display = 'flex';
+        }
+        
+        // Re-initialize chat button when chat tab is shown
+        if (tabName === 'chat') {
+            setTimeout(() => {
+                console.log('Chat tab shown, initializing button...');
+                initializeChatButton();
+                // Show initial greeting if document is selected
+                const getSelectedDocumentId = window.getSelectedDocumentId || (() => null);
+                if (getSelectedDocumentId() && typeof window.showInitialGreeting === 'function') {
+                    window.showInitialGreeting();
+                }
+            }, 100);
+            setTimeout(() => {
+                initializeChatButton();
+            }, 300);
+        }
+        
+        // Update URL with active tab if we have a document selected
+        const getSelectedDocumentId = window.getSelectedDocumentId || (() => null);
+        const selectedDocId = getSelectedDocumentId();
+        if (selectedDocId && typeof window.updateUrlParams === 'function') {
+            window.updateUrlParams({ tab: tabName });
         }
     });
 });
@@ -153,25 +186,39 @@ if (pdfPrevButton) {
     });
 }
 
-// Set up chat event listeners
-if (chatSendButton) {
-    chatSendButton.addEventListener('click', () => {
-        if (typeof sendChatMessage === 'function') {
-            sendChatMessage();
-}
-    });
-}
+// Set up chat event listeners (using event delegation for dynamic elements)
+document.addEventListener('click', (e) => {
+    // Check if click is on the send button or its children (SVG inside button)
+    const sendButton = e.target.closest('#chat-send') || (e.target.id === 'chat-send' ? e.target : null);
+    if (sendButton) {
+        e.preventDefault();
+        e.stopPropagation();
+        console.log('Chat send button clicked');
+        // Try window.sendChatMessage first, then global sendChatMessage
+        const sendFn = window.sendChatMessage || (typeof sendChatMessage !== 'undefined' ? sendChatMessage : null);
+        if (sendFn && typeof sendFn === 'function') {
+            sendFn();
+        } else {
+            console.error('sendChatMessage function not found. Available:', {
+                windowSendChatMessage: typeof window.sendChatMessage,
+                sendChatMessage: typeof sendChatMessage
+            });
+        }
+    }
+});
 
-if (chatInput) {
-    chatInput.addEventListener('keypress', (e) => {
-        if (e.key === 'Enter' && !e.shiftKey) {
-            e.preventDefault();
-            if (typeof sendChatMessage === 'function') {
-            sendChatMessage();
+document.addEventListener('keypress', (e) => {
+    if (e.target && e.target.id === 'chat-input' && e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        console.log('Enter pressed in chat input');
+        const sendFn = window.sendChatMessage || (typeof sendChatMessage !== 'undefined' ? sendChatMessage : null);
+        if (sendFn && typeof sendFn === 'function') {
+            sendFn();
+        } else {
+            console.error('sendChatMessage function not found');
         }
-        }
-    });
-}
+    }
+});
 
 // Main initialization - runs when DOM is ready
 window.addEventListener('DOMContentLoaded', async () => {
@@ -180,9 +227,42 @@ window.addEventListener('DOMContentLoaded', async () => {
         await checkAuthentication();
     }
     
-    // Show homepage by default
-    if (typeof showHomePage === 'function') {
-        showHomePage();
+    // Initialize chat button multiple times to ensure it works
+    console.log('DOMContentLoaded: Initializing chat button...');
+    initializeChatButton();
+    
+    // Try multiple times with delays
+    setTimeout(() => {
+        console.log('Retry 1: Initializing chat button...');
+        initializeChatButton();
+    }, 300);
+    
+    setTimeout(() => {
+        console.log('Retry 2: Initializing chat button...');
+        initializeChatButton();
+    }, 1000);
+    
+    // Also initialize when window is fully loaded
+    window.addEventListener('load', () => {
+        console.log('Window loaded, initializing chat button...');
+        initializeChatButton();
+    });
+    
+    // Check URL parameters for state restoration
+    const getUrlParams = window.getUrlParams || (() => ({}));
+    const urlParams = getUrlParams();
+    
+    // If URL has document parameter, navigate to analyzer and restore state
+    if (urlParams.document) {
+        // Navigate to analyzer feature
+        if (typeof showFeature === 'function') {
+            showFeature('analyzer');
+        }
+    } else {
+        // Show homepage by default if no document in URL
+        if (typeof showHomePage === 'function') {
+            showHomePage();
+        }
     }
     
     // Load documents
