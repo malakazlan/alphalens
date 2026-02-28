@@ -1,0 +1,396 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Alpha Lens — AI-Powered Financial Document Intelligence</title>
+    <meta name="description" content="Transform financial documents into actionable insights with AI-powered parsing, extraction, and intelligent chat. Upload PDFs and images to get structured data in seconds.">
+    <link rel="stylesheet" href="/static/css/landing.css">
+</head>
+<body>
+
+    <!-- ─── Navigation ─── -->
+    <nav class="landing-nav" id="landing-nav">
+        <div class="nav-inner">
+            <a href="/" class="nav-logo">
+                <div class="nav-logo-icon">
+                    <img src="/static/img/ALPHA%20LENS%20LOGO.png" alt="Alpha Lens">
+                </div>
+                <span class="nav-logo-text">Alpha Lens</span>
+            </a>
+            <div class="nav-links">
+                <a href="#features" class="nav-link-item">Features</a>
+                <a href="#how-it-works" class="nav-link-item">How It Works</a>
+                <a href="/login" class="nav-cta">Get Started</a>
+            </div>
+        </div>
+    </nav>
+
+    <!-- ─── Hero Section ─── -->
+    <section class="landing-hero">
+        <!-- Animated background layers -->
+        <div class="landing-hero-bg">
+            <div class="mesh-gradient"></div>
+            <div class="dot-grid"></div>
+            <div class="floating-shapes">
+                <div class="shape shape-1"></div>
+                <div class="shape shape-2"></div>
+                <div class="shape shape-3"></div>
+                <div class="shape shape-4"></div>
+            </div>
+        </div>
+
+        <div class="hero-inner">
+            <!-- Left: Text Content -->
+            <div class="hero-text">
+                <div class="hero-badge">
+                    <span class="hero-badge-dot"></span>
+                    AI-Powered Document Intelligence
+                </div>
+
+                <h1 class="hero-title">
+                    Turn Financial Docs<br>Into <span class="accent">Actionable Data</span>
+                </h1>
+
+                <p class="hero-desc">
+                    Upload any financial document — PDFs, invoices, reports, statements — and get structured data, intelligent analysis, and instant answers powered by AI.
+                </p>
+
+                <div class="hero-actions">
+                    <a href="/login" class="hero-btn-primary">
+                        Start Analyzing
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                            <line x1="5" y1="12" x2="19" y2="12"></line>
+                            <polyline points="12 5 19 12 12 19"></polyline>
+                        </svg>
+                    </a>
+                    <a href="#how-it-works" class="hero-btn-secondary">
+                        See How It Works
+                    </a>
+                </div>
+            </div>
+
+            <!-- Right: Visual -->
+            <div class="hero-visual">
+                <!-- Floating Stats -->
+                <div class="hero-float-stat">
+                    <div class="stat-icon">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
+                            <polyline points="22 4 12 14.01 9 11.01"></polyline>
+                        </svg>
+                    </div>
+                    <span>99.2% Accuracy</span>
+                </div>
+                <div class="hero-float-stat">
+                    <div class="stat-icon">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <circle cx="12" cy="12" r="10"></circle>
+                            <polyline points="12 6 12 12 16 14"></polyline>
+                        </svg>
+                    </div>
+                    <span>Processed in ~10s</span>
+                </div>
+
+                <!-- Mockup Card -->
+                <div class="hero-card-stack">
+                    <div class="hero-mock-card">
+                        <div class="mock-header">
+                            <div class="mock-dots">
+                                <div class="mock-dot"></div>
+                                <div class="mock-dot"></div>
+                                <div class="mock-dot"></div>
+                            </div>
+                            <div class="mock-tab-bar">
+                                <div class="mock-tab active">Parse</div>
+                                <div class="mock-tab">Extract</div>
+                                <div class="mock-tab">Chat</div>
+                            </div>
+                        </div>
+                        <div class="mock-content">
+                            <div class="mock-doc-preview">
+                                <div class="mock-line"></div>
+                                <div class="mock-line highlight"></div>
+                                <div class="mock-line"></div>
+                                <div class="mock-line highlight"></div>
+                                <div class="mock-line"></div>
+                            </div>
+                            <div class="mock-data-panel">
+                                <div class="mock-data-row">
+                                    <span class="mock-data-label">Revenue</span>
+                                    <span class="mock-data-value green">$4.2M</span>
+                                </div>
+                                <div class="mock-data-row">
+                                    <span class="mock-data-label">Net Income</span>
+                                    <span class="mock-data-value green">$1.1M</span>
+                                </div>
+                                <div class="mock-data-row">
+                                    <span class="mock-data-label">Margin</span>
+                                    <span class="mock-data-value">26.2%</span>
+                                </div>
+                                <div class="mock-data-row">
+                                    <span class="mock-data-label">YoY Growth</span>
+                                    <span class="mock-data-value green">+18.5%</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- ─── Stats Bar ─── -->
+    <section class="stats-bar">
+        <div class="stats-inner">
+            <div class="stat-item reveal">
+                <div class="stat-number"><span class="accent">15+</span></div>
+                <div class="stat-label">Document Formats</div>
+            </div>
+            <div class="stats-divider"></div>
+            <div class="stat-item reveal reveal-delay-1">
+                <div class="stat-number"><span class="accent">&lt;10s</span></div>
+                <div class="stat-label">Avg Processing Time</div>
+            </div>
+            <div class="stats-divider"></div>
+            <div class="stat-item reveal reveal-delay-2">
+                <div class="stat-number"><span class="accent">3</span></div>
+                <div class="stat-label">AI-Powered Modes</div>
+            </div>
+            <div class="stats-divider"></div>
+            <div class="stat-item reveal reveal-delay-3">
+                <div class="stat-number"><span class="accent">24/7</span></div>
+                <div class="stat-label">Always Available</div>
+            </div>
+        </div>
+    </section>
+
+    <!-- ─── Features Section ─── -->
+    <section class="landing-features" id="features">
+        <div class="section-inner">
+            <div class="section-header reveal">
+                <div class="section-eyebrow">✦ Core Capabilities</div>
+                <h2 class="section-title">Three Powerful Ways to Analyze Documents</h2>
+                <p class="section-desc">
+                    From raw documents to structured insights — upload once and access intelligent parsing, extraction, and conversational AI.
+                </p>
+            </div>
+
+            <div class="features-grid">
+                <!-- Parse -->
+                <div class="feature-card-landing reveal reveal-delay-1">
+                    <div class="feature-icon-wrap">
+                        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"></path>
+                        </svg>
+                    </div>
+                    <h3>Parse</h3>
+                    <p>Transform any document into structured, machine-readable Markdown. Tables, charts, and text are automatically detected and organized with precise bounding boxes.</p>
+                </div>
+
+                <!-- Extract -->
+                <div class="feature-card-landing reveal reveal-delay-2">
+                    <div class="feature-icon-wrap">
+                        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <circle cx="11" cy="11" r="8"></circle>
+                            <path d="m21 21-4.35-4.35"></path>
+                        </svg>
+                    </div>
+                    <h3>Extract</h3>
+                    <p>Automatically pull key financial fields — names, dates, totals, line items — from parsed output. Structured JSON ready for your workflows.</p>
+                </div>
+
+                <!-- Chat -->
+                <div class="feature-card-landing reveal reveal-delay-3">
+                    <div class="feature-icon-wrap">
+                        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+                        </svg>
+                    </div>
+                    <h3>Chat</h3>
+                    <p>Ask natural language questions about your documents. The AI finds answers from forms, reports, and figures — and highlights the exact sources.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- ─── How It Works ─── -->
+    <section class="landing-how" id="how-it-works">
+        <div class="section-inner">
+            <div class="section-header reveal">
+                <div class="section-eyebrow">✦ Simple Workflow</div>
+                <h2 class="section-title">From Document to Insight in 3 Steps</h2>
+                <p class="section-desc">
+                    No setup, no configuration. Upload your document and get results immediately.
+                </p>
+            </div>
+
+            <div class="steps-row">
+                <div class="step-card reveal reveal-delay-1">
+                    <div class="step-number">1</div>
+                    <h3>Upload Your Document</h3>
+                    <p>Drop a PDF, image, or financial report. We support invoices, income statements, balance sheets, and more.</p>
+                    <div class="step-connector"></div>
+                </div>
+
+                <div class="step-card reveal reveal-delay-2">
+                    <div class="step-number">2</div>
+                    <h3>AI Processes & Analyzes</h3>
+                    <p>Our AI engine detects tables, charts, text regions, and extracts structured data in seconds with high accuracy.</p>
+                    <div class="step-connector"></div>
+                </div>
+
+                <div class="step-card reveal reveal-delay-3">
+                    <div class="step-number">3</div>
+                    <h3>Get Instant Insights</h3>
+                    <p>View parsed data, extract key metrics, chat with your document, or generate professional reports — all in one workspace.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- ─── Powered By ─── -->
+    <section class="landing-powered">
+        <div class="section-inner">
+            <div class="powered-label reveal">Built With Industry-Leading AI</div>
+            <div class="powered-grid reveal reveal-delay-1">
+                <div class="powered-item">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor">
+                        <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/>
+                    </svg>
+                    Landing.AI
+                </div>
+                <div class="powered-item">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor">
+                        <circle cx="12" cy="12" r="3"/>
+                        <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8z"/>
+                    </svg>
+                    OpenAI
+                </div>
+                <div class="powered-item">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor">
+                        <path d="M3 3h18v18H3V3zm16 16V5H5v14h14z"/>
+                        <path d="M7 7h4v4H7V7zm6 0h4v4h-4V7zm-6 6h4v4H7v-4zm6 0h4v4h-4v-4z"/>
+                    </svg>
+                    Supabase
+                </div>
+                <div class="powered-item">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor">
+                        <path d="M13 3L4 14h7l-2 7 9-11h-7l2-7z"/>
+                    </svg>
+                    FastAPI
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- ─── CTA Section ─── -->
+    <section class="landing-cta">
+        <div class="section-inner">
+            <div class="cta-content reveal">
+                <h2 class="cta-title">Ready to Transform Your Financial Analysis?</h2>
+                <p class="cta-desc">
+                    Start extracting insights from your documents today. No credit card required — sign up and upload your first document in under a minute.
+                </p>
+                <a href="/login" class="cta-btn">
+                    Get Started Free
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                        <line x1="5" y1="12" x2="19" y2="12"></line>
+                        <polyline points="12 5 19 12 12 19"></polyline>
+                    </svg>
+                </a>
+            </div>
+        </div>
+    </section>
+
+    <!-- ─── Footer ─── -->
+    <footer class="landing-footer">
+        <div class="footer-inner">
+            <div class="footer-brand">
+                <div class="footer-brand-icon">
+                    <img src="/static/img/ALPHA%20LENS%20LOGO.png" alt="Alpha Lens">
+                </div>
+                <span class="footer-brand-name">Alpha Lens</span>
+            </div>
+            <div class="footer-copy">© 2025 Alpha Lens. All rights reserved.</div>
+            <div class="footer-links-row">
+                <a href="#features" class="footer-link">Features</a>
+                <a href="#how-it-works" class="footer-link">How It Works</a>
+                <a href="/login" class="footer-link">Sign In</a>
+            </div>
+        </div>
+    </footer>
+
+    <!-- ─── Scripts ─── -->
+    <script>
+        // Navbar scroll effect
+        const nav = document.getElementById('landing-nav');
+        let lastScrollY = 0;
+
+        window.addEventListener('scroll', () => {
+            const scrollY = window.scrollY;
+            if (scrollY > 40) {
+                nav.classList.add('scrolled');
+            } else {
+                nav.classList.remove('scrolled');
+            }
+            lastScrollY = scrollY;
+        }, { passive: true });
+
+        // Scroll reveal with IntersectionObserver
+        const revealElements = document.querySelectorAll('.reveal');
+        const revealObserver = new IntersectionObserver((entries) => {
+            entries.forEach(entry => {
+                if (entry.isIntersecting) {
+                    entry.target.classList.add('visible');
+                    revealObserver.unobserve(entry.target);
+                }
+            });
+        }, {
+            threshold: 0.15,
+            rootMargin: '0px 0px -40px 0px'
+        });
+
+        revealElements.forEach(el => revealObserver.observe(el));
+
+        // Smooth anchor scrolling
+        document.querySelectorAll('a[href^="#"]').forEach(anchor => {
+            anchor.addEventListener('click', (e) => {
+                e.preventDefault();
+                const target = document.querySelector(anchor.getAttribute('href'));
+                if (target) {
+                    const navHeight = nav.offsetHeight;
+                    const targetPosition = target.getBoundingClientRect().top + window.scrollY - navHeight - 20;
+                    window.scrollTo({ top: targetPosition, behavior: 'smooth' });
+                }
+            });
+        });
+
+        // Check if already logged in — redirect to dashboard
+        async function checkSession() {
+            try {
+                const token = localStorage.getItem('access_token');
+                if (!token) return;
+
+                const response = await fetch('/api/auth/session', {
+                    credentials: 'include',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${token}`
+                    }
+                });
+
+                if (response.ok) {
+                    // Already logged in → go straight to dashboard
+                    window.location.href = '/dashboard';
+                }
+            } catch (error) {
+                // Not logged in, stay on landing page
+            }
+        }
+
+        checkSession();
+    </script>
+
+</body>
+</html>

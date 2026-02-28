@@ -985,7 +985,9 @@ async def dashboard_page():
 # Root redirect
 @app.get("/")
 async def root():
-    """Redirect to login"""
+    """Serve landing page"""
+    if os.path.exists("landing.html"):
+        return FileResponse("landing.html")
     return RedirectResponse(url="/login")
 
 if __name__ == "__main__":
