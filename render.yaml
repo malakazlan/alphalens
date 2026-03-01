@@ -17,6 +17,9 @@ services:
         sync: false
       - key: SUPABASE_ANON_KEY
         sync: false
+      # FinBot: optional — set in Render Dashboard for sidebar news
+      - key: FINNHUB_API_KEY
+        sync: false
       # Optional Environment Variables (have defaults)
       - key: ADE_ENDPOINT
         value: https://api.va.landing.ai/v1/ade

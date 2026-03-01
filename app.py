@@ -20,6 +20,7 @@ from storage_service import storage_service
 from database_service import database_service
 from llm_service import llm_service
 from report_service import report_service
+from finbot_service import finbot_service, get_news_feed
 
 app = FastAPI(title="ALPHA LENS - Financial Document Analyzer MVP")
 
@@ -812,6 +813,62 @@ async def generate_professional_report(document_id: str, request: Request, curre
     except Exception as e:
         print(f"❌ Error generating report for document {document_id}: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to generate report: {str(e)}")
+
+# ──────────────────────────────────────────────
+# FinBot Endpoints
+# ──────────────────────────────────────────────
+
+class FinBotMessage(BaseModel):
+    message: str
+    session_id: Optional[str] = None
+
+@app.post("/finbot/chat")
+async def finbot_chat(msg: FinBotMessage, request: Request, current_user: dict = Depends(get_current_user)):
+    """Chat with FinBot — agentic financial assistant"""
+    user_id = current_user["id"]
+    session_id = msg.session_id or f"finbot_{user_id}"
+    
+    if not msg.message or not msg.message.strip():
+        raise HTTPException(status_code=400, detail="Message cannot be empty")
+    
+    print(f"💬 FinBot chat from user {user_id}: {msg.message[:80]}")
+    
+    result = await finbot_service.chat(session_id, msg.message.strip())
+    
+    return {
+        "response": result["response"],
+        "tools_used": result.get("tools_used", []),
+        "session_id": session_id
+    }
+
+@app.post("/finbot/clear")
+async def finbot_clear(msg: FinBotMessage, current_user: dict = Depends(get_current_user)):
+    """Clear FinBot conversation history"""
+    user_id = current_user["id"]
+    session_id = msg.session_id or f"finbot_{user_id}"
+    finbot_service.clear_session(session_id)
+    return {"status": "cleared", "session_id": session_id}
+
+
+@app.get("/finbot/news")
+async def finbot_news(
+    request: Request,
+    current_user: dict = Depends(get_current_user),
+    category: Optional[str] = None,
+    limit: Optional[int] = None,
+):
+    """Get financial news feed for the sidebar (auth required)."""
+    category = category or "general"
+    limit = min(20, limit or 10) if limit else 10
+    try:
+        items = get_news_feed(category=category, limit=limit)
+        if not items:
+            return {"news": [], "message": "No news available. Check FINNHUB_API_KEY if you expect data."}
+        return {"news": items}
+    except Exception as e:
+        print(f"FinBot news error: {e}")
+        return {"news": [], "message": "News temporarily unavailable."}
+
 
 @app.get("/documents")
 async def list_documents(request: Request, current_user: dict = Depends(get_current_user)):

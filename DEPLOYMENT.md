@@ -54,6 +54,9 @@ These have default values and work without setting:
 - `EXTRACTED_DATA_PATH` - Default: `./data/extracted`
 - `FINAL_OUTPUT_PATH` - Default: `./data/final_outputs`
 
+### FinBot (optional):
+- `FINNHUB_API_KEY` - Finnhub API key for FinBot sidebar news. Without it, FinBot chat works but news shows "No news available."
+
 ### Not Used (Can Ignore):
 These are in your .env but not used by the code:
 
@@ -84,9 +87,10 @@ git push origin main
 3. **Add Environment Variables**:
    After the Blueprint is created, go to your service settings and add:
    - `VISION_AGENT_API_KEY` - Your Landing.AI API key
-   - `OPENAI_API_KEY` - Your OpenAI API key
+   - `OPENAI_API_KEY` - Your OpenAI API key (also used by FinBot chat)
    - `SUPABASE_URL` - Your Supabase project URL
    - `SUPABASE_ANON_KEY` - Your Supabase anon key
+   - `FINNHUB_API_KEY` - (Optional) For FinBot sidebar news; omit if you don't need news
 
 4. **Deploy**:
    - Render will automatically build and deploy

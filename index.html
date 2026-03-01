@@ -1,29 +1,43 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Alpha Lens — Financial Analysis Platform</title>
-    <link rel="stylesheet" href="/static/css/style.css?v=1.0">
+    <link rel="stylesheet" href="/static/css/style.css?v=6.0">
+    <link rel="stylesheet" href="/static/css/finbot.css?v=5.0">
+    <link rel="stylesheet" href="/static/css/_premium_additions.css?v=3.0">
 </head>
+
 <body>
     <!-- Header Navigation -->
     <header class="main-header">
         <div class="header-container">
             <div class="header-logo">
                 <div class="logo-icon">
-                    <img src="/static/img/ALPHA%20LENS%20LOGO.png" alt="Alpha Lens Logo" style="width: 32px; height: 32px; object-fit: contain;">
+                    <img src="/static/img/ALPHA%20LENS%20LOGO.png" alt="Alpha Lens Logo"
+                        style="width: 32px; height: 32px; object-fit: contain;">
                 </div>
                 <div class="logo-text">
                     <div class="logo-name">Alpha Lens</div>
                 </div>
             </div>
-            <nav class="header-nav">
+            <nav class="header-nav" id="header-nav">
                 <a href="#" class="nav-link active" onclick="showHomePage(); return false;">Home</a>
                 <a href="#" class="nav-link" onclick="showFeature('analyzer'); return false;">Analyzer</a>
                 <a href="#" class="nav-link" onclick="showFeature('reports'); return false;">Reports</a>
                 <a href="#" class="nav-link" onclick="showFeature('finbot'); return false;">Chatbot</a>
             </nav>
+            <button class="nav-hamburger" id="nav-hamburger"
+                onclick="document.getElementById('header-nav').classList.toggle('nav-open')">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                    stroke-linecap="round">
+                    <line x1="3" y1="6" x2="21" y2="6"></line>
+                    <line x1="3" y1="12" x2="21" y2="12"></line>
+                    <line x1="3" y1="18" x2="21" y2="18"></line>
+                </svg>
+            </button>
             <button onclick="logout()" class="header-logout-btn">Logout</button>
         </div>
     </header>
@@ -34,67 +48,100 @@
             <!-- Hero Section -->
             <div class="homepage-hero">
                 <div class="hero-content">
-                    <h1 class="homepage-hero-title">Transform Your<br>Financial Analysis</h1>
-                    <p class="homepage-hero-subtitle">Leverage AI-powered insights to make smarter investment decisions.</p>
+                    <!-- Badge -->
+                    <div class="homepage-hero-badge">
+                        <span class="homepage-hero-badge-dot"></span>
+                        AI-Powered Financial Platform
+                    </div>
+                    <h1 class="homepage-hero-title">Transform Your<br><span class="gradient-text">Financial
+                            Analysis</span></h1>
+                    <p class="homepage-hero-subtitle">Leverage AI-powered insights to make smarter investment decisions
+                        with real-time data and intelligent analysis.</p>
                     <button class="upload-doc-btn" onclick="showFeature('analyzer')">
-                        <svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
-                            <path d="M10 2V18M2 10H18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                        <svg width="18" height="18" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+                            <path d="M10 2V18M2 10H18" stroke="currentColor" stroke-width="2.2"
+                                stroke-linecap="round" />
                         </svg>
-                        Upload Document
+                        Analyze a Document
                     </button>
                 </div>
                 <div class="hero-illustration">
                     <div class="illustration-placeholder">
-                        <img src="/static/img/home.png" alt="Financial Analysis Illustration" style="width: 100%; height: 100%; object-fit: contain; border-radius: 20px;">
+                        <img src="/static/img/home.png" alt="Financial Analysis Illustration"
+                            style="width: 100%; height: 100%; object-fit: contain; border-radius: 20px; display: block;">
                     </div>
                 </div>
             </div>
 
             <!-- Key Features Section -->
             <section class="key-features-section">
-                <h2 class="features-title">Key Features</h2>
+                <div class="key-features-header">
+                    <div class="features-eyebrow">Capabilities</div>
+                    <h2 class="features-title">Everything You Need to<br><span class="gradient-text">Make Better
+                            Decisions</span></h2>
+                    <p class="features-subtitle">Four powerful tools working together to transform your financial
+                        workflow.</p>
+                </div>
                 <div class="features-grid">
-                    <div class="feature-card" onmouseenter="this.style.transform='translateY(-8px)'" onmouseleave="this.style.transform='translateY(0)'" onclick="showFeature('analyzer')">
+                    <div class="feature-card fade-in-up" onclick="showFeature('analyzer')">
                         <div class="feature-icon">
-                            <svg width="48" height="48" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
-                                <path d="M8 36 L16 20 L24 28 L32 12 L40 36" stroke="#2563eb" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
-                                <line x1="8" y1="36" x2="40" y2="36" stroke="#2563eb" stroke-width="2"/>
+                            <svg width="26" height="26" viewBox="0 0 48 48" fill="none"
+                                xmlns="http://www.w3.org/2000/svg">
+                                <path d="M8 36 L16 20 L24 28 L32 12 L40 36" stroke="currentColor" stroke-width="3"
+                                    stroke-linecap="round" stroke-linejoin="round" />
+                                <line x1="8" y1="36" x2="40" y2="36" stroke="currentColor" stroke-width="2" />
                             </svg>
                         </div>
                         <h3 class="feature-card-title">Advanced Analysis</h3>
-                        <p class="feature-card-desc">Deep dive into financial metrics with AI-powered insights</p>
+                        <p class="feature-card-desc">Deep dive into financial metrics with AI-powered insights and
+                            automated extraction.</p>
                     </div>
-                    <div class="feature-card" onmouseenter="this.style.transform='translateY(-8px)'" onmouseleave="this.style.transform='translateY(0)'" onclick="showFeature('reports')">
+                    <div class="feature-card fade-in-up" onclick="showFeature('reports')">
                         <div class="feature-icon">
-                            <svg width="48" height="48" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
-                                <circle cx="24" cy="24" r="18" stroke="#2563eb" stroke-width="3"/>
-                                <circle cx="24" cy="24" r="12" stroke="#2563eb" stroke-width="2"/>
-                                <circle cx="24" cy="24" r="4" fill="#2563eb"/>
+                            <svg width="26" height="26" viewBox="0 0 48 48" fill="none"
+                                xmlns="http://www.w3.org/2000/svg">
+                                <rect x="10" y="8" width="28" height="36" rx="4" stroke="currentColor"
+                                    stroke-width="3" />
+                                <line x1="16" y1="18" x2="32" y2="18" stroke="currentColor" stroke-width="2"
+                                    stroke-linecap="round" />
+                                <line x1="16" y1="24" x2="32" y2="24" stroke="currentColor" stroke-width="2"
+                                    stroke-linecap="round" />
+                                <line x1="16" y1="30" x2="24" y2="30" stroke="currentColor" stroke-width="2"
+                                    stroke-linecap="round" />
                             </svg>
                         </div>
                         <h3 class="feature-card-title">Smart Reports</h3>
-                        <p class="feature-card-desc">Automated report generation with actionable recommendations</p>
+                        <p class="feature-card-desc">Automated report generation with actionable recommendations and
+                            export to PDF.</p>
                     </div>
-                    <div class="feature-card" onmouseenter="this.style.transform='translateY(-8px)'" onmouseleave="this.style.transform='translateY(0)'" onclick="showFeature('optimizer')">
+                    <div class="feature-card fade-in-up" onclick="showFeature('optimizer')">
                         <div class="feature-icon">
-                            <svg width="48" height="48" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
-                                <path d="M24 8 L32 20 L16 20 Z" fill="#2563eb"/>
-                                <rect x="20" y="20" width="8" height="20" fill="#2563eb"/>
+                            <svg width="26" height="26" viewBox="0 0 48 48" fill="none"
+                                xmlns="http://www.w3.org/2000/svg">
+                                <path d="M8 32 L18 20 L28 26 L40 10" stroke="currentColor" stroke-width="3"
+                                    stroke-linecap="round" stroke-linejoin="round" />
+                                <polyline points="32,10 40,10 40,18" stroke="currentColor" stroke-width="3"
+                                    stroke-linecap="round" stroke-linejoin="round" />
                             </svg>
                         </div>
-                        <h3 class="feature-card-title">Portfolio Optimization</h3>
-                        <p class="feature-card-desc">Optimize your investments based on risk preferences</p>
+                        <h3 class="feature-card-title">Portfolio Optimizer</h3>
+                        <p class="feature-card-desc">Optimize your investments based on risk preferences and market
+                            conditions.</p>
                     </div>
-                    <div class="feature-card" onmouseenter="this.style.transform='translateY(-8px)'" onmouseleave="this.style.transform='translateY(0)'" onclick="showFeature('finbot')">
+                    <div class="feature-card fade-in-up" onclick="showFeature('finbot')">
                         <div class="feature-icon">
-                            <svg width="48" height="48" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
-                                <path d="M24 8 C16 8 8 14 8 22 C8 28 12 33 18 35 L20 38 L28 38 L30 35 C36 33 40 28 40 22 C40 14 32 8 24 8 Z" stroke="#2563eb" stroke-width="3" fill="none"/>
-                                <circle cx="20" cy="22" r="2" fill="#2563eb"/>
-                                <circle cx="28" cy="22" r="2" fill="#2563eb"/>
+                            <svg width="26" height="26" viewBox="0 0 48 48" fill="none"
+                                xmlns="http://www.w3.org/2000/svg">
+                                <path
+                                    d="M24 8 C16 8 8 14 8 22 C8 28 12 33 18 35 L20 38 L28 38 L30 35 C36 33 40 28 40 22 C40 14 32 8 24 8 Z"
+                                    stroke="currentColor" stroke-width="3" fill="none" />
+                                <circle cx="20" cy="22" r="2" fill="currentColor" />
+                                <circle cx="28" cy="22" r="2" fill="currentColor" />
                             </svg>
                         </div>
                         <h3 class="feature-card-title">AI Assistant</h3>
-                        <p class="feature-card-desc">Get instant answers to your financial questions</p>
+                        <p class="feature-card-desc">Get instant answers to your financial questions with live market
+                            data.</p>
                     </div>
                 </div>
             </section>
@@ -105,25 +152,32 @@
             <!-- Initial State: Action Cards + Pre-saved Docs -->
             <div class="analyzer-initial-state" id="analyzer-initial-state">
                 <div class="analyzer-header">
-                    <h2 class="analyzer-title">How would you like to process your files?</h2>
+                    <div class="analyzer-eyebrow">Document Intelligence</div>
+                    <h2 class="analyzer-title">How would you like to<br><span class="gradient-text">process your
+                            files?</span></h2>
+                    <p class="analyzer-subtitle">Upload PDF, image, or document files — AI will parse, extract, and
+                        analyze them for you.</p>
                 </div>
-                
+
                 <!-- Hidden file input for action cards -->
-                <input type="file" id="action-card-file-input" accept=".pdf,.png,.jpg,.jpeg,.gif,.bmp,.tiff" style="display: none;">
-                
+                <input type="file" id="action-card-file-input" accept=".pdf,.png,.jpg,.jpeg,.gif,.bmp,.tiff"
+                    style="display: none;">
+
                 <!-- Action Cards -->
                 <div class="action-cards-container">
                     <!-- Parse Card -->
                     <div class="action-card" data-action="parse">
                         <div class="action-card-header">
                             <div class="action-card-icon">
-                                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                    stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                                     <path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"></path>
                                 </svg>
                             </div>
                             <a href="#" class="action-card-docs-link" onclick="event.preventDefault(); return false;">
                                 <span>Docs</span>
-                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                    stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                                     <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>
                                     <polyline points="15 3 21 3 21 9"></polyline>
                                     <line x1="10" y1="14" x2="21" y2="3"></line>
@@ -134,19 +188,21 @@
                         <p class="action-card-desc">Turn documents into structured, machine-readable Markdown.</p>
                         <button class="action-card-upload-btn" data-action="parse">Upload File</button>
                     </div>
-                    
+
                     <!-- Extract Card -->
                     <div class="action-card" data-action="extract">
                         <div class="action-card-header">
                             <div class="action-card-icon">
-                                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                    stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                                     <circle cx="11" cy="11" r="8"></circle>
                                     <path d="m21 21-4.35-4.35"></path>
                                 </svg>
                             </div>
                             <a href="#" class="action-card-docs-link" onclick="event.preventDefault(); return false;">
                                 <span>Docs</span>
-                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                    stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                                     <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>
                                     <polyline points="15 3 21 3 21 9"></polyline>
                                     <line x1="10" y1="14" x2="21" y2="3"></line>
@@ -154,21 +210,24 @@
                             </a>
                         </div>
                         <h3 class="action-card-title">Extract</h3>
-                        <p class="action-card-desc">Extract key fields like names, dates, and totals from parsed output.</p>
+                        <p class="action-card-desc">Extract key fields like names, dates, and totals from parsed output.
+                        </p>
                         <button class="action-card-upload-btn" data-action="extract">Upload File</button>
                     </div>
-                    
+
                     <!-- Chat Card -->
                     <div class="action-card" data-action="chat">
                         <div class="action-card-header">
                             <div class="action-card-icon">
-                                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                    stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                                     <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
                                 </svg>
                             </div>
                             <a href="#" class="action-card-docs-link" onclick="event.preventDefault(); return false;">
                                 <span>Docs</span>
-                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                    stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                                     <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>
                                     <polyline points="15 3 21 3 21 9"></polyline>
                                     <line x1="10" y1="14" x2="21" y2="3"></line>
@@ -180,7 +239,7 @@
                         <button class="action-card-upload-btn" data-action="chat">Upload File</button>
                     </div>
                 </div>
-                
+
                 <!-- Pre-saved Documents Section -->
                 <div class="presaved-docs-section">
                     <h3 class="presaved-docs-title">Pre-saved Documents</h3>
@@ -189,35 +248,37 @@
                     </div>
                 </div>
             </div>
-            
+
             <!-- Loading State -->
             <div class="analyzer-loading-state" id="analyzer-loading-state" style="display: none;">
                 <div class="loading-spinner">
                     <div class="spinner-wrapper">
-                    <div class="spinner"></div>
+                        <div class="spinner"></div>
                     </div>
                     <div class="loading-text-wrapper">
-                    <p class="loading-text">Processing your document...</p>
+                        <p class="loading-text">Processing your document...</p>
                     </div>
                 </div>
             </div>
-            
+
             <!-- Result State: Document Viewer + Parse Panel -->
             <div class="analyzer-result-state" id="analyzer-result-state" style="display: none;">
                 <button class="sidebar-toggle" id="sidebar-toggle" title="Toggle Sidebar">
-                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                        stroke-linecap="round" stroke-linejoin="round">
                         <line x1="3" y1="12" x2="21" y2="12"></line>
                         <line x1="3" y1="6" x2="21" y2="6"></line>
                         <line x1="3" y1="18" x2="21" y2="18"></line>
                     </svg>
                 </button>
-                
+
                 <div class="dashboard">
                     <aside class="control-panel glass-card" id="workspace-sidebar">
                         <div class="sidebar-header">
                             <div class="sidebar-header-left">
                                 <button class="back-to-cards-btn-inline" id="back-to-cards-btn" title="Back to Cards">
-                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                        stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                                         <path d="M19 12H5M12 19l-7-7 7-7"></path>
                                     </svg>
                                 </button>
@@ -227,23 +288,28 @@
                                 </div>
                             </div>
                             <button class="sidebar-close-btn" id="sidebar-close-btn" title="Close Sidebar">
-                                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                    stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                                     <line x1="18" y1="6" x2="6" y2="18"></line>
                                     <line x1="6" y1="6" x2="18" y2="18"></line>
                                 </svg>
                             </button>
                         </div>
-                        <div style="margin-bottom: 16px; padding: 12px; background: var(--bg-secondary); border-radius: 10px; width: 100%; box-sizing: border-box;">
+                        <div
+                            style="margin-bottom: 16px; padding: 12px; background: var(--bg-secondary); border-radius: 10px; width: 100%; box-sizing: border-box;">
                             <div style="font-size: 0.85rem; color: var(--text-secondary);">Logged in as</div>
-                            <div id="user-info" style="font-size: 0.95rem; font-weight: 500; color: var(--text); margin-top: 4px;">-</div>
+                            <div id="user-info"
+                                style="font-size: 0.95rem; font-weight: 500; color: var(--text); margin-top: 4px;">-
+                            </div>
                         </div>
                         <div id="document-status"></div>
-                        
+
                         <!-- Recent Files Section -->
                         <div class="recent-files-section">
                             <div class="recent-files-header">
                                 <div class="recent-files-icon">
-                                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                        stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                                         <!-- Two overlapping documents icon -->
                                         <rect x="9" y="2" width="12" height="16" rx="2" fill="none"></rect>
                                         <path d="M5 6H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-1"></path>
@@ -266,11 +332,14 @@
                                 <!-- Document Header: Upload icon, Doc name, Page indicator -->
                                 <div class="document-header-bar">
                                     <button class="upload-icon-btn" id="file-select-btn" title="Upload Document">
-                                        <svg class="arrow-up-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+                                        <svg class="arrow-up-icon" width="14" height="14" viewBox="0 0 24 24"
+                                            fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"
+                                            stroke-linejoin="round">
                                             <line x1="12" y1="19" x2="12" y2="5"></line>
                                             <polyline points="5 12 12 5 19 12"></polyline>
                                         </svg>
-                                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none"
+                                            stroke="currentColor" stroke-width="2">
                                             <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
                                             <polyline points="17 8 12 3 7 8"></polyline>
                                             <line x1="12" y1="3" x2="12" y2="15"></line>
@@ -278,9 +347,10 @@
                                     </button>
                                     <span id="selected-file-name" class="document-name">No document selected</span>
                                     <div class="page-indicator-container">
-                                        <button class="page-nav-btn" id="pdf-prev" disabled><</button>
-                                        <span id="page-indicator" class="page-indicator">1 / 1</span>
-                                        <button class="page-nav-btn" id="pdf-next" disabled>></button>
+                                        <button class="page-nav-btn" id="pdf-prev" disabled>
+                                            << /button>
+                                                <span id="page-indicator" class="page-indicator">1 / 1</span>
+                                                <button class="page-nav-btn" id="pdf-next" disabled>></button>
                                     </div>
                                 </div>
                                 <div class="pdf-wrapper" id="pdf-wrapper">
@@ -288,10 +358,10 @@
                                 </div>
                             </div>
                         </div>
-                        
+
                         <!-- Resizer Handle -->
                         <div class="resizer-handle" id="resizer-handle"></div>
-                        
+
                         <!-- Right: Parse Data Panel -->
                         <div class="parse-panel-section resizable-panel">
                             <div class="glass-card" style="display: flex; flex-direction: column; height: 100%;">
@@ -301,7 +371,7 @@
                                     <button class="main-tab" data-tab="extract">Extract</button>
                                     <button class="main-tab" data-tab="chat">Chat</button>
                                 </div>
-                                
+
                                 <!-- Parse Tab Content -->
                                 <div class="tab-content-wrapper" id="parse-tab-content">
                                     <div class="parse-panel-header">
@@ -320,13 +390,13 @@
                                         </div>
                                     </div>
                                 </div>
-                                
+
                                 <!-- Extract Tab Content -->
                                 <div class="tab-content-wrapper" id="extract-tab-content" style="display: none;">
                                     <div class="panel-title">Extract</div>
                                     <p class="doc-meta">Schema-based extraction coming soon</p>
                                 </div>
-                                
+
                                 <!-- Chat Tab Content -->
                                 <div class="tab-content-wrapper chat-area" id="chat-tab-content" style="display: none;">
                                     <div class="chat-container">
@@ -334,46 +404,56 @@
                                         <div class="chat-header">
                                             <div class="chat-icon">
                                                 <!-- Test tube and flask icon -->
-                                                <svg width="64" height="64" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                                <svg width="64" height="64" viewBox="0 0 64 64" fill="none"
+                                                    xmlns="http://www.w3.org/2000/svg">
                                                     <!-- Flask -->
-                                                    <path d="M20 16 L20 48 L16 52 L16 56 L48 56 L48 52 L44 48 L44 16 L20 16 Z" fill="#10b981" opacity="0.9"/>
-                                                    <path d="M20 16 L44 16 L44 20 L20 20 Z" fill="#10b981"/>
-                                                    <path d="M18 20 L18 24 L46 24 L46 20 Z" fill="#10b981" opacity="0.7"/>
+                                                    <path
+                                                        d="M20 16 L20 48 L16 52 L16 56 L48 56 L48 52 L44 48 L44 16 L20 16 Z"
+                                                        fill="#10b981" opacity="0.9" />
+                                                    <path d="M20 16 L44 16 L44 20 L20 20 Z" fill="#10b981" />
+                                                    <path d="M18 20 L18 24 L46 24 L46 20 Z" fill="#10b981"
+                                                        opacity="0.7" />
                                                     <!-- Test tube -->
-                                                    <path d="M40 12 L40 32 L36 36 L36 40 L48 40 L48 36 L44 32 L44 12 L40 12 Z" fill="#06b6d4" opacity="0.9"/>
-                                                    <circle cx="42" cy="8" r="3" fill="#06b6d4"/>
+                                                    <path
+                                                        d="M40 12 L40 32 L36 36 L36 40 L48 40 L48 36 L44 32 L44 12 L40 12 Z"
+                                                        fill="#06b6d4" opacity="0.9" />
+                                                    <circle cx="42" cy="8" r="3" fill="#06b6d4" />
                                                     <!-- Bubbles -->
-                                                    <circle cx="24" cy="28" r="2" fill="#10b981" opacity="0.6"/>
-                                                    <circle cx="30" cy="32" r="1.5" fill="#10b981" opacity="0.5"/>
-                                                    <circle cx="26" cy="38" r="1.5" fill="#10b981" opacity="0.5"/>
-                                                    <circle cx="38" cy="18" r="1.5" fill="#06b6d4" opacity="0.6"/>
-                                                    <circle cx="46" cy="22" r="1" fill="#06b6d4" opacity="0.5"/>
+                                                    <circle cx="24" cy="28" r="2" fill="#10b981" opacity="0.6" />
+                                                    <circle cx="30" cy="32" r="1.5" fill="#10b981" opacity="0.5" />
+                                                    <circle cx="26" cy="38" r="1.5" fill="#10b981" opacity="0.5" />
+                                                    <circle cx="38" cy="18" r="1.5" fill="#06b6d4" opacity="0.6" />
+                                                    <circle cx="46" cy="22" r="1" fill="#06b6d4" opacity="0.5" />
                                                 </svg>
                                             </div>
                                             <p class="chat-description">
-                                                Test our Agentic Document Extraction API by chatting with the doc. See how it finds answers from forms, reports, and figures and highlights the exact sources in the document.
+                                                Test our Agentic Document Extraction API by chatting with the doc. See
+                                                how it finds answers from forms, reports, and figures and highlights the
+                                                exact sources in the document.
                                             </p>
                                         </div>
-                                        
+
                                         <!-- Example Prompts Section -->
-                                        <div class="example-prompts-section" id="example-prompts-section" style="display: none;">
+                                        <div class="example-prompts-section" id="example-prompts-section"
+                                            style="display: none;">
                                             <div class="example-prompts-title">Example prompts</div>
                                             <div class="example-prompts-list" id="example-prompts-list">
                                                 <!-- Will be populated dynamically -->
                                             </div>
                                         </div>
-                                        
+
                                         <!-- Chat Messages Area -->
                                         <div class="chat-messages" id="chat-messages">
                                             <!-- Messages will be added here -->
                                         </div>
-                                        
+
                                         <!-- Chat Input Area -->
                                         <div class="chat-input-container">
                                             <div class="chat-input">
                                                 <input type="text" id="chat-input" placeholder="Type your question">
                                                 <button id="chat-send" type="button" class="chat-send-btn">
-                                                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none"
+                                                        stroke="currentColor" stroke-width="2">
                                                         <line x1="22" y1="2" x2="11" y2="13"></line>
                                                         <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
                                                     </svg>
@@ -389,21 +469,13 @@
             </div>
         </main>
 
-        <!-- FinBot Coming Soon Section -->
-        <div id="finbot-section" class="finbot-section" style="display: none;">
-            <div class="glass-card" style="text-align: center; padding: 80px 40px;">
-                <h2 style="font-size: 2.5rem; color: var(--text); margin-bottom: 16px;">FinBot</h2>
-                <p style="font-size: 1.2rem; color: var(--text-secondary); margin-bottom: 32px;">Coming Soon</p>
-                <p style="color: var(--text-secondary); max-width: 600px; margin: 0 auto;">Our AI-powered financial assistant is under development. Stay tuned for intelligent financial insights and automated analysis.</p>
-            </div>
-        </div>
-
-        <!-- Other Coming Soon Sections -->
+        <!-- Reports Section (inside .page for natural footer scroll) -->
         <div id="reports-section" class="coming-soon-section" style="display: none;">
             <div class="glass-card" style="text-align: center; padding: 80px 40px;">
                 <h2 style="font-size: 2.5rem; color: var(--text); margin-bottom: 16px;">Reports</h2>
                 <p style="font-size: 1.2rem; color: var(--text-secondary); margin-bottom: 32px;">Coming Soon</p>
-                <p style="color: var(--text-secondary); max-width: 600px; margin: 0 auto;">Automated report generation feature is under development.</p>
+                <p style="color: var(--text-secondary); max-width: 600px; margin: 0 auto;">Automated report generation
+                    feature is under development.</p>
             </div>
         </div>
 
@@ -411,7 +483,8 @@
             <div class="glass-card" style="text-align: center; padding: 80px 40px;">
                 <h2 style="font-size: 2.5rem; color: var(--text); margin-bottom: 16px;">Optimizer</h2>
                 <p style="font-size: 1.2rem; color: var(--text-secondary); margin-bottom: 32px;">Coming Soon</p>
-                <p style="color: var(--text-secondary); max-width: 600px; margin: 0 auto;">Portfolio optimization feature is under development.</p>
+                <p style="color: var(--text-secondary); max-width: 600px; margin: 0 auto;">Portfolio optimization
+                    feature is under development.</p>
             </div>
         </div>
 
@@ -419,49 +492,183 @@
             <div class="glass-card" style="text-align: center; padding: 80px 40px;">
                 <h2 style="font-size: 2.5rem; color: var(--text); margin-bottom: 16px;">Spreadsheet</h2>
                 <p style="font-size: 1.2rem; color: var(--text-secondary); margin-bottom: 32px;">Coming Soon</p>
-                <p style="color: var(--text-secondary); max-width: 600px; margin: 0 auto;">Spreadsheet integration feature is under development.</p>
+                <p style="color: var(--text-secondary); max-width: 600px; margin: 0 auto;">Spreadsheet integration
+                    feature is under development.</p>
             </div>
         </div>
-    </div>
-    
-    <!-- Footer -->
-    <footer class="main-footer">
-        <div class="footer-container">
-            <div class="footer-column">
-                <h3 class="footer-title">Alpha Lens</h3>
-                <p class="footer-tagline">Empowering smarter financial decisions through AI</p>
+
+        <!-- Footer — inside .page, scrolls naturally like landing page -->
+        <footer class="main-footer">
+            <div class="footer-container">
+                <!-- Brand column -->
+                <div class="footer-column">
+                    <div class="footer-brand">
+                        <div class="footer-logo-icon">
+                            <img src="/static/img/ALPHA%20LENS%20LOGO.png" alt="Alpha Lens Logo">
+                        </div>
+                        <h3 class="footer-title">Alpha Lens</h3>
                     </div>
-            <div class="footer-column">
-                <h3 class="footer-title">Quick Links</h3>
-                <ul class="footer-links">
-                    <li><a href="#" onclick="showFeature('analyzer'); return false;">Analyzer</a></li>
-                    <li><a href="#" onclick="showFeature('reports'); return false;">Reports</a></li>
-                    <li><a href="#" onclick="showFeature('optimizer'); return false;">Optimizer</a></li>
-                </ul>
-                    </div>
-            <div class="footer-column">
-                <h3 class="footer-title">Contact</h3>
-                <p class="footer-contact">support@alphalens.com</p>
-                <div class="footer-social">
-                    <a href="#" class="social-icon" aria-label="Twitter">
-                        <svg width="20" height="20" viewBox="0 0 20 20" fill="currentColor">
-                            <path d="M19 4.74c-.74.33-1.54.55-2.38.65.85-.51 1.5-1.32 1.81-2.28-.8.47-1.68.81-2.62 1a4.1 4.1 0 0 0-6.99 3.74A11.64 11.64 0 0 1 1.39 3.62a4.1 4.1 0 0 0 1.27 5.48 4.05 4.05 0 0 1-1.86-.51v.05a4.1 4.1 0 0 0 3.29 4.02 4.1 4.1 0 0 1-1.85.07 4.1 4.1 0 0 0 3.83 2.85A8.23 8.23 0 0 1 1 16.41a11.62 11.62 0 0 0 6.29 1.84c7.55 0 11.68-6.26 11.68-11.68 0-.18 0-.35-.01-.53a8.35 8.35 0 0 0 2.05-2.13z"/>
-                        </svg>
-                    </a>
-                    <a href="#" class="social-icon" aria-label="LinkedIn">
-                        <svg width="20" height="20" viewBox="0 0 20 20" fill="currentColor">
-                            <path d="M18.52 0H1.48C.66 0 0 .66 0 1.48v17.04C0 19.34.66 20 1.48 20h17.04c.82 0 1.48-.66 1.48-1.48V1.48C20 .66 19.34 0 18.52 0zM5.93 17.04H2.96V7.5h2.97v9.54zM4.45 6.2c-.95 0-1.72-.77-1.72-1.72 0-.95.77-1.72 1.72-1.72.95 0 1.72.77 1.72 1.72 0 .95-.77 1.72-1.72 1.72zm12.59 10.84h-2.97v-4.64c0-1.11-.02-2.53-1.54-2.53-1.54 0-1.78 1.2-1.78 2.45v4.72H7.78V7.5h2.85v1.3h.04c.4-.75 1.37-1.54 2.82-1.54 3.01 0 3.57 1.98 3.57 4.55v5.23z"/>
-                        </svg>
-                    </a>
-                    <a href="#" class="social-icon" aria-label="GitHub">
-                        <svg width="20" height="20" viewBox="0 0 20 20" fill="currentColor">
-                            <path fill-rule="evenodd" d="M10 0C4.48 0 0 4.48 0 10c0 4.42 2.87 8.17 6.84 9.5.5.08.66-.23.66-.51v-1.69c-2.77.6-3.36-1.34-3.36-1.34-.46-1.16-1.11-1.47-1.11-1.47-.91-.62.07-.6.07-.6 1 .07 1.53 1.03 1.53 1.03.89 1.52 2.34 1.08 2.91.83.09-.65.35-1.09.63-1.34-2.22-.25-4.55-1.11-4.55-4.94 0-1.11.38-2 1.03-2.71-.1-.25-.45-1.29.1-2.64 0 0 .84-.27 2.75 1.02.79-.22 1.65-.33 2.5-.33.85 0 1.71.11 2.5.33 1.91-1.29 2.75-1.02 2.75-1.02.55 1.35.2 2.39.1 2.64.65.71 1.03 1.6 1.03 2.71 0 3.84-2.34 4.69-4.57 4.94.36.31.69.92.69 1.85v2.74c0 .27.16.59.67.5C17.14 18.17 20 14.42 20 10c0-5.52-4.48-10-10-10z" clip-rule="evenodd"/>
-                        </svg>
-                    </a>
+                    <p class="footer-tagline">Empowering smarter <em>financial</em> decisions through AI.</p>
                 </div>
+                <!-- Quick Links -->
+                <div class="footer-column">
+                    <h3>Quick Links</h3>
+                    <ul class="footer-links">
+                        <li><a href="#" onclick="showFeature('analyzer'); return false;">Analyzer</a></li>
+                        <li><a href="#" onclick="showFeature('reports'); return false;">Reports</a></li>
+                        <li><a href="#" onclick="showFeature('optimizer'); return false;">Optimizer</a></li>
+                        <li><a href="#" onclick="showFeature('finbot'); return false;">FinBot AI</a></li>
+                    </ul>
+                </div>
+                <!-- Contact -->
+                <div class="footer-column">
+                    <h3>Contact</h3>
+                    <p class="footer-contact">support@alphalens.com</p>
+                    <div class="footer-social">
+                        <a href="#" class="social-icon" aria-label="Twitter">
+                            <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor">
+                                <path
+                                    d="M19 4.74c-.74.33-1.54.55-2.38.65.85-.51 1.5-1.32 1.81-2.28-.8.47-1.68.81-2.62 1a4.1 4.1 0 0 0-6.99 3.74A11.64 11.64 0 0 1 1.39 3.62a4.1 4.1 0 0 0 1.27 5.48 4.05 4.05 0 0 1-1.86-.51v.05a4.1 4.1 0 0 0 3.29 4.02 4.1 4.1 0 0 1-1.85.07 4.1 4.1 0 0 0 3.83 2.85A8.23 8.23 0 0 1 1 16.41a11.62 11.62 0 0 0 6.29 1.84c7.55 0 11.68-6.26 11.68-11.68 0-.18 0-.35-.01-.53a8.35 8.35 0 0 0 2.05-2.13z" />
+                            </svg>
+                        </a>
+                        <a href="#" class="social-icon" aria-label="LinkedIn">
+                            <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor">
+                                <path
+                                    d="M18.52 0H1.48C.66 0 0 .66 0 1.48v17.04C0 19.34.66 20 1.48 20h17.04c.82 0 1.48-.66 1.48-1.48V1.48C20 .66 19.34 0 18.52 0zM5.93 17.04H2.96V7.5h2.97v9.54zM4.45 6.2c-.95 0-1.72-.77-1.72-1.72 0-.95.77-1.72 1.72-1.72.95 0 1.72.77 1.72 1.72 0 .95-.77 1.72-1.72 1.72zm12.59 10.84h-2.97v-4.64c0-1.11-.02-2.53-1.54-2.53-1.54 0-1.78 1.2-1.78 2.45v4.72H7.78V7.5h2.85v1.3h.04c.4-.75 1.37-1.54 2.82-1.54 3.01 0 3.57 1.98 3.57 4.55v5.23z" />
+                            </svg>
+                        </a>
+                        <a href="#" class="social-icon" aria-label="GitHub">
+                            <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor">
+                                <path fill-rule="evenodd"
+                                    d="M10 0C4.48 0 0 4.48 0 10c0 4.42 2.87 8.17 6.84 9.5.5.08.66-.23.66-.51v-1.69c-2.77.6-3.36-1.34-3.36-1.34-.46-1.16-1.11-1.47-1.11-1.47-.91-.62.07-.6.07-.6 1 .07 1.53 1.03 1.53 1.03.89 1.52 2.34 1.08 2.91.83.09-.65.35-1.09.63-1.34-2.22-.25-4.55-1.11-4.55-4.94 0-1.11.38-2 1.03-2.71-.1-.25-.45-1.29.1-2.64 0 0 .84-.27 2.75 1.02.79-.22 1.65-.33 2.5-.33.85 0 1.71.11 2.5.33 1.91-1.29 2.75-1.02 2.75-1.02.55 1.35.2 2.39.1 2.64.65.71 1.03 1.6 1.03 2.71 0 3.84-2.34 4.69-4.57 4.94.36.31.69.92.69 1.85v2.74c0 .27.16.59.67.5C17.14 18.17 20 14.42 20 10c0-5.52-4.48-10-10-10z"
+                                    clip-rule="evenodd" />
+                            </svg>
+                        </a>
                     </div>
+                </div>
+            </div>
+            <div class="footer-bottom">
+                &copy; 2025 Alpha Lens. Built with AI for smarter financial decisions.
+            </div>
+        </footer>
+
+    </div><!-- end .page -->
+
+    <!-- FinBot: two-panel premium layout — direct child of body, sibling to .page -->
+    <div id="finbot-section" class="finbot-section">
+
+        <!-- LEFT PANEL: dark news sidebar -->
+        <aside class="finbot-sidebar">
+            <div class="finbot-brand">
+                <div class="finbot-brand-avatar">
+                    <img src="/static/img/finbot.png" alt="FinBot">
+                </div>
+                <div class="finbot-brand-text">
+                    <div class="finbot-brand-name">FinBot</div>
+                    <div class="finbot-brand-sub">AI Financial Assistant</div>
+                </div>
+                <div class="finbot-status-dot"></div>
+            </div>
+            <div class="finbot-sidebar-body">
+                <!-- Featured Insights carousel -->
+                <div class="finbot-insights">
+                    <div class="finbot-section-label">Featured Insights</div>
+                    <div class="finbot-carousel-wrap">
+                        <div id="finbot-news-loading" class="finbot-news-loading">Loading news&#8230;</div>
+                        <div id="finbot-news-empty" class="finbot-news-empty" style="display:none;">No news right now.
+                        </div>
+                        <div class="finbot-news-cards" id="finbot-news-cards"></div>
                     </div>
-    </footer>
+                    <div class="finbot-carousel-dots" id="finbot-news-dots"></div>
+                </div>
+                <!-- Breaking News -->
+                <div class="finbot-breaking">
+                    <div class="finbot-breaking-header">
+                        <span class="finbot-breaking-dot"></span>
+                        <div class="finbot-breaking-title">Breaking News</div>
+                    </div>
+                    <div class="finbot-breaking-list" id="finbot-breaking-list"></div>
+                </div>
+            </div>
+        </aside>
+
+        <!-- RIGHT PANEL: chat -->
+        <div class="finbot-chat-panel">
+            <!-- Topbar -->
+            <div class="finbot-chat-topbar">
+                <div class="finbot-chat-topbar-left">
+                    <span class="finbot-topbar-icon">&#128200;</span>
+                    <div>
+                        <div class="finbot-chat-topbar-title">Financial Assistant</div>
+                        <div class="finbot-chat-topbar-sub">Ask about stocks, markets, investments&#8230;</div>
+                    </div>
+                </div>
+                <button class="finbot-clear-btn" onclick="finbotClearChat()">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                        stroke-width="2.5">
+                        <polyline points="3 6 5 6 21 6"></polyline>
+                        <path d="M19 6l-1 14H6L5 6"></path>
+                    </svg>
+                    Clear chat
+                </button>
+            </div>
+            <!-- Scrollable messages -->
+            <div class="finbot-chat-body" id="finbot-chat-body">
+                <div class="finbot-messages" id="finbot-messages">
+                    <div class="finbot-welcome" id="finbot-welcome">
+                        <div class="finbot-welcome-glyph">&#128200;</div>
+                        <h2 class="finbot-welcome-title">Ask FinBot</h2>
+                        <p class="finbot-welcome-text">Get live stock prices, market news, and personalised investment
+                            insights.</p>
+                        <div class="finbot-chips">
+                            <button class="finbot-chip"
+                                onclick="finbotChipClick('What is the current price of Apple stock?')">AAPL
+                                Price</button>
+                            <button class="finbot-chip"
+                                onclick="finbotChipClick('Compare AAPL, MSFT, and GOOGL')">Compare Stocks</button>
+                            <button class="finbot-chip"
+                                onclick="finbotChipClick('I want to invest $500, what do you recommend?')">Invest
+                                $500</button>
+                            <button class="finbot-chip"
+                                onclick="finbotChipClick('What is the current price of gold?')">Gold Price</button>
+                            <button class="finbot-chip" onclick="finbotChipClick('Latest market news')">Market
+                                News</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <!-- Sticky input -->
+            <div class="finbot-input-area">
+                <div class="finbot-input-inner">
+                    <div class="finbot-input-row">
+                        <textarea id="finbot-input" placeholder="Ask FinBot about the market&#8230;"
+                            rows="1"></textarea>
+                        <button class="finbot-send-btn" id="finbot-send-btn" title="Send">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"
+                                stroke-linecap="round" stroke-linejoin="round">
+                                <line x1="22" y1="2" x2="11" y2="13"></line>
+                                <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+                            </svg>
+                        </button>
+                    </div>
+                    <div class="finbot-disclaimer">Not financial advice &#183; For educational use only</div>
+                </div>
+            </div>
+        </div><!-- end .finbot-chat-panel -->
+
+    </div><!-- end #finbot-section -->
+
+
+
+
+
+
+
+
+
+
+
+
 
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
     <!-- PDF Generation Libraries -->
@@ -469,7 +676,7 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <script>
         // Ensure CSS is loaded before executing JavaScript
-        window.addEventListener('load', function() {
+        window.addEventListener('load', function () {
             // Force reflow to ensure all CSS is applied
             const dashboard = document.getElementById('analyzer-section');
             if (dashboard) {
@@ -486,14 +693,17 @@
     <!-- Load modules in dependency order -->
     <script src="/static/js/modules/utils.js?v=1.0"></script>
     <script src="/static/js/modules/auth.js?v=1.0"></script>
-    <script src="/static/js/modules/navigation.js?v=1.0"></script>
+    <script src="/static/js/modules/navigation.js?v=4.0"></script>
     <script src="/static/js/modules/ui-components.js?v=1.0"></script>
     <script src="/static/js/modules/documents.js?v=1.0"></script>
     <script src="/static/js/modules/viewer.js?v=1.0"></script>
     <script src="/static/js/modules/content.js?v=1.0"></script>
     <script src="/static/js/modules/chat.js?v=1.0"></script>
     <script src="/static/js/modules/reports.js?v=4.0"></script>
+    <script src="/static/js/modules/finbot.js?v=2.0"></script>
+    <script src="/static/js/modules/finbot-news.js?v=2.0"></script>
     <!-- Main.js loads last to coordinate everything -->
     <script src="/static/js/main.js?v=1.0"></script>
 </body>
+
 </html>

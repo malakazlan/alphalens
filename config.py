@@ -51,6 +51,9 @@ class Settings:
     SUPABASE_URL: Optional[str] = os.getenv("SUPABASE_URL")
     SUPABASE_ANON_KEY: Optional[str] = os.getenv("SUPABASE_ANON_KEY")
     
+    # FinBot Configuration
+    FINNHUB_API_KEY: Optional[str] = os.getenv("FINNHUB_API_KEY")
+    
     # Create required directories
     def create_directories(self):
         """Create necessary directories if they don't exist"""

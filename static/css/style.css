@@ -32,15 +32,15 @@
 
 html {
     width: 100%;
+    /* Normal browser scroll — window scrolls, not inner containers */
+    scroll-behavior: smooth;
     overflow-x: hidden;
-    height: 100%;
-    overflow-y: auto;
 }
 
 body {
     font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
     margin: 0;
-    min-height: 100vh;
+    /* Natural document flow — browser window scrolls (same as landing page) */
     background-color: var(--bg-soft);
     color: var(--text);
     font-size: 14px;
@@ -48,13 +48,12 @@ body {
     display: flex;
     flex-direction: column;
     width: 100%;
-    max-width: 100vw;
     overflow-x: hidden;
-    /* Prevent body scroll when panels are being scrolled */
-    overscroll-behavior-y: contain;
+    min-height: 100vh;
 }
 
-/* Prevent body scroll when analyzer result is active */
+/* Lock body scroll ONLY for special full-screen modes */
+body.finbot-active,
 body:has(.analyzer-result-state[style*="display: block"]) {
     height: 100vh;
     max-height: 100vh;
@@ -169,6 +168,9 @@ body:has(.analyzer-result-state[style*="display: block"]) {
 /* Homepage Styles */
 .homepage-section {
     flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
 }
 
 .homepage-hero {
@@ -407,16 +409,25 @@ body:has(.analyzer-result-state[style*="display: block"]) .main-footer {
 .page {
     position: relative;
     z-index: 1;
-    padding: 16px clamp(12px, 3vw, 50px) 24px;
+    padding: 0;
     display: flex;
     flex-direction: column;
-    gap: 16px;
+    gap: 0;
     width: 100%;
     max-width: 100%;
     box-sizing: border-box;
     overflow-x: hidden;
-    flex: 1;
+    /* Browser window handles vertical scroll — no overflow-y:auto here */
+    /* No flex:1 — .page grows to fit its content naturally */
 }
+
+/* Suppress .page when FinBot is active */
+body.finbot-active .page {
+    display: none !important;
+}
+
+/* Also hide footer + other sections when FinBot is active — these are inside .page which already hides */
+/* No additional rules needed here; body.finbot-active .page { display:none } covers them all */
 
 /* Remove padding from page when analyzer result state is shown */
 .page.analyzer-result-active {
@@ -517,6 +528,17 @@ body:has(.analyzer-result-state[style*="display: block"]) .main-footer {
 
 .finbot-section {
     margin-top: 32px;
+}
+
+/* FinBot full-page view: remove page padding and section margin */
+body.finbot-view-active .page {
+    padding: 0;
+    gap: 0;
+    overflow: hidden;
+}
+
+body.finbot-view-active .finbot-section {
+    margin-top: 0;
 }
 
 .logo-mark {
@@ -3203,6 +3225,11 @@ button:hover {
         padding: 32px clamp(16px, 4vw, 40px) 40px;
     }
 
+    body.finbot-view-active .page {
+        padding: 0;
+        gap: 0;
+    }
+
     .hero {
         flex-direction: column;
     }
@@ -3278,6 +3305,11 @@ button:hover {
     .page {
         padding: 24px 16px 40px;
         gap: 24px;
+    }
+
+    body.finbot-view-active .page {
+        padding: 0;
+        gap: 0;
     }
 
     .dashboard {
@@ -3790,6 +3822,11 @@ button:hover {
     .page {
         padding: 16px 12px 24px;
         gap: 16px;
+    }
+
+    body.finbot-view-active .page {
+        padding: 0;
+        gap: 0;
     }
 
     .hero-card {
@@ -4832,4 +4869,342 @@ body.report-modal-open footer {
 
 .header-logout-btn:hover::before {
     transform: translateX(100%);
+}
+
+/* ═══════════════════════════════════════════════
+   COMPREHENSIVE RESPONSIVE DESIGN
+   Covers: Header, Landing, Analyzer, Reports, Footer
+   ═══════════════════════════════════════════════ */
+
+/* Hamburger menu button — hidden by default, shown on mobile */
+.nav-hamburger {
+    display: none;
+    background: none;
+    border: none;
+    padding: 6px;
+    cursor: pointer;
+    color: var(--text);
+    box-shadow: none;
+}
+
+.nav-hamburger svg {
+    display: block;
+}
+
+/* ── TABLET (≤1024px) ── */
+@media (max-width: 1024px) {
+    .header-container {
+        padding: 10px 16px;
+        gap: 16px;
+    }
+
+    .nav-link {
+        padding: 8px 14px;
+        font-size: 0.88rem;
+    }
+
+    .homepage-hero {
+        gap: 24px;
+    }
+
+    .illustration-placeholder {
+        max-width: 350px;
+        height: 260px;
+    }
+
+    .features-grid {
+        grid-template-columns: repeat(2, 1fr);
+        gap: 20px;
+    }
+
+    .key-features-section {
+        margin-top: 30px;
+        margin-bottom: 30px;
+    }
+
+    .features-title {
+        font-size: 1.6rem;
+    }
+
+    .footer-container {
+        grid-template-columns: repeat(2, 1fr);
+        gap: 24px;
+    }
+}
+
+/* ── MOBILE (≤768px) ── */
+@media (max-width: 768px) {
+
+    /* Header — hamburger nav */
+    .header-container {
+        padding: 8px 12px;
+        flex-wrap: nowrap;
+    }
+
+    .nav-hamburger {
+        display: flex !important;
+        align-items: center;
+        justify-content: center;
+        order: 3;
+    }
+
+    .header-nav {
+        display: none;
+        position: absolute;
+        top: 100%;
+        left: 0;
+        right: 0;
+        background: var(--card);
+        border-bottom: 1px solid var(--border);
+        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.1);
+        flex-direction: column;
+        padding: 8px;
+        z-index: 999;
+        gap: 2px;
+    }
+
+    .header-nav.nav-open {
+        display: flex;
+    }
+
+    .nav-link {
+        padding: 12px 16px;
+        width: 100%;
+        box-sizing: border-box;
+        text-align: left;
+        border-radius: 8px;
+    }
+
+    .nav-link.active::after {
+        display: none;
+    }
+
+    .header-logout-btn {
+        font-size: 0.82rem;
+        padding: 6px 12px;
+    }
+
+    .logo-name {
+        font-size: 1rem;
+    }
+
+    /* Landing — Hero stacks vertically */
+    .homepage-hero {
+        grid-template-columns: 1fr;
+        gap: 24px;
+        padding: 16px 0;
+        margin-bottom: 24px;
+    }
+
+    .hero-content {
+        gap: 16px;
+        text-align: center;
+        align-items: center;
+    }
+
+    .homepage-hero-title {
+        font-size: 1.75rem;
+    }
+
+    .homepage-hero-subtitle {
+        font-size: 0.9rem;
+    }
+
+    .upload-doc-btn {
+        padding: 10px 20px;
+        font-size: 0.88rem;
+    }
+
+    .hero-illustration {
+        order: -1;
+    }
+
+    .illustration-placeholder {
+        max-width: 280px;
+        height: 200px;
+    }
+
+    /* Landing — Features single column */
+    .features-grid {
+        grid-template-columns: 1fr;
+        gap: 16px;
+    }
+
+    .features-title {
+        font-size: 1.35rem;
+        margin-bottom: 20px;
+    }
+
+    .feature-card {
+        padding: 20px;
+    }
+
+    .feature-card-title {
+        font-size: 1rem;
+    }
+
+    .key-features-section {
+        margin-top: 20px;
+        margin-bottom: 20px;
+    }
+
+    /* Page padding */
+    .page {
+        padding: 12px;
+        gap: 12px;
+    }
+
+    body.finbot-view-active .page {
+        padding: 0;
+        gap: 0;
+    }
+
+    /* Footer */
+    .main-footer {
+        padding: 24px 0 16px;
+    }
+
+    .footer-container {
+        grid-template-columns: 1fr;
+        gap: 20px;
+        padding: 0 16px;
+    }
+
+    .footer-title {
+        font-size: 0.95rem;
+    }
+
+    .footer-bottom {
+        padding: 12px 16px;
+        font-size: 0.75rem;
+    }
+
+    /* Report cards */
+    .reports-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .report-modal-overlay {
+        padding: 8px;
+    }
+
+    .report-modal-content {
+        width: 100%;
+        max-width: 100%;
+        max-height: 100vh;
+        border-radius: 12px;
+    }
+
+    .report-modal-header {
+        padding: 12px 16px;
+        flex-wrap: wrap;
+        gap: 8px;
+    }
+
+    .report-modal-footer {
+        padding: 10px 12px;
+        flex-wrap: wrap;
+        gap: 6px;
+    }
+
+    .report-modal-footer button {
+        font-size: 0.75rem;
+        padding: 6px 10px;
+    }
+
+    /* Coming soon sections */
+    .glass-card {
+        padding: 40px 20px !important;
+    }
+
+    .glass-card h2 {
+        font-size: 1.75rem !important;
+    }
+}
+
+/* ── SMALL MOBILE (≤480px) ── */
+@media (max-width: 480px) {
+    .header-container {
+        padding: 6px 10px;
+    }
+
+    .nav-link {
+        min-height: 44px;
+        padding: 10px 14px;
+        display: inline-flex;
+        align-items: center;
+    }
+
+    .header-logout-btn {
+        min-height: 44px;
+        padding: 10px 14px;
+    }
+
+    .logo-icon img {
+        width: 26px !important;
+        height: 26px !important;
+    }
+
+    .logo-name {
+        font-size: 0.9rem;
+    }
+
+    .homepage-hero-title {
+        font-size: 1.4rem;
+    }
+
+    .homepage-hero-subtitle {
+        font-size: 0.82rem;
+    }
+
+    .illustration-placeholder {
+        max-width: 220px;
+        height: 160px;
+    }
+
+    .upload-doc-btn {
+        padding: 8px 16px;
+        font-size: 0.82rem;
+    }
+
+    .feature-card {
+        padding: 16px;
+    }
+
+    .features-title {
+        font-size: 1.15rem;
+    }
+
+    /* Analyzer */
+    .analyzer-header {
+        margin-bottom: 16px;
+    }
+
+    .action-card-title {
+        font-size: 1rem;
+    }
+
+    .action-card-desc {
+        font-size: 0.8rem;
+    }
+
+    /* Report modal full mobile */
+    .report-modal-overlay {
+        padding: 0;
+    }
+
+    .report-modal-content {
+        border-radius: 0;
+        max-height: 100vh;
+        height: 100vh;
+    }
+
+    .report-modal-header h2 {
+        font-size: 1rem;
+    }
+
+    /* Footer */
+    .footer-container {
+        padding: 0 12px;
+    }
 }

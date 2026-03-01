@@ -22,7 +22,7 @@ python-dotenv==1.1.1
 
 # AI/ML Services
 landingai-ade==1.2.0
-openai==1.12.0
+openai==2.24.0
 
 # HTML Parsing
 beautifulsoup4==4.12.2
@@ -32,3 +32,7 @@ supabase>=2.24.0
 
 # PDF Report Generation
 xhtml2pdf==0.2.16
+
+# FinBot - Market Data
+yfinance>=0.2.36
+finnhub-python>=2.4.19

@@ -3,6 +3,17 @@
 
 // Show homepage
 function showHomePage() {
+    // Close mobile nav
+    var nav = document.getElementById('header-nav');
+    if (nav) nav.classList.remove('nav-open');
+
+    // Remove finbot-active — this restores .page visibility via CSS
+    document.body.classList.remove('finbot-active');
+
+    // Explicitly restore .page
+    const pageDiv = document.querySelector('.page');
+    if (pageDiv) pageDiv.style.display = 'flex';
+
     // Hide all sections
     const homepageSection = document.getElementById('homepage-section');
     const analyzerSection = document.getElementById('analyzer-section');
@@ -10,15 +21,18 @@ function showHomePage() {
     const reportsSection = document.getElementById('reports-section');
     const optimizerSection = document.getElementById('optimizer-section');
     const spreadsheetSection = document.getElementById('spreadsheet-section');
-    
+
     if (homepageSection) homepageSection.style.display = 'block';
     if (analyzerSection) analyzerSection.style.display = 'none';
-    if (finbotSection) finbotSection.style.display = 'none';
+    if (finbotSection) {
+        finbotSection.style.display = 'none';
+        finbotSection.classList.remove('finbot-visible');
+    }
     if (reportsSection) reportsSection.style.display = 'none';
     if (optimizerSection) optimizerSection.style.display = 'none';
     if (spreadsheetSection) spreadsheetSection.style.display = 'none';
-    
-    // Update nav links
+
+    document.body.classList.remove('finbot-view-active');
     updateNavLinks('home');
 }
 
@@ -32,7 +46,7 @@ function showFeature(feature) {
         const selectedDocId = getSelectedDocumentId();
         const getAnalyzerState = window.getAnalyzerState || (() => 'initial');
         const currentState = getAnalyzerState();
-        
+
         // Only save state if we have a document selected and we're in result state
         if (selectedDocId && currentState === 'result') {
             if (typeof saveAnalyzerState === 'function') {
@@ -40,30 +54,40 @@ function showFeature(feature) {
             }
         }
     }
-    
+
     // Hide homepage
     const homepageSection = document.getElementById('homepage-section');
     if (homepageSection) homepageSection.style.display = 'none';
-    
+
     // Get all sections
     const analyzerSection = document.getElementById('analyzer-section');
     const finbotSection = document.getElementById('finbot-section');
     const reportsSection = document.getElementById('reports-section');
     const optimizerSection = document.getElementById('optimizer-section');
     const spreadsheetSection = document.getElementById('spreadsheet-section');
-    
+
     // Hide all sections first
     if (analyzerSection) analyzerSection.style.display = 'none';
     if (finbotSection) finbotSection.style.display = 'none';
     if (reportsSection) reportsSection.style.display = 'none';
     if (optimizerSection) optimizerSection.style.display = 'none';
     if (spreadsheetSection) spreadsheetSection.style.display = 'none';
-    
+
+    // Remove finbot-active so .page is restored by CSS
+    document.body.classList.remove('finbot-active');
+    document.body.classList.remove('finbot-view-active');
+
+    // If we are NOT going to finbot, make sure .page is visible
+    if (feature !== 'finbot') {
+        const pageDiv = document.querySelector('.page');
+        if (pageDiv) pageDiv.style.display = 'flex';
+    }
+
     // Show the selected section
     if (feature === 'analyzer') {
         // Ensure report-modal-open class is removed (cleanup from PDF generation)
         document.body.classList.remove('report-modal-open');
-        
+
         // Clean up any leftover PDF clones
         const leftoverClones = document.querySelectorAll('[id^="pdf-clone-"]');
         leftoverClones.forEach(clone => {
@@ -71,26 +95,26 @@ function showFeature(feature) {
                 clone.parentNode.removeChild(clone);
             }
         });
-        
+
         if (analyzerSection) {
             // CRITICAL: First ensure analyzer section is visible
             analyzerSection.style.display = 'block';
             analyzerSection.style.visibility = 'visible';
             analyzerSection.style.opacity = '1';
-            
+
             // Check URL parameters first - if document ID is in URL, restore that state
             const getUrlParams = window.getUrlParams || (() => ({}));
             const urlParams = getUrlParams();
-            
+
             // Also check sessionStorage for saved state (in case URL params were cleared)
             const restoreAnalyzerState = window.restoreAnalyzerState || (() => null);
             const savedState = restoreAnalyzerState();
-            
+
             // Determine which document to restore (priority: URL params > sessionStorage > none)
             let documentToRestore = null;
             let stateToRestore = null;
             let tabToRestore = null;
-            
+
             if (urlParams.document) {
                 // URL has document - use that (state is optional, default to 'result')
                 documentToRestore = urlParams.document;
@@ -108,7 +132,7 @@ function showFeature(feature) {
                     });
                 }
             }
-            
+
             // Only clear document content if we're NOT restoring
             if (!documentToRestore) {
                 // Clear document content first
@@ -116,12 +140,12 @@ function showFeature(feature) {
                 const jsonView = document.getElementById('json-content');
                 const pdfWrapper = document.getElementById('pdf-wrapper');
                 const selectedFileName = document.getElementById('selected-file-name');
-                
+
                 if (markdownView) markdownView.innerHTML = '';
                 if (jsonView) jsonView.textContent = '';
                 if (pdfWrapper) pdfWrapper.innerHTML = '';
                 if (selectedFileName) selectedFileName.textContent = 'No document selected';
-                
+
                 // Clear chat messages
                 const chatMessages = document.getElementById('chat-messages');
                 if (chatMessages) {
@@ -129,14 +153,14 @@ function showFeature(feature) {
                     chatMessages.style.display = 'none';
                 }
             }
-            
+
             if (documentToRestore && stateToRestore) {
                 // We have a document to restore - restore that state instead of showing initial
                 // Set the selected document ID immediately so it's available
                 if (typeof window.setSelectedDocumentId === 'function') {
                     window.setSelectedDocumentId(documentToRestore);
                 }
-                
+
                 if (typeof selectDocument === 'function') {
                     // Load the document with cache enabled for instant restoration
                     // selectDocument will check cache first and show instantly if available
@@ -182,40 +206,40 @@ function showFeature(feature) {
                 const jsonView = document.getElementById('json-content');
                 const pdfWrapper = document.getElementById('pdf-wrapper');
                 const selectedFileName = document.getElementById('selected-file-name');
-                
+
                 if (markdownView) markdownView.innerHTML = '';
                 if (jsonView) jsonView.textContent = '';
                 if (pdfWrapper) pdfWrapper.innerHTML = '';
                 if (selectedFileName) selectedFileName.textContent = 'No document selected';
-                
+
                 // Clear chat messages
                 const chatMessages = document.getElementById('chat-messages');
                 if (chatMessages) {
                     chatMessages.innerHTML = '';
                     chatMessages.style.display = 'none';
                 }
-                
+
                 // Clear selected document when showing initial state
                 if (typeof window.setSelectedDocumentId === 'function') {
                     window.setSelectedDocumentId(null);
                 }
-                
+
                 // Clear any saved state when navigating to analyzer without a document
                 if (typeof clearAnalyzerState === 'function') {
                     clearAnalyzerState();
                 }
-                
+
                 // Clear URL params when showing initial state
                 if (typeof window.clearUrlParams === 'function') {
                     window.clearUrlParams();
                 }
-                
+
                 // Show initial state
                 if (typeof showAnalyzerInitialState === 'function') {
                     showAnalyzerInitialState();
                 }
             }
-            
+
             // Reload pre-saved documents to refresh the list (always do this)
             // But only if we're not restoring a document (to avoid interference)
             if (!documentToRestore) {
@@ -223,7 +247,7 @@ function showFeature(feature) {
                     if (typeof loadPresavedDocuments === 'function') {
                         loadPresavedDocuments();
                     }
-                    
+
                     // Ensure analyzer section is visible
                     if (analyzerSection) {
                         analyzerSection.style.display = 'block';
@@ -235,7 +259,7 @@ function showFeature(feature) {
                     if (typeof loadPresavedDocuments === 'function') {
                         loadPresavedDocuments();
                     }
-                    
+
                     // Ensure analyzer section is visible
                     if (analyzerSection) {
                         analyzerSection.style.display = 'block';
@@ -249,7 +273,14 @@ function showFeature(feature) {
             initializeAnalyzer();
         }
     } else if (feature === 'finbot') {
-        if (finbotSection) finbotSection.style.display = 'block';
+        // Hide .page so only finbot-section occupies the viewport height slot
+        const pageDiv = document.querySelector('.page');
+        if (pageDiv) pageDiv.style.display = 'none';
+        document.body.classList.add('finbot-active');
+        if (finbotSection) {
+            finbotSection.style.display = 'flex';
+            finbotSection.classList.add('finbot-visible');
+        }
         updateNavLinks('chatbot');
     } else if (feature === 'reports') {
         if (reportsSection) {
@@ -274,9 +305,14 @@ function showFeature(feature) {
         if (spreadsheetSection) spreadsheetSection.style.display = 'block';
         updateNavLinks('spreadsheet');
     }
-    
-    // Scroll to top
-    window.scrollTo({ top: 0, behavior: 'smooth' });
+
+    // Scroll browser window to top on section switch
+    if (feature !== 'finbot') {
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+    // Close mobile nav
+    var nav = document.getElementById('header-nav');
+    if (nav) nav.classList.remove('nav-open');
 }
 
 // Update navigation links active state
