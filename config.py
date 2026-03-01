@@ -12,10 +12,10 @@ class Settings:
     VISION_AGENT_API_KEY: str = os.getenv("VISION_AGENT_API_KEY", "")
     ADE_ENDPOINT: str = os.getenv("ADE_ENDPOINT", "https://api.va.landing.ai/v1/ade")
     
-    # LLM API Configuration
-    OPENAI_API_KEY: Optional[str] = os.getenv("OPENAI_API_KEY")
-    ANTHROPIC_API_KEY: Optional[str] = os.getenv("ANTHROPIC_API_KEY")
-    GOOGLE_API_KEY: Optional[str] = os.getenv("GOOGLE_API_KEY")
+    # LLM API Configuration (strip whitespace/newlines - invalid in HTTP headers)
+    OPENAI_API_KEY: Optional[str] = (os.getenv("OPENAI_API_KEY") or "").strip() or None
+    ANTHROPIC_API_KEY: Optional[str] = (os.getenv("ANTHROPIC_API_KEY") or "").strip() or None
+    GOOGLE_API_KEY: Optional[str] = (os.getenv("GOOGLE_API_KEY") or "").strip() or None
     
     # Determine which LLM to use based on available API keys
     @property

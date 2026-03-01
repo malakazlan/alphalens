@@ -434,10 +434,11 @@ class FinBotService:
     """Main service for the agentic FinBot chatbot."""
 
     def __init__(self):
-        self.api_key = settings.OPENAI_API_KEY if settings else os.getenv("OPENAI_API_KEY")
+        raw = settings.OPENAI_API_KEY if settings else os.getenv("OPENAI_API_KEY")
+        self.api_key = (raw or "").strip() or None  # no newline/space in header
         self.client = None
         if self.api_key and openai:
-            self.client = openai.OpenAI(api_key=self.api_key)
+            self.client = openai.OpenAI(api_key=self.api_key, timeout=90.0)
         # In-memory conversation history per session
         self.conversations: Dict[str, List[Dict[str, str]]] = {}
 
@@ -537,10 +538,19 @@ class FinBotService:
                 "tools_used": tools_used
             }
         except Exception as e:
+            err_msg = str(e).strip()
             print(f"❌ FinBot error: {e}")
             traceback.print_exc()
+            # Friendly message for connection/timeout (common on Render cold start)
+            if not err_msg:
+                err_msg = "Unknown error"
+            if "connection" in err_msg.lower() or "timeout" in err_msg.lower() or "connect" in err_msg.lower():
+                return {
+                    "response": "⚠️ Could not reach the AI service (connection or timeout). This can happen on first use after idle. Please try again in a few seconds.",
+                    "tools_used": tools_used
+                }
             return {
-                "response": f"Something went wrong: {str(e)}. Please try again.",
+                "response": f"Something went wrong: {err_msg}. Please try again.",
                 "tools_used": tools_used
             }
 
