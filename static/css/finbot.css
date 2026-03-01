@@ -376,7 +376,22 @@
 }
 
 .finbot-topbar-icon {
-    font-size: 1.1rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    flex-shrink: 0;
+    border-radius: 8px;
+    overflow: hidden;
+    background: rgba(5, 150, 105, 0.12);
+}
+
+.finbot-topbar-icon .finbot-topbar-logo {
+    width: 20px;
+    height: 20px;
+    object-fit: contain;
+    display: block;
 }
 
 .finbot-chat-topbar-title {
@@ -462,9 +477,18 @@
 }
 
 .finbot-welcome-glyph {
-    font-size: 3.5rem;
     margin-bottom: 16px;
     animation: finbot-float 3s ease-in-out infinite;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.finbot-welcome-glyph .finbot-welcome-logo {
+    width: 52px;
+    height: 60px;
+    object-fit: contain;
+    display: block;
 }
 
 @keyframes finbot-float {
@@ -983,8 +1007,9 @@
         font-size: 1.1rem;
     }
 
-    .finbot-welcome-glyph {
-        font-size: 2.5rem;
+    .finbot-welcome-glyph .finbot-welcome-logo {
+        width: 44px;
+        height: 52px;
     }
 
     .finbot-msg {
