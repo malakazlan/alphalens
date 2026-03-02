@@ -57,6 +57,23 @@
         return div.innerHTML;
     }
 
+    function getCategoryIcon(category) {
+        var c = (category || '').toLowerCase();
+        if (c.indexOf('market') >= 0 || c.indexOf('stock') >= 0) {
+            return '<svg class="finbot-cat-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 6 13.5 15 8.5 10 2 16"/><polyline points="16 6 22 6 22 12"/></svg>';
+        }
+        if (c.indexOf('policy') >= 0 || c.indexOf('fed') >= 0 || c.indexOf('rate') >= 0) {
+            return '<svg class="finbot-cat-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="3" x2="12" y2="21"/><line x1="4" y1="9" x2="20" y2="9"/><line x1="4" y1="15" x2="20" y2="15"/><path d="M8 15V9"/><path d="M12 15V9"/><path d="M16 15V9"/></svg>';
+        }
+        if (c.indexOf('crypto') >= 0 || c.indexOf('bitcoin') >= 0 || c.indexOf('btc') >= 0) {
+            return '<svg class="finbot-cat-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M9 8h4a2 2 0 110 4H9V8z"/><path d="M15 12h-3a2 2 0 110 4h4v-4z"/></svg>';
+        }
+        if (c.indexOf('earning') >= 0 || c.indexOf('company') >= 0 || c.indexOf('profit') >= 0) {
+            return '<svg class="finbot-cat-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="2" x2="12" y2="22"/><path d="M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6"/></svg>';
+        }
+        return '<svg class="finbot-cat-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="4" width="16" height="16" rx="2"/><line x1="8" y1="8" x2="16" y2="8"/><line x1="8" y1="12" x2="16" y2="12"/><line x1="8" y1="16" x2="12" y2="16"/></svg>';
+    }
+
     function renderCards() {
         const wrapper = getEl('finbot-news-cards');
         const dotsEl = getEl('finbot-news-dots');
@@ -128,8 +145,9 @@
             a.className = 'finbot-breaking-item';
             var cat = (item.category || 'NEWS').toUpperCase();
             var meta = item.date ? item.date + ' • ' + cat : cat;
+            var iconSvg = getCategoryIcon(item.category || item.source);
             a.innerHTML =
-                '<span class="finbot-breaking-icon">&#128200;</span>' +
+                '<span class="finbot-breaking-icon finbot-breaking-icon--cat">' + iconSvg + '</span>' +
                 '<div class="finbot-breaking-content">' +
                 '<span class="finbot-breaking-headline">' + escapeHtml(item.title || 'No title') + '</span>' +
                 '<span class="finbot-breaking-meta">' + escapeHtml(meta) + '</span>' +

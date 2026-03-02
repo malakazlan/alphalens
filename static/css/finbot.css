@@ -22,7 +22,7 @@
     flex-direction: row;
     overflow: hidden;
     font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
-    background: #0f1117;
+    background: #f8faf8;
 }
 
 /* shown state — toggled by navigation.js */
@@ -31,16 +31,16 @@
 }
 
 /* ═══════════════════════════════════
-   LEFT PANEL — Dark News Sidebar
+   LEFT PANEL — News Sidebar (light green / green / white theme)
    ═══════════════════════════════════ */
 .finbot-sidebar {
     width: 320px;
     min-width: 320px;
     max-width: 320px;
-    background: #0f1117;
+    background: #ffffff;
     display: flex;
     flex-direction: column;
-    border-right: 1px solid rgba(255, 255, 255, 0.06);
+    border-right: 1px solid #e5e7eb;
     overflow: hidden;
 }
 
@@ -50,15 +50,16 @@
     align-items: center;
     gap: 10px;
     padding: 14px 16px;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+    border-bottom: 1px solid #e5e7eb;
     flex-shrink: 0;
+    background: linear-gradient(135deg, #059669 0%, #10b981 100%);
 }
 
 .finbot-brand-avatar {
     width: 36px;
     height: 36px;
     border-radius: 10px;
-    background: linear-gradient(135deg, #00c896 0%, #00a878 100%);
+    background: rgba(255, 255, 255, 0.25);
     display: flex;
     align-items: center;
     justify-content: center;
@@ -86,7 +87,7 @@
 
 .finbot-brand-sub {
     font-size: 0.68rem;
-    color: rgba(255, 255, 255, 0.45);
+    color: rgba(255, 255, 255, 0.9);
     margin-top: 1px;
 }
 
@@ -94,8 +95,8 @@
     width: 7px;
     height: 7px;
     border-radius: 50%;
-    background: #00c896;
-    box-shadow: 0 0 6px #00c896;
+    background: #dc2626;
+    box-shadow: 0 0 8px rgba(220, 38, 38, 0.9);
     flex-shrink: 0;
     animation: finbot-pulse-dot 2s ease-in-out infinite;
 }
@@ -105,12 +106,12 @@
     0%,
     100% {
         opacity: 1;
-        box-shadow: 0 0 6px #00c896;
+        box-shadow: 0 0 8px rgba(220, 38, 38, 0.9);
     }
 
     50% {
-        opacity: 0.6;
-        box-shadow: 0 0 12px #00c896;
+        opacity: 0.85;
+        box-shadow: 0 0 12px rgba(220, 38, 38, 1);
     }
 }
 
@@ -121,6 +122,7 @@
     overflow-y: auto;
     overflow-x: hidden;
     -webkit-overflow-scrolling: touch;
+    background: #f8faf8;
 }
 
 .finbot-sidebar-body::-webkit-scrollbar {
@@ -132,14 +134,14 @@
 }
 
 .finbot-sidebar-body::-webkit-scrollbar-thumb {
-    background: rgba(255, 255, 255, 0.08);
+    background: rgba(5, 150, 105, 0.25);
     border-radius: 2px;
 }
 
 /* ── Featured Insights Carousel ── */
 .finbot-insights {
     padding: 14px 14px 10px;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+    border-bottom: 1px solid #e5e7eb;
 }
 
 .finbot-section-label {
@@ -147,7 +149,7 @@
     font-weight: 700;
     letter-spacing: 0.1em;
     text-transform: uppercase;
-    color: rgba(255, 255, 255, 0.35);
+    color: #059669;
     margin-bottom: 10px;
 }
 
@@ -155,8 +157,9 @@
     position: relative;
     border-radius: 12px;
     overflow: hidden;
-    background: #1a1d27;
+    background: #f0fdf4;
     min-height: 130px;
+    border: 1px solid rgba(5, 150, 105, 0.15);
 }
 
 .finbot-news-cards {
@@ -184,12 +187,13 @@
 .finbot-news-card-placeholder {
     width: 100%;
     height: 150px;
-    background: linear-gradient(135deg, #1a2a3a 0%, #0d1f2d 100%);
+    background: linear-gradient(135deg, #d1fae5 0%, #a7f3d0 100%);
     display: flex;
     align-items: center;
     justify-content: center;
     font-size: 2.5rem;
     border-radius: 12px;
+    color: #059669;
 }
 
 .finbot-news-card-overlay {
@@ -207,7 +211,7 @@
     font-weight: 600;
     letter-spacing: 0.08em;
     text-transform: uppercase;
-    color: #00c896;
+    color: #34d399;
     margin-bottom: 4px;
 }
 
@@ -237,14 +241,14 @@
     height: 5px;
     border-radius: 50%;
     border: none;
-    background: rgba(255, 255, 255, 0.2);
+    background: #d1d5db;
     cursor: pointer;
     padding: 0;
     transition: all 0.25s;
 }
 
 .finbot-carousel-dot.active {
-    background: #00c896;
+    background: #059669;
     width: 16px;
     border-radius: 3px;
 }
@@ -256,10 +260,11 @@
     align-items: center;
     justify-content: center;
     height: 150px;
-    color: rgba(255, 255, 255, 0.3);
+    color: #6b7280;
     font-size: 0.78rem;
-    background: #1a1d27;
+    background: #f0fdf4;
     border-radius: 12px;
+    border: 1px solid rgba(5, 150, 105, 0.15);
 }
 
 /* ── Breaking News List ── */
@@ -278,8 +283,8 @@
     width: 6px;
     height: 6px;
     border-radius: 50%;
-    background: #f43f5e;
-    box-shadow: 0 0 6px rgba(244, 63, 94, 0.7);
+    background: #dc2626;
+    box-shadow: 0 0 6px rgba(220, 38, 38, 0.5);
     animation: finbot-pulse-dot 1.5s ease-in-out infinite;
     flex-shrink: 0;
 }
@@ -289,7 +294,7 @@
     font-weight: 700;
     letter-spacing: 0.1em;
     text-transform: uppercase;
-    color: rgba(255, 255, 255, 0.35);
+    color: #374151;
     margin: 0;
 }
 
@@ -310,17 +315,32 @@
     transition: background 0.2s;
     cursor: pointer;
     border: 1px solid transparent;
+    background: #ffffff;
 }
 
 .finbot-breaking-item:hover {
-    background: rgba(255, 255, 255, 0.05);
-    border-color: rgba(255, 255, 255, 0.06);
+    background: #ecfdf5;
+    border-color: rgba(5, 150, 105, 0.2);
 }
 
 .finbot-breaking-icon {
     font-size: 1rem;
     flex-shrink: 0;
     margin-top: 1px;
+    color: #059669;
+}
+
+.finbot-breaking-icon .finbot-cat-icon {
+    width: 20px;
+    height: 20px;
+    display: block;
+    stroke: currentColor;
+}
+
+.finbot-breaking-icon.finbot-breaking-icon--cat {
+    display: flex;
+    align-items: center;
+    justify-content: center;
 }
 
 .finbot-breaking-content {
@@ -330,7 +350,7 @@
 .finbot-breaking-headline {
     font-size: 0.78rem;
     font-weight: 500;
-    color: rgba(255, 255, 255, 0.82);
+    color: #111827;
     line-height: 1.4;
     display: -webkit-box;
     -webkit-line-clamp: 2;
@@ -342,7 +362,7 @@
 
 .finbot-breaking-meta {
     font-size: 0.65rem;
-    color: rgba(255, 255, 255, 0.28);
+    color: #6b7280;
     letter-spacing: 0.02em;
 }
 
@@ -943,7 +963,7 @@
         flex-direction: column;
         max-height: 220px;
         border-right: none;
-        border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+        border-bottom: 1px solid #e5e7eb;
     }
 
     .finbot-brand {
