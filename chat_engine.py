@@ -129,14 +129,20 @@ def is_financial_term_question(query: str) -> bool:
     
     # Check if query matches financial term patterns
     for pattern in financial_term_patterns:
-        if re.search(pattern, query_lower):
-            # Extract potential term
-            match = re.search(pattern, query_lower)
-            if match:
-                potential_term = match.group(1) or match.group(2) or ""
-                # Check if it's a known financial term
-                if any(term in potential_term.lower() for term in financial_terms):
-                    return True
+        match = re.search(pattern, query_lower)
+        if match:
+            # Extract the first non-empty captured group safely
+            groups = match.groups()
+            potential_term = ""
+            for g in groups:
+                if g:
+                    potential_term = g.strip()
+                    break
+            if not potential_term:
+                continue
+            # Check if it's a known financial term
+            if any(term in potential_term.lower() for term in financial_terms):
+                return True
     
     # Direct check for "what is [financial term]"
     for term in financial_terms:
@@ -211,6 +217,38 @@ def get_answer_from_document(
     
     query_lower = query.lower().strip()
     intent = classify_query_intent(query, financial_data)
+
+    # Detect preferred answer style/length from the query
+    wants_short_answer = any(
+        phrase in query_lower
+        for phrase in [
+            "short answer",
+            "short definition",
+            "brief definition",
+            "briefly",
+            "in two lines",
+            "in 2 lines",
+            "in two sentences",
+            "in 2 sentences",
+            "one line",
+            "1 line",
+            "one sentence",
+            "1 sentence",
+        ]
+    )
+
+    target_sentence_count: Optional[int] = None
+    if any(p in query_lower for p in ["two lines", "2 lines", "two sentences", "2 sentences"]):
+        target_sentence_count = 2
+    elif any(p in query_lower for p in ["one line", "1 line", "one sentence", "1 sentence"]):
+        target_sentence_count = 1
+
+    # High-level style hint for the LLM layer
+    style_hint = "analysis"
+    if wants_short_answer and any(kw in query_lower for kw in ["summary", "summarize", "overview"]):
+        style_hint = "short_summary"
+    elif wants_short_answer or "definition" in query_lower:
+        style_hint = "definition"
     
     # Helper to create result dict
     def create_result(answer: str, source: str, sources: List[Dict] = None, follow_ups: List[str] = None) -> Dict[str, Any]:
@@ -252,7 +290,10 @@ def get_answer_from_document(
     
     # Handle summary requests
     summary_keywords = ["summarize", "summary", "overview", "what is this document", "tell me about this document"]
-    if any(kw in query_lower for kw in summary_keywords):
+    has_summary_request = any(kw in query_lower for kw in summary_keywords)
+    # If the user asked for a generic summary (no explicit short/line constraint),
+    # keep using the existing document-summary path.
+    if has_summary_request and not wants_short_answer:
         summary = llm_service.generate_document_summary(financial_data)
         if not summary or len(summary.strip()) < 10:
             summary = _generate_fallback_summary(financial_data)
@@ -293,13 +334,25 @@ def get_answer_from_document(
         context_blocks=context_blocks,
         financial_data=financial_data,
         is_simple_question=is_simple_question,
-        wants_list_format=wants_list_format
+        wants_list_format=wants_list_format,
+        style=style_hint,
+        max_sentences=target_sentence_count,
     )
+    # Optionally enforce a maximum number of sentences on the main answer text
+    if target_sentence_count and answer_text:
+        answer_text = _truncate_to_sentences(answer_text, target_sentence_count)
     
     # Fallback if answer is poor
     if not answer_text or any(phrase in answer_text.lower() for phrase in ["i'm sorry", "does not contain", "not provided"]):
         fallback_context = build_fallback_context(financial_data, relevant_chunks)
-        fallback_answer = llm_service.generate_response(query, fallback_context, financial_data)
+        fallback_answer = llm_service.generate_response(
+            query,
+            fallback_context,
+            financial_data,
+            style=style_hint,
+            max_sentences=target_sentence_count,
+            conversation_context=conversation_history_context,
+        )
         if not fallback_answer or any(phrase in fallback_answer.lower() for phrase in ["i'm sorry", "does not contain"]):
             fallback_answer = _generate_answer_from_financial_data(query, financial_data)
         return create_result(fallback_answer, "local_llm", sources=extract_summary_citations(financial_data)[:3])
@@ -364,7 +417,38 @@ def extract_citations(answer_text: str, context_blocks: List[Dict[str, Any]]) ->
     
     clean_text = CITATION_PATTERN.sub('', answer_text or '').strip()
     clean_text = re.sub(r'\s+', ' ', clean_text)
+
+    # Reconstruct a \"Visual reference for the answer\" block similar to Landing.AI
+    # so the frontend can show human-readable references without extra logic.
+    if citations:
+        visual_lines = ["Visual reference for the answer:"]
+        for c in citations:
+            label = c.get("visual_ref")
+            if label:
+                visual_lines.append(label)
+        visual_block = "\n".join(visual_lines)
+        if clean_text:
+            clean_text = f"{clean_text}\n\n{visual_block}"
+        else:
+            clean_text = visual_block
+
     return clean_text, citations
+
+
+def _truncate_to_sentences(text: str, max_sentences: int) -> str:
+    """
+    Soft guardrail to keep answers brief when the user explicitly requests
+    a short answer (e.g., \"in two lines\").
+    """
+    if max_sentences <= 0 or not text:
+        return text
+    
+    # Simple sentence split – good enough for short answers
+    parts = re.split(r'(?<=[.!?])\s+', text.strip())
+    if len(parts) <= max_sentences:
+        return text.strip()
+    truncated = " ".join(parts[:max_sentences]).strip()
+    return truncated
 
 
 def extract_citations_with_visual_refs(
@@ -695,19 +779,14 @@ def handle_financial_term_question(query: str) -> str:
                 term_match = re.search(r'(?:what is|explain|define)\s+(?:an?|the)?\s*([^?]+)', query.lower())
                 term = term_match.group(1).strip() if term_match else query
                 
-                prompt = f"""You are a financial expert and educator. Explain the financial term "{term}" in a clear, concise, and professional manner.
+                prompt = f"""You are a financial expert and educator. Explain the financial term "{term}" in a very short, professional way.
 
-REQUIREMENTS:
-1. **Definition**: Provide a clear, one-sentence definition
-2. **Explanation**: Explain what it means in practical terms (2-3 sentences)
-3. **Context**: Explain when/why it's used in finance (1-2 sentences)
-4. **Example**: Provide a simple, concrete example if helpful (1 sentence)
-5. **Format**: Use markdown formatting:
-   - Use **bold** for the term name
-   - Use bullet points if listing multiple aspects
-   - Keep total response to 4-6 sentences maximum
-
-Be professional, accurate, and educational. If the term is not a financial term, say so briefly.
+STRICT REQUIREMENTS:
+- Provide a clear definition in **at most 2 sentences total**.
+- Use plain text only (NO headings, NO bullet points, NO numbered lists).
+- Focus on what the term means and, if space allows, one short phrase about when it is used.
+- Do NOT give a long explanation, context section, or examples.
+- If the term is not a financial term, say briefly that it is not a standard financial term.
 
 Term to explain: {term}"""
                 
@@ -717,8 +796,8 @@ Term to explain: {term}"""
                         {"role": "system", "content": "You are a financial expert and educator. Explain financial terms clearly, concisely, and professionally. Always provide practical context and examples."},
                         {"role": "user", "content": prompt}
                     ],
-                    temperature=0.3,
-                    max_tokens=300
+                    temperature=0.2,
+                    max_tokens=120
                 )
                 answer = response.choices[0].message.content.strip()
                 return f"{answer}\n\n*Note: This explanation is general financial knowledge, not specific to the document.*"

@@ -328,7 +328,15 @@ class LLMService:
         if not self.openai_api_key:
             self.openai_api_key = os.environ.get("OPENAI_API_KEY")
         
-    def generate_response(self, query: str, context: str, financial_data: Dict[str, Any] = None) -> str:
+    def generate_response(
+        self,
+        query: str,
+        context: str,
+        financial_data: Dict[str, Any] = None,
+        style: str = "analysis",
+        max_sentences: Optional[int] = None,
+        conversation_context: Optional[str] = None,
+    ) -> str:
         """
         Generate a response to a query using OpenAI's GPT-3.5 Turbo
         
@@ -363,7 +371,36 @@ class LLMService:
                         
                         metrics_context += f"- {name}: {formatted_value}\n"
             
-            # Create a concise prompt
+            # Create a concise prompt that can adapt based on style hints
+            style = style or "analysis"
+            max_sentences = max_sentences or 3
+
+            style_instructions = ""
+            if style == "definition":
+                style_instructions = f"""
+The user is asking for a short definition or very brief explanation.
+- Answer in at most {max_sentences} sentences.
+- No headings, no bullet lists, no sections.
+- Use plain language and go straight to the point."""
+            elif style == "short_summary":
+                style_instructions = f"""
+The user wants a very short summary.
+- Answer in at most {max_sentences} sentences.
+- Focus on the main idea only, not every metric.
+- Do not add extra sections or long explanations."""
+            else:
+                style_instructions = f"""
+Provide a concise analytical answer.
+- Default to 2–3 sentences unless the question clearly needs more detail.
+- Be specific but avoid repeating the whole document."""
+
+            history_block = ""
+            if conversation_context:
+                history_block = f"""
+Recent conversation (for resolving follow-ups like \"this table\" or \"above\"):
+{conversation_context}
+"""
+
             prompt = f"""You are ALPHA LENS, a document assistant. Answer questions directly and concisely.
 
 Document Type: {financial_data.get("metadata", {}).get("document_type", "Document")}
@@ -374,26 +411,17 @@ Document Context:
 
 User Question: "{query}"
 
-CRITICAL - BE EXTREMELY BRIEF:
-1. **Simple Questions** (names, dates, amounts, what/where/when):
-   - Answer in 1 sentence: "Your name is [name]" or "The amount is [amount]" or "The date is [date]"
-   - NO explanations, NO summaries
+{history_block}
 
-2. **General Questions**:
-   - Maximum 2 sentences
-   - Use **bold** only for key numbers/names
-   - Use bullet points (-) only if listing 3+ items
+CRITICAL STYLE INSTRUCTIONS:
+{style_instructions}
 
-3. **Follow-up Questions** (like "what did I ask"):
-   - Answer what was asked previously in 1-2 sentences
-   - Don't repeat document summaries
+General rules:
+- Ground your answer ONLY in the document context and metrics above.
+- If the answer is not in the document, say: "I cannot find the answer in the provided document."
+- Never be verbose or repeat long summaries.
 
-4. **NEVER**:
-   - Write more than 2-3 sentences
-   - Give full document summaries for simple questions
-   - Be verbose
-
-Your response (BE BRIEF):
+Your response:
 """
             
             # Call OpenAI API
@@ -427,6 +455,9 @@ Your response (BE BRIEF):
         financial_data: Dict[str, Any] = None,
         is_simple_question: bool = False,
         wants_list_format: bool = False,
+        style: str = "analysis",
+        max_sentences: Optional[int] = None,
+        conversation_context: Optional[str] = None,
     ) -> str:
         """Generate a finance-grounded response with explicit citation instructions."""
         try:
@@ -479,7 +510,17 @@ Your response (BE BRIEF):
                     for row in table_rows:
                         tables_context += f"{row}\n"
             
-            # Adjust prompt based on question type
+            # Adjust prompt based on question type and style hints
+            style = style or "analysis"
+            max_sentences = max_sentences or (1 if is_simple_question else 3)
+
+            history_block = ""
+            if conversation_context:
+                history_block = f"""
+Recent conversation (for resolving follow-ups like \"this\", \"that\", or \"previous table\"):
+{conversation_context}
+"""
+
             if is_simple_question:
                 prompt = f"""Answer this question in 1 sentence maximum. NO explanations, NO summaries.
 
@@ -539,7 +580,8 @@ CRITICAL - USE BULLET POINTS:
 Your response (bullet points only, markdown format):
 """
             else:
-                prompt = f"""You are ALPHA LENS, an expert financial document analysis assistant. Answer questions with precision, context, and clarity.
+                if style == "definition":
+                    prompt = f"""You are ALPHA LENS, a financial document assistant. The user wants a **short definition or very brief explanation**.
 
 Document metadata:
 {metadata_text}
@@ -550,6 +592,56 @@ Key metrics:
 
 Context blocks (each block is labeled with an ID in brackets):
 {context_text or 'N/A'}
+
+{history_block}
+
+INSTRUCTIONS:
+- Provide a clear, plain-language definition or explanation.
+- Answer in at most {max_sentences} sentences (default 2).
+- Do NOT add headings, bullet lists, or extra sections.
+- Ground the explanation in the document when relevant; otherwise keep it general but accurate.
+- If the document does not contain any information about this concept, say so briefly.
+
+Your response (short definition, plain text only):
+"""
+                elif style == "short_summary":
+                    prompt = f"""You are ALPHA LENS, an expert financial document analysis assistant. The user wants a **very short summary**.
+
+Document metadata:
+{metadata_text}
+
+Key metrics:
+{metrics_text}
+{tables_context}
+
+Context blocks (each block is labeled with an ID in brackets):
+{context_text or 'N/A'}
+
+{history_block}
+
+INSTRUCTIONS:
+- Provide a brief overview of the most important points.
+- Answer in at most {max_sentences} sentences (typically 2–3).
+- Focus on the core story: what this document is and the top few numbers or findings.
+- Do NOT list every metric or table; pick the most important ones.
+- If information is missing, it is fine to omit it rather than guessing.
+
+Your response (short summary, plain paragraphs only):
+"""
+                else:
+                    prompt = f"""You are ALPHA LENS, an expert financial document analysis assistant. Answer questions with precision, context, and clarity.
+
+Document metadata:
+{metadata_text}
+
+Key metrics:
+{metrics_text}
+{tables_context}
+
+Context blocks (each block is labeled with an ID in brackets):
+{context_text or 'N/A'}
+
+{history_block}
 
 Question: {query}
 

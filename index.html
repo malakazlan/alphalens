@@ -329,9 +329,10 @@
                         <!-- Left: Document Viewer -->
                         <div class="document-viewer-section resizable-panel">
                             <div class="document-stage glass-card">
-                                <!-- Document Header: Upload icon, Doc name, Page indicator -->
+                                <!-- Document Header: Doc name, Upload new file -->
                                 <div class="document-header-bar">
-                                    <button class="upload-icon-btn" id="file-select-btn" title="Upload Document">
+                                    <span id="selected-file-name" class="document-name">No document selected</span>
+                                    <button type="button" class="upload-icon-btn" id="file-select-btn" title="Upload Document" aria-label="Upload new file">
                                         <svg class="arrow-up-icon" width="14" height="14" viewBox="0 0 24 24"
                                             fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"
                                             stroke-linejoin="round">
@@ -345,13 +346,6 @@
                                             <line x1="12" y1="3" x2="12" y2="15"></line>
                                         </svg>
                                     </button>
-                                    <span id="selected-file-name" class="document-name">No document selected</span>
-                                    <div class="page-indicator-container">
-                                        <button class="page-nav-btn" id="pdf-prev" disabled>
-                                            << /button>
-                                                <span id="page-indicator" class="page-indicator">1 / 1</span>
-                                                <button class="page-nav-btn" id="pdf-next" disabled>></button>
-                                    </div>
                                 </div>
                                 <div class="pdf-wrapper" id="pdf-wrapper">
                                     <!-- Canvas elements will be created dynamically by renderAllPdfPages() -->
