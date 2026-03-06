@@ -16,15 +16,15 @@ if (typeof formatBoundingBox === 'undefined' && typeof window.formatBoundingBox 
 function renderMarkdown(text) {
     if (!text) return '';
     const escapeHtml = window.escapeHtml || ((t) => t);
-    
+
     let html = text;
-    
+
     // Code blocks first (before escaping, to preserve code)
     html = html.replace(/```([\s\S]*?)```/g, (match, code) => {
         const escapedCode = escapeHtml(code.trim());
         return `<pre><code>${escapedCode}</code></pre>`;
     });
-    
+
     // Escape HTML to prevent XSS (but preserve code blocks)
     const codeBlockPlaceholders = [];
     html = html.replace(/<pre><code>([\s\S]*?)<\/code><\/pre>/g, (match, code) => {
@@ -32,54 +32,54 @@ function renderMarkdown(text) {
         codeBlockPlaceholders.push(code);
         return placeholder;
     });
-    
+
     html = escapeHtml(html);
-    
+
     // Restore code blocks
     codeBlockPlaceholders.forEach((code, idx) => {
         html = html.replace(`__CODE_BLOCK_${idx}__`, `<pre><code>${code}</code></pre>`);
     });
-    
+
     // Headers
     html = html.replace(/^### (.*$)/gim, '<h3>$1</h3>');
     html = html.replace(/^## (.*$)/gim, '<h2>$1</h2>');
     html = html.replace(/^# (.*$)/gim, '<h1>$1</h1>');
-    
+
     // Inline code (single backticks) - but not inside code blocks
     html = html.replace(/`([^`\n]+)`/g, '<code>$1</code>');
-    
+
     // Bold (**text**)
     html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
-    
+
     // Italic (*text*) - but not if it's part of **text**
     html = html.replace(/(?<!\*)\*([^*\n]+)\*(?!\*)/g, '<em>$1</em>');
-    
+
     // Links [text](url)
     html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
-    
+
     // Blockquotes (> text)
     html = html.replace(/^> (.+)$/gim, '<blockquote>$1</blockquote>');
-    
+
     // Horizontal rules
     html = html.replace(/^---$/gim, '<hr>');
-    
+
     // Process lists - split by lines first
     const lines = html.split('\n');
     const processedLines = [];
     let inList = false;
     let listType = null; // 'ul' or 'ol'
-    
+
     for (let i = 0; i < lines.length; i++) {
         const line = lines[i];
         // Match bullet points: - or * followed by space
         const unorderedMatch = line.match(/^[\*\-]\s+(.+)$/);
         // Match ordered lists: number. followed by space
         const orderedMatch = line.match(/^\d+\.\s+(.+)$/);
-        
+
         if (unorderedMatch || orderedMatch) {
             const itemText = unorderedMatch ? unorderedMatch[1] : orderedMatch[1];
             const currentListType = unorderedMatch ? 'ul' : 'ol';
-            
+
             if (!inList || listType !== currentListType) {
                 // Close previous list if exists
                 if (inList) {
@@ -109,14 +109,14 @@ function renderMarkdown(text) {
             }
         }
     }
-    
+
     // Close list if still open
     if (inList) {
         processedLines.push(`</${listType}>`);
     }
-    
+
     html = processedLines.join('\n');
-    
+
     // Paragraphs (double newlines) - but preserve block elements
     html = html.split(/\n\n+/).map(para => {
         para = para.trim();
@@ -127,98 +127,145 @@ function renderMarkdown(text) {
         }
         return `<p>${para}</p>`;
     }).join('\n');
-    
+
     // Single newlines within paragraphs become <br>
     html = html.replace(/(<p>[\s\S]*?)<\/p>/g, (match, content) => {
         return content.replace(/\n/g, '<br>') + '</p>';
     });
-    
+
     return html;
 }
 
-// Format table HTML for display - render as actual HTML table
-function formatTableHTML(tableHTML, textBeforeTable = '') {
+// Format table HTML for display - render as actual HTML table (Landing.AI style)
+// cellChunks: optional array of {id,text,page,box} for each cell — enables data-chunk-id stamping
+// parentChunkId: the parent table chunk's ID — used as fallback click target for all cells
+function formatTableHTML(tableHTML, textBeforeTable = '', cellChunks = [], parentChunkId = '') {
     if (!tableHTML) return '';
-    const escapeHtml = window.escapeHtml || ((t) => t);
-    
-    // Extract table from HTML string
-    const tableMatch = tableHTML.match(/<table[^>]*>[\s\S]*?<\/table>/i);
+
+    // ── Extract <table> element from the HTML string ──────────────────────────
+    const tableMatch = tableHTML.match(/<table[\s\S]*?<\/table>/i);
     if (!tableMatch) {
-        return escapeHtml(tableHTML);
+        const pipeFallback = markdownPipeTableToHtml(tableHTML);
+        return pipeFallback || (window.escapeHtml || (t => t))(tableHTML);
     }
-    
-    const tableString = tableMatch[0];
-    
-    // Create a temporary container to parse the table
+
     const tempDiv = document.createElement('div');
-    tempDiv.innerHTML = tableString;
-    
+    tempDiv.innerHTML = tableMatch[0];
     const table = tempDiv.querySelector('table');
-    if (!table) {
-        return escapeHtml(tableHTML);
-    }
-    
-    // Add styling classes
-    table.className = 'parsed-table';
-    
-    // Clean up cell IDs (keep structure but remove IDs for cleaner display)
-    table.querySelectorAll('td, th').forEach(cell => {
-        // Keep the cell content but remove ID attribute for display
-        const cellId = cell.getAttribute('id');
-        if (cellId) {
-            cell.removeAttribute('id');
-        }
-    });
-    
-    // Remove table ID for cleaner display
+    if (!table) return (window.escapeHtml || (t => t))(tableHTML);
+
+    // ── Apply Landing.AI-style class ──────────────────────────────────────────
+    table.className = 'extracted-table';
     table.removeAttribute('id');
-    
-    // Extract title from text before table or from patterns
-    let title = '';
-    
-    // First try to get title from textBeforeTable parameter
-    if (textBeforeTable) {
-        // Remove anchor tags and clean up
-        const cleaned = textBeforeTable.replace(/<a[^>]*>[\s\S]*?<\/a>/gi, '').trim();
-        // Look for patterns like "Student Copy", "Bank Copy", or other titles
-        const titleMatch = cleaned.match(/([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\s*(?:Copy|Table|Statement|Report)?)/i);
-        if (titleMatch && titleMatch[1].length < 50) {
-            title = titleMatch[1].trim();
-        } else if (cleaned.length > 0 && cleaned.length < 50 && !cleaned.includes('<')) {
-            // Use the cleaned text if it's short and doesn't contain HTML
-            title = cleaned;
+    table.removeAttribute('style');
+
+    // Build a fast lookup: cellId → cellChunk (from the backend detected_chunks).
+    // cellChunks for table_cell items have id = the short td id like "1-2".
+    const cellChunkById = new Map();
+    (cellChunks || []).forEach(c => { if (c.id) cellChunkById.set(String(c.id), c); });
+
+    // ── Process every cell: stamp data-chunk-id FIRST, then strip id/style/anchors ──
+    // CRITICAL ORDER: read id BEFORE removeAttribute so we can stamp data-chunk-id.
+    table.querySelectorAll('td, th').forEach(cell => {
+        const rawId = cell.getAttribute('id') || '';   // e.g. "1-2" or "1-e"
+
+        // Step 1: If this cell's id matches a cellChunk, stamp data-chunk-id now
+        if (rawId && cellChunkById.has(rawId)) {
+            const match = cellChunkById.get(rawId);
+            cell.dataset.chunkId = rawId;
+            if (typeof match.page === 'number') cell.dataset.page = match.page;
+            if (match.box) cell.dataset.box = JSON.stringify(match.box);
         }
+
+        // Step 2: Now safe to strip the HTML id/style (keeps DOM clean)
+        cell.removeAttribute('id');
+        cell.removeAttribute('style');
+
+        // Step 3: Unwrap every <a> inside this cell — keep its text, ditch the element
+        cell.querySelectorAll('a').forEach(anchor => {
+            const text = document.createTextNode(anchor.textContent);
+            anchor.replaceWith(text);
+        });
+    });
+
+    // ── Promote first row to <thead> if ADE didn't create one ────────────────
+    if (!table.querySelector('thead') && table.querySelector('tr')) {
+        const firstRow = table.querySelector('tr');
+        const thead = document.createElement('thead');
+        firstRow.parentNode.insertBefore(thead, firstRow);
+        thead.appendChild(firstRow);
+        firstRow.querySelectorAll('td').forEach(td => {
+            const th = document.createElement('th');
+            th.innerHTML = td.innerHTML;
+            // Carry over any data attributes we stamped above
+            if (td.dataset.chunkId) th.dataset.chunkId = td.dataset.chunkId;
+            if (td.dataset.page) th.dataset.page = td.dataset.page;
+            if (td.dataset.box) th.dataset.box = td.dataset.box;
+            td.replaceWith(th);
+        });
     }
-    
-    // If no title found, try patterns in the tableHTML itself
-    if (!title) {
-        const titlePatterns = [
-            /([A-Z][a-z]+\s+Copy)\s*<table/i,
-            /([A-Z][^<]+?)\s*<table/i
-        ];
-        
-        for (const pattern of titlePatterns) {
-            const titleMatch = tableHTML.match(pattern);
-            if (titleMatch) {
-                title = titleMatch[1].trim();
-                // Remove anchor tags from title
-                title = title.replace(/<a[^>]*>[\s\S]*?<\/a>/gi, '').trim();
-                if (title && title.length < 50) {
-                    break;
-                }
-            }
-        }
+
+    // ── Stamp ALL body tds with data-table-chunk-id (parent fallback) ─────────
+    // This lets the click handler highlight the whole table even when there are
+    // no table_cell sub-chunks (e.g. old documents that haven't been re-processed).
+    if (parentChunkId) {
+        table.querySelectorAll('tbody td').forEach(td => {
+            td.dataset.tableChunkId = parentChunkId; // fallback
+            td.style.cursor = 'pointer';
+            td.title = 'Click to highlight in document';
+        });
     }
-    
-    let result = '';
-    if (title) {
-        result += `<div class="table-title">${escapeHtml(title)}</div>`;
-    }
-    // Wrap table in scrollable container for mobile
-    result += `<div class="table-wrapper">${table.outerHTML}</div>`;
-    
-    return result;
+
+    return `<div class="extracted-table-wrapper">${table.outerHTML}</div>`;
 }
+
+
+/**
+ * Convert ADE pipe-separated markdown table into a clean HTML table.
+ * Handles the common format ADE returns:
+ *   | Header 1 | Header 2 |
+ *   |---|---|
+ *   | value 1  | value 2  |
+ *
+ * Returns null if the text is not a pipe-table.
+ */
+function markdownPipeTableToHtml(text) {
+    if (!text || !text.includes('|')) return null;
+    const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
+    // Filter out separator lines (---|---)
+    const dataLines = lines.filter(l => !/^[\s|:-]+$/.test(l));
+    if (dataLines.length < 2) return null;
+    // Must look like a markdown table: most lines start and end with |
+    const tableLines = dataLines.filter(l => l.startsWith('|') || l.endsWith('|'));
+    if (tableLines.length < 2) return null;
+
+    const parseRow = (line) =>
+        line.split('|').map(c => c.trim()).filter((c, i, a) => i > 0 && i < a.length - 1 || (i === 0 && c) || (i === a.length - 1 && c));
+
+    const [headerLine, ...rowLines] = tableLines;
+    const headers = parseRow(headerLine);
+    if (!headers.length) return null;
+
+    const headerHtml = headers.map(h => `<th>${h}</th>`).join('');
+    const rowsHtml = rowLines
+        .map(line => {
+            const cells = parseRow(line);
+            // Pad or trim to match header count
+            while (cells.length < headers.length) cells.push('');
+            return `<tr>${cells.slice(0, headers.length).map(c => `<td>${c}</td>`).join('')}</tr>`;
+        })
+        .join('');
+
+    return `<div class="extracted-table-wrapper">
+        <table class="extracted-table">
+            <thead><tr>${headerHtml}</tr></thead>
+            <tbody>${rowsHtml}</tbody>
+        </table>
+    </div>`;
+}
+
+// Make available globally
+window.markdownPipeTableToHtml = markdownPipeTableToHtml;
 
 // Format markdown like Landing.AI - structured with numbered sections and proper table rendering
 function formatMarkdownLikeLandingAI(docData) {
@@ -226,15 +273,15 @@ function formatMarkdownLikeLandingAI(docData) {
     const markdown = docData.document_markdown || '';
     const escapeHtml = window.escapeHtml || ((t) => t);
     const getNumberedLabel = window.getNumberedLabel || ((type, id) => type.toUpperCase());
-    const resetCounters = window.resetCounters || (() => {});
-    
+    const resetCounters = window.resetCounters || (() => { });
+
     if (!markdown) {
         return '<p class="doc-meta">No parsed data available</p>';
     }
-    
+
     // Reset counters for consistent numbering
     resetCounters();
-    
+
     // Pre-assign numbers to all chunks
     if (docData.detected_chunks && docData.detected_chunks.length > 0) {
         docData.detected_chunks.forEach(chunk => {
@@ -242,20 +289,22 @@ function formatMarkdownLikeLandingAI(docData) {
             getNumberedLabel(chunkType, chunk.id || '');
         });
     }
-    
+
     // If we have chunks, use them for better structure (like Landing.AI)
     if (docData.detected_chunks && docData.detected_chunks.length > 0) {
-        // Group chunks by type and render them
+        // Group chunks by type and render them. Skip table_cell — cells are inside table sections only.
         docData.detected_chunks.forEach((chunk, index) => {
+            const chunkType = chunk.type || 'text';
+            if (chunkType === 'table_cell') return; // Cells rendered only inside parent table; no separate section
+
             // Get markdown - prioritize markdown field, then text, then content
             const chunkMarkdown = chunk.markdown || chunk.text || chunk.content || '';
-            const chunkType = chunk.type || 'text';
-            
+
             if (!chunkMarkdown.trim()) return;
-            
+
             // Get numbered label for this chunk
             const numberedLabel = getNumberedLabel(chunkType.toLowerCase(), chunk.id || '');
-            
+
             // Determine section type from chunk type
             let sectionType = 'Text';
             if (chunkType === 'marginalia') {
@@ -267,44 +316,58 @@ function formatMarkdownLikeLandingAI(docData) {
             } else {
                 sectionType = 'Text';
             }
-            
+
             // Extract content - if it contains tables, render them properly
             let content = '';
-            
+
             // Check for tables in the markdown
             const tableRegex = /<table[^>]*>[\s\S]*?<\/table>/gi;
             const tables = chunkMarkdown.match(tableRegex) || [];
-            
+
             if (tables.length > 0) {
                 // Extract text before first table
                 let textBefore = chunkMarkdown.split('<table')[0].trim();
                 textBefore = textBefore.replace(/<a[^>]*>[\s\S]*?<\/a>/gi, '').trim();
-                
+
                 if (textBefore) {
                     content += `<div style="margin-bottom: 16px; font-weight: 600; color: var(--text);">${escapeHtml(textBefore).replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')}</div>`;
                 }
-                
-                // Render each table as proper HTML
+
+                // Render each table as proper HTML, passing table_cell chunks for data-chunk-id stamping
                 tables.forEach((tableHTML, idx) => {
                     if (idx > 0) {
                         content += '<div style="margin-top: 24px;"></div>';
                     }
-                    // Find the position of this table in the chunk markdown
                     const tableIndex = chunkMarkdown.indexOf(tableHTML);
                     const textBeforeTable = tableIndex > 0 ? chunkMarkdown.substring(0, tableIndex) : '';
-                    const formattedTable = formatTableHTML(tableHTML, textBeforeTable);
+
+                    // Get table_cell children of this table chunk to enable per-cell highlighting
+                    const parentTableId = chunk.id || chunk.chunk_id || '';
+                    const cellChunks = (docData.detected_chunks || [])
+                        .filter(c => c.type === 'table_cell' && c.parent_table_id === parentTableId);
+
+                    const formattedTable = formatTableHTML(tableHTML, textBeforeTable, cellChunks, parentTableId);
+
                     content += formattedTable;
                 });
+
             } else {
                 // For text/marginalia, clean up anchor tags and format
                 const cleaned = chunkMarkdown
                     .replace(/<a[^>]*>[\s\S]*?<\/a>/gi, '') // Remove anchor tags
                     .replace(/\n\n+/g, '\n\n') // Clean up multiple newlines
                     .trim();
-                // Support markdown bold
-                content = escapeHtml(cleaned).replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+
+                // Try to render as HTML table if it looks like a pipe-table
+                const pipeTableHtml = markdownPipeTableToHtml(cleaned);
+                if (pipeTableHtml) {
+                    content = pipeTableHtml;
+                } else {
+                    // Support markdown bold
+                    content = escapeHtml(cleaned).replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+                }
             }
-            
+
             if (content) {
                 // Ensure chunkId is a string and not empty - use a fallback if needed
                 let chunkId = chunk.id || chunk.chunk_id || '';
@@ -315,7 +378,7 @@ function formatMarkdownLikeLandingAI(docData) {
                 if (!chunkId) {
                     chunkId = `chunk-${sectionType.toLowerCase()}-${index}`;
                 }
-                
+
                 const chunkBox = chunk.grounding?.box || chunk.box || null;
                 const pageNumber = typeof chunk.page === 'number' ? chunk.page + 1 : null;
                 html += `
@@ -336,13 +399,13 @@ function formatMarkdownLikeLandingAI(docData) {
         // Split by anchor tags and process each section
         const sections = markdown.split(/(<a[^>]*>[\s\S]*?<\/a>)/gi);
         let sectionNumber = 1;
-        
+
         sections.forEach(section => {
             if (!section.trim()) return;
-            
+
             let sectionType = 'Text';
             let content = '';
-            
+
             // Check if it's an anchor tag (marginalia)
             if (section.match(/^<a[^>]*>/)) {
                 sectionType = 'Marginalia';
@@ -352,7 +415,9 @@ function formatMarkdownLikeLandingAI(docData) {
             } else if (section.includes('<table')) {
                 // It's a table
                 sectionType = 'Table';
-                content = formatTableHTML(section);
+                const tableChunkId = chunk.id || chunk.chunk_id || '';
+                content = formatTableHTML(section, '', [], tableChunkId);
+
             } else {
                 // Regular text
                 sectionType = 'Text';
@@ -363,12 +428,12 @@ function formatMarkdownLikeLandingAI(docData) {
                     .trim();
                 content = escapeHtml(cleaned);
             }
-            
+
             if (content) {
                 // Extract chunk ID from anchor tag if present
                 const chunkIdMatch = section.match(/<a[^>]*id=['"]([^'"]+)['"]/i);
                 const chunkId = chunkIdMatch ? chunkIdMatch[1] : '';
-                
+
                 html += `
                     <div class="markdown-section" data-chunk-id="${chunkId}" data-chunk-type="${sectionType.toLowerCase()}">
                         <div class="section-header">
@@ -384,14 +449,14 @@ function formatMarkdownLikeLandingAI(docData) {
             }
         });
     }
-    
+
     return html || '<p class="doc-meta">No structured content found</p>';
 }
 
 // Function to format JSON in a professional, structured way
 function formatStructuredJSON(docData) {
     if (!docData) return '{}';
-    
+
     // Build a clean, organized JSON structure
     const structured = {
         document: {
@@ -414,12 +479,12 @@ function formatStructuredJSON(docData) {
         chunks: (() => {
             const chunks = docData.detected_chunks || [];
             const byType = {};
-            
+
             const items = chunks.map(chunk => {
                 // Count by type
                 const type = chunk.type || 'unknown';
                 byType[type] = (byType[type] || 0) + 1;
-                
+
                 // Return clean chunk structure
                 return {
                     id: chunk.chunk_id || null,
@@ -435,7 +500,7 @@ function formatStructuredJSON(docData) {
                     }
                 };
             });
-            
+
             return {
                 total: chunks.length,
                 by_type: byType,
@@ -459,10 +524,10 @@ function formatStructuredJSON(docData) {
             processing_method: docData.processing_method || null
         }
     };
-    
+
     // Remove null values and empty objects for cleaner output
     const cleanStructured = removeEmptyValues(structured);
-    
+
     // Format with proper indentation and sorting
     return JSON.stringify(cleanStructured, (key, value) => {
         // Sort keys alphabetically for consistency
@@ -503,12 +568,12 @@ function removeEmptyValues(obj) {
 // Function to update document view
 function updateDocumentView(docData) {
     console.log('Updating document view:', docData);
-    
+
     // CRITICAL FIX: Don't overwrite view with incomplete data
     // Check if this is incomplete data (from list endpoint) vs complete data (from /documents/{id})
     const hasProcessedData = docData.document_markdown || docData.detected_chunks;
     const hasOnlyMetadata = docData.document_id && docData.filename && docData.status && !hasProcessedData;
-    
+
     if (hasOnlyMetadata) {
         console.log('Skipping updateDocumentView - incomplete data (metadata only, no processed data)');
         // Only update status-related UI elements, not the full document view
@@ -518,21 +583,21 @@ function updateDocumentView(docData) {
         }
         return; // Don't overwrite existing view with incomplete data
     }
-    
+
     const escapeHtml = window.escapeHtml || ((t) => t);
     const formatValue = window.formatValue || ((v, u) => v);
     const formatBoundingBox = window.formatBoundingBox || (() => '');
     const formatMarkdownLikeLandingAI = window.formatMarkdownLikeLandingAI || (() => '');
-    
+
     // Update parse panel with markdown/JSON
     const markdownView = document.getElementById('markdown-view');
     const jsonView = document.getElementById('json-content');
-    
+
     if (!markdownView || !jsonView) {
         console.error('Parse panel elements not found!', { markdownView, jsonView });
         return;
     }
-    
+
     // Check if file or processed data is missing
     if (docData.file_missing || docData.processed_data_missing) {
         let errorMsg = '';
@@ -543,7 +608,7 @@ function updateDocumentView(docData) {
         } else if (docData.processed_data_missing) {
             errorMsg = '⚠️ Processed data was deleted from storage. The document may need to be reprocessed.';
         }
-        
+
         markdownView.innerHTML = `<div class="status-banner error" style="margin: 20px 0;">
             <p style="font-weight: 500; margin-bottom: 8px;">${errorMsg}</p>
             ${docData.error_message ? `<p style="font-size: 0.9rem; opacity: 0.9;">${docData.error_message}</p>` : ''}
@@ -552,28 +617,33 @@ function updateDocumentView(docData) {
         console.log('Document files missing from storage');
         return; // Don't continue with normal processing
     }
-    
+
     if (docData.document_markdown) {
+        // Store globally so click handlers can reference it for page navigation
+        window.currentDocData = docData;
+
         // Format markdown like Landing.AI - structured with numbered sections
         const formattedMarkdown = formatMarkdownLikeLandingAI(docData);
         markdownView.innerHTML = formattedMarkdown;
-        
-        // Add click handlers to markdown sections for interactive region detection
+
+        // Add click handlers to markdown sections AND individual table cells
         if (typeof setupMarkdownInteractivity === 'function') {
             setupMarkdownInteractivity();
         }
-        
+
         // Show JSON in professional, structured format
         const structuredJson = formatStructuredJSON(docData);
         jsonView.textContent = structuredJson;
-        
+
         console.log('Parse panel updated with markdown and JSON');
+        // Also populate the Extract tab from the same data
+        if (typeof populateExtractTab === 'function') populateExtractTab(docData);
     } else {
         markdownView.innerHTML = '<p class="doc-meta">No parsed data available yet. Document is still processing...</p>';
         jsonView.textContent = '';
         console.log('Document markdown not available yet');
     }
-    
+
     // Update document name in header bar
     const selectedFileElement = document.getElementById('selected-file-name');
     if (selectedFileElement) {
@@ -583,31 +653,31 @@ function updateDocumentView(docData) {
             selectedFileElement.textContent = 'No document selected';
         }
     }
-    
+
     // Store full document data to prevent overwriting with incomplete data
     if (hasProcessedData && docData.document_id) {
         if (!window.lastFullDocumentData) window.lastFullDocumentData = {};
         window.lastFullDocumentData[docData.document_id] = docData;
     }
-    
+
     // Store full document data to prevent overwriting with incomplete data
     if (hasProcessedData && docData.document_id) {
         if (!window.lastFullDocumentData) window.lastFullDocumentData = {};
         window.lastFullDocumentData[docData.document_id] = docData;
     }
-    
+
     // Load PDF if available
     if (docData.status === 'complete') {
         if (typeof renderDocumentPreview === 'function') {
             renderDocumentPreview(docData);
         }
     }
-    
+
     // Legacy document view (for backward compatibility)
     const documentView = document.getElementById('document-view');
     if (documentView) {
         let html = '';
-        
+
         if (docData.metadata) {
             html += `
                 <div class="metadata-grid">
@@ -626,7 +696,7 @@ function updateDocumentView(docData) {
                 </div>
             `;
         }
-        
+
         if (docData.summary) {
             html += `
                 <div class="insight-block">
@@ -635,14 +705,14 @@ function updateDocumentView(docData) {
                 </div>
             `;
         }
-        
+
         if (docData.key_metrics && docData.key_metrics.length > 0) {
             html += `
                 <div class="metrics-section">
                     <h3>Key Metrics</h3>
                     <div class="metrics-grid">
             `;
-            
+
             docData.key_metrics.forEach(metric => {
                 html += `
                     <div class="metric-pill">
@@ -651,7 +721,7 @@ function updateDocumentView(docData) {
                     </div>
                 `;
             });
-            
+
             html += `
                     </div>
                 </div>
@@ -663,7 +733,7 @@ function updateDocumentView(docData) {
                 html += renderTablesSection(docData.tables);
             }
         }
-        
+
         documentView.innerHTML = html;
         if (typeof bindTableInteractions === 'function') {
             bindTableInteractions(docData.tables || []);
@@ -682,155 +752,83 @@ function highlightChunk(chunkId) {
 }
 
 function highlightMarkdownSection(chunkId) {
-    // Remove all highlights
+    // Clear all existing highlights
     document.querySelectorAll('.markdown-section').forEach(section => {
-        section.classList.remove('highlighted');
+        section.classList.remove('highlighted', 'highlighted--text', 'highlighted--table', 'highlighted--figure');
     });
-    
-    // Highlight the section with matching chunk ID
-    if (chunkId) {
-        const section = document.querySelector(`.markdown-section[data-chunk-id="${chunkId}"]`);
-        if (section) {
-            section.classList.add('highlighted');
-        }
+
+    if (!chunkId) return;
+
+    const section = document.querySelector(`.markdown-section[data-chunk-id="${chunkId}"]`);
+    if (section) {
+        // Determine the color class from data-chunk-type
+        const chunkType = (section.dataset.chunkType || 'text').toLowerCase();
+        const colorClass = (['table', 'table_cell'].includes(chunkType))
+            ? 'highlighted--table'
+            : (['figure', 'chart', 'graph'].includes(chunkType))
+                ? 'highlighted--figure'
+                : 'highlighted--text';
+        section.classList.add('highlighted', colorClass);
     }
 }
 
 function scrollToMarkdownSection(chunkId) {
-    if (!chunkId) {
-        console.warn('scrollToMarkdownSection: No chunkId provided');
-        return;
-    }
-    
-    // First, make sure we're on the Parse tab (not Extract or Chat)
+    if (!chunkId) return;
+
+    // Make sure we are on the Parse tab
     const parseTab = document.querySelector('.main-tab[data-tab="parse"]');
-    
     if (parseTab && !parseTab.classList.contains('active')) {
-        // Switch to Parse tab
         parseTab.click();
-        // Wait for tab switch to complete
-        setTimeout(() => {
-            scrollToMarkdownSection(chunkId);
-        }, 100);
+        setTimeout(() => scrollToMarkdownSection(chunkId), 120);
         return;
     }
-    
-    // Get the parse-content container (right side panel)
-    const parseContent = document.getElementById('parse-content');
-    if (!parseContent) {
-        console.error('scrollToMarkdownSection: parse-content container not found');
-        return;
-    }
-    
-    // Make sure we're viewing markdown (not JSON)
+
+    // Ensure markdown view is active (not JSON)
     const markdownView = document.getElementById('markdown-view');
     const jsonView = document.getElementById('json-view');
-    
-    if (!markdownView) {
-        console.error('scrollToMarkdownSection: markdown-view not found');
-        return;
-    }
-    
-    const needsViewSwitch = markdownView.style.display === 'none' || 
-                            (jsonView && jsonView.style.display !== 'none');
-    
-    if (needsViewSwitch) {
-        // Switch to markdown view
+    if (markdownView && (markdownView.style.display === 'none' || (jsonView && jsonView.style.display !== 'none'))) {
         markdownView.style.display = 'block';
         if (jsonView) jsonView.style.display = 'none';
-        // Update active tab
-        document.querySelectorAll('.parse-view-tab').forEach(tab => {
-            tab.classList.remove('active');
-            if (tab.dataset.view === 'markdown') {
-                tab.classList.add('active');
-            }
+        document.querySelectorAll('.parse-view-tab').forEach(t => {
+            t.classList.toggle('active', t.dataset.view === 'markdown');
         });
+        setTimeout(() => scrollToMarkdownSection(chunkId), 80);
+        return;
     }
-    
-    // Function to perform the scroll
-    const performScroll = () => {
-        // Find the markdown section
-        let section = document.querySelector(`.markdown-section[data-chunk-id="${chunkId}"]`);
-        
-        // If not found, try finding by exact match or partial match
-        if (!section) {
-            const allSections = document.querySelectorAll('.markdown-section');
-            for (let s of allSections) {
-                const sectionChunkId = s.getAttribute('data-chunk-id');
-                if (sectionChunkId === chunkId || sectionChunkId === String(chunkId)) {
-                    section = s;
-                    break;
-                }
-            }
-        }
-        
-        if (!section) {
-            console.warn('scrollToMarkdownSection: Section not found for chunkId:', chunkId);
-            return;
-        }
-        
-        // Calculate position relative to parse-content container
-        const sectionRect = section.getBoundingClientRect();
-        const containerRect = parseContent.getBoundingClientRect();
-        const sectionOffsetTop = sectionRect.top - containerRect.top + parseContent.scrollTop;
-        const markdownViewOffsetTop = markdownView.offsetTop || 0;
-        const sectionRelativeTop = sectionOffsetTop - markdownViewOffsetTop;
-        
-        // Calculate target scroll position to center the section
-        const containerHeight = parseContent.clientHeight;
-        const sectionHeight = section.offsetHeight || section.getBoundingClientRect().height;
-        const targetScroll = sectionRelativeTop - (containerHeight / 2) + (sectionHeight / 2);
-        
-        // Clamp to valid scroll range
-        const maxScroll = Math.max(0, parseContent.scrollHeight - parseContent.clientHeight);
-        const finalScroll = Math.max(0, Math.min(targetScroll, maxScroll));
-        
-        // Scroll ONLY the right panel (parse-content), NOT the whole page
-        parseContent.scrollTo({
-            top: finalScroll,
-            behavior: 'smooth'
-        });
-        
-        // Also ensure the section is visible
-        setTimeout(() => {
-            try {
-                section.scrollIntoView({ 
-                    behavior: 'smooth', 
-                    block: 'center',
-                    inline: 'nearest'
-                });
-            } catch (e) {
-                console.warn('scrollIntoView failed, using scrollTo only');
-            }
-        }, 50);
-        
-        // Highlight the section
-        highlightMarkdownSection(chunkId);
-        
-        // Remove highlight after 3 seconds
-        setTimeout(() => {
-            const section = document.querySelector(`.markdown-section[data-chunk-id="${chunkId}"]`);
-            if (section) {
-                section.classList.remove('highlighted');
-            }
-        }, 3000);
-    };
-    
-    // If we switched views or tabs, wait a bit for DOM to update, otherwise scroll immediately
-    if (needsViewSwitch) {
-        setTimeout(performScroll, 100);
-    } else {
-        setTimeout(performScroll, 50);
-    }
+
+    const parseContent = document.getElementById('parse-content');
+    if (!parseContent) return;
+
+    const section = document.querySelector(`.markdown-section[data-chunk-id="${chunkId}"]`);
+    if (!section) return;
+
+    // ── Scroll ONLY inside parse-content, never touch the window ──
+    // Get position of section relative to parse-content scrollable area
+    const containerTop = parseContent.getBoundingClientRect().top;
+    const sectionTop = section.getBoundingClientRect().top;
+    const offset = sectionTop - containerTop + parseContent.scrollTop;
+    const center = offset - (parseContent.clientHeight / 2) + (section.offsetHeight / 2);
+
+    parseContent.scrollTo({ top: Math.max(0, center), behavior: 'smooth' });
+
+    // Highlight with type color
+    highlightMarkdownSection(chunkId);
+
+    // Auto-clear highlight after 3 s
+    setTimeout(() => highlightMarkdownSection(null), 3000);
 }
+
 
 function setupMarkdownInteractivity() {
     // Add click handlers to all markdown sections
     document.querySelectorAll('.markdown-section').forEach(section => {
         const chunkId = section.dataset.chunkId;
         if (!chunkId) return;
-        
-        section.addEventListener('click', () => {
+
+        section.addEventListener('click', (e) => {
+            // Don't double-fire if a cell was clicked — the cell handler runs first
+            if (e.target.closest('td[data-chunk-id], td[data-table-chunk-id]')) return;
+
             // Highlight PDF region (left side - no scrolling)
             if (typeof highlightPdfRegion === 'function') {
                 highlightPdfRegion(chunkId);
@@ -840,14 +838,15 @@ function setupMarkdownInteractivity() {
             // Scroll within parse-content container only (right side)
             scrollToMarkdownSection(chunkId);
         });
-        
-        section.addEventListener('mouseenter', () => {
+
+        section.addEventListener('mouseenter', (e) => {
+            if (e.target.closest('td[data-chunk-id]')) return;
             if (typeof highlightPdfRegion === 'function') {
                 highlightPdfRegion(chunkId);
             }
             highlightMarkdownSection(chunkId);
         });
-        
+
         section.addEventListener('mouseleave', () => {
             if (typeof highlightPdfRegion === 'function') {
                 highlightPdfRegion(null);
@@ -855,12 +854,104 @@ function setupMarkdownInteractivity() {
             highlightMarkdownSection(null);
         });
     });
+
+    // ── Cell-level click handler: any td inside an extracted table ────────────
+    // Works in two modes:
+    //   Precise: td has data-chunk-id (requires re-upload with new processor)
+    //            → highlights the exact cell bbox on the PDF
+    //   Fallback: td has data-table-chunk-id (always set on all body tds)
+    //            → highlights the whole table bbox on the PDF
+    const markdownView = document.getElementById('markdown-view');
+    if (markdownView && !markdownView._cellClickAttached) {
+        markdownView._cellClickAttached = true;
+
+        markdownView.addEventListener('click', (e) => {
+            // Find the clicked td — either mode works
+            const td = e.target.closest('td[data-chunk-id], td[data-table-chunk-id]');
+            if (!td) return;
+            e.stopPropagation();
+
+            const cellChunkId = td.dataset.chunkId;       // precise cell bbox ID
+            const tableChunkId = td.dataset.tableChunkId;  // parent table bbox ID
+            const cellPage = (td.dataset.page !== undefined && td.dataset.page !== '')
+                ? parseInt(td.dataset.page, 10) : null;
+
+            // 1. Visual feedback on the clicked cell in the markdown table
+            document.querySelectorAll('.extracted-table td.cell-highlighted').forEach(c => {
+                c.classList.remove('cell-highlighted');
+            });
+            td.classList.add('cell-highlighted');
+
+            // 2. Smart PDF highlight with fallback:
+            //    Try cell-level first. If no overlay box matched (cell bbox not in detected_chunks),
+            //    fall back to the parent table bbox — this is the Landing.AI behaviour.
+            const tryHighlight = (id) => {
+                if (!id || typeof highlightPdfRegion !== 'function') return false;
+                highlightPdfRegion(id);
+                // Check synchronously whether an overlay box was activated
+                return !!document.querySelector('.overlay-box.active');
+            };
+
+            let highlighted = false;
+            if (cellChunkId) highlighted = tryHighlight(cellChunkId);
+            if (!highlighted && tableChunkId) highlighted = tryHighlight(tableChunkId);
+
+            // 3. Scroll the PDF left-panel to show the highlighted overlay
+            const activeBox = document.querySelector('.overlay-box.active');
+            if (activeBox) {
+                const pageContainer = activeBox.closest('.pdf-page-container');
+                const pdfWrapper = document.getElementById('pdf-wrapper');
+                if (pageContainer && pdfWrapper) {
+                    // Scroll pdf-wrapper container (not the whole window)
+                    const wrapperTop = pdfWrapper.getBoundingClientRect().top;
+                    const pageTop = pageContainer.getBoundingClientRect().top;
+                    const offset = pageTop - wrapperTop + pdfWrapper.scrollTop - 20;
+                    pdfWrapper.scrollTo({ top: Math.max(0, offset), behavior: 'smooth' });
+                } else if (pageContainer) {
+                    pageContainer.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+                }
+            } else if (typeof cellPage === 'number' && !isNaN(cellPage)) {
+                // Last resort: scroll to the page that contains the cell
+                const pageContainer = document.querySelector(
+                    `.pdf-page-container[data-page="${cellPage + 1}"]`
+                );
+                if (pageContainer) {
+                    pageContainer.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                }
+            }
+
+            // 4. Also highlight the parent markdown-section header
+            const parentSection = td.closest('.markdown-section');
+            if (parentSection) {
+                highlightMarkdownSection(parentSection.dataset.chunkId || '');
+            }
+        });
+
+        // Hover: preview highlight, release on mouse-out
+        markdownView.addEventListener('mouseover', (e) => {
+            const td = e.target.closest('td[data-chunk-id], td[data-table-chunk-id]');
+            if (!td) return;
+            const effectiveId = td.dataset.chunkId || td.dataset.tableChunkId;
+            if (effectiveId && typeof highlightPdfRegion === 'function') {
+                highlightPdfRegion(effectiveId);
+            }
+        });
+
+        markdownView.addEventListener('mouseleave', () => {
+            if (typeof highlightPdfRegion === 'function') {
+                highlightPdfRegion(null);
+            }
+        });
+    }
 }
+
+
+
 
 function renderTablesSection(tables) {
     if (!tables || tables.length === 0) return '';
     const escapeHtml = window.escapeHtml || ((t) => t);
-    
+
     return `
         <div class="tables-section">
             <div class="tables-header">
@@ -884,7 +975,7 @@ function renderTableCard(table, index) {
 
     if (rows.length > 0 || header.length > 0) {
         const columns = header.length > 0 ? header : (rows.length > 0 ? Object.keys(rows[0] || {}) : []);
-        
+
         const isNumeric = (val) => {
             if (!val || typeof val !== 'string') return false;
             const cleaned = val.replace(/[,\s$€£¥₹]/g, '');
@@ -903,27 +994,27 @@ function renderTableCard(table, index) {
                     ` : ''}
                     <tbody>
                         ${rows.map((row, rowIdx) => {
-                            const cellValues = columns.map((col, colIdx) => {
-                                let cellValue = row[col] || row[colIdx] || '';
-                                if (!cellValue && typeof row === 'object') {
-                                    const rowValues = Object.values(row);
-                                    if (colIdx < rowValues.length) {
-                                        cellValue = rowValues[colIdx];
-                                    }
-                                }
-                                return cellValue || '';
-                            });
-                            
-                            return `
+            const cellValues = columns.map((col, colIdx) => {
+                let cellValue = row[col] || row[colIdx] || '';
+                if (!cellValue && typeof row === 'object') {
+                    const rowValues = Object.values(row);
+                    if (colIdx < rowValues.length) {
+                        cellValue = rowValues[colIdx];
+                    }
+                }
+                return cellValue || '';
+            });
+
+            return `
                                 <tr>
                                     ${cellValues.map((cellValue, colIdx) => {
-                                        const cellText = String(cellValue || '');
-                                        const alignClass = isNumeric(cellText) ? 'style="text-align: right;"' : '';
-                                        return `<td ${alignClass}>${escapeHtml(cellText)}</td>`;
-                                    }).join('')}
+                const cellText = String(cellValue || '');
+                const alignClass = isNumeric(cellText) ? 'style="text-align: right;"' : '';
+                return `<td ${alignClass}>${escapeHtml(cellText)}</td>`;
+            }).join('')}
                                 </tr>
                             `;
-                        }).join('')}
+        }).join('')}
                     </tbody>
                 </table>
             </div>
@@ -965,48 +1056,38 @@ function bindTableInteractions(tables) {
 function renderCitationChips(citations) {
     if (!citations || citations.length === 0) return '';
     const escapeHtml = window.escapeHtml || ((t) => t);
-    
-    // Group citations by visual reference to show duplicates (Landing.AI style)
-    const grouped = {};
-    citations.forEach(citation => {
-        // Format like Landing.AI: "Page 1. table" or "8. text"
-        let visualRef = '';
-        if (citation.page !== undefined && citation.page !== null) {
-            const pageNum = parseInt(citation.page) + 1; // Convert 0-based to 1-based
-            const chunkType = (citation.type || 'text').toLowerCase();
-            visualRef = `Page ${pageNum}. ${chunkType}`;
-        } else if (citation.chunk_id) {
-            // Fallback: use chunk ID if page not available
-            const chunkType = (citation.type || 'text').toLowerCase();
-            visualRef = `${citation.chunk_id}. ${chunkType}`;
-        } else {
-            visualRef = citation.visual_ref || `${citation.type || 'text'}`;
-        }
-        
-        const key = visualRef;
-        if (!grouped[key]) {
-            grouped[key] = [];
-        }
-        grouped[key].push(citation);
-    });
-    
-    // Create citation items (show all duplicates like Landing.AI)
-    const citationItems = Object.entries(grouped).flatMap(([visualRef, refs]) => {
-        // Show each reference separately (like Landing.AI shows duplicates)
-        return refs.map(citation => {
-            return `
-                <button
-                    class="visual-reference-item"
-                    data-citation-chunk="${citation.chunk_id || ''}"
-                    data-page="${citation.page !== undefined ? citation.page : ''}"
-                    title="${escapeHtml(citation.title || 'Reference')}"
-                >
-                    ${escapeHtml(visualRef)} →
-                </button>
-            `;
-        });
+
+    function formatRef(citation) {
+        if (citation.visual_ref) return citation.visual_ref;
+        const page = citation.page;
+        const pageNum = (page !== undefined && page !== null) ? parseInt(page) + 1 : 1;
+        let typeLabel = (citation.type || 'text').toLowerCase();
+        if (typeLabel === 'table_cell') typeLabel = 'table, cell';
+        const val = citation.value || '';
+        const valPart = val ? ` | ${val}` : '';
+        return `Page ${pageNum}.\n${typeLabel}${valPart}`;
+    }
+
+    const citationItems = citations.map(citation => {
+        const ref = formatRef(citation);
+        const lines = ref.split('\n');
+        const topLine = escapeHtml(lines[0] || '');
+        const bottomLine = escapeHtml(lines.slice(1).join(' ') || '');
+
+        return `
+            <button
+                class="visual-reference-item"
+                data-citation-chunk="${citation.chunk_id || ''}"
+                data-page="${citation.page !== undefined ? citation.page : ''}"
+                title="${escapeHtml(citation.title || 'Reference')}"
+            >
+                <span class="vr-page">${topLine}</span>
+                <span class="vr-detail">${bottomLine}</span>
+                <span class="vr-arrow">&rarr;</span>
+            </button>
+        `;
     }).join('');
-    
+
     return `
         <div class="visual-references-section">
             <div class="visual-references-title">Visual reference for the answer:</div>
@@ -1031,3 +1112,90 @@ window.scrollToMarkdownSection = scrollToMarkdownSection;
 window.setupMarkdownInteractivity = setupMarkdownInteractivity;
 window.renderCitationChips = renderCitationChips;
 
+window.populateExtractTab = populateExtractTab;
+
+// ════════════════════════════════════════════════════════════════
+// EXTRACT TAB — render key fields from detected_chunks + metadata
+// ════════════════════════════════════════════════════════════════
+function populateExtractTab(docData) {
+    const container = document.getElementById('extract-content');
+    if (!container) return;
+    if (!docData) {
+        container.innerHTML = '<div class="extract-empty"><p>No document data available.</p></div>';
+        return;
+    }
+    const groups = [];
+    const seenVals = new Set();
+
+    // ── Group 1: Document Info (metadata) ──
+    const meta = docData.metadata || {};
+    const metaFields = [];
+    if (meta.company_name && meta.company_name !== 'Unknown' && meta.company_name !== 'Unknown Company')
+        metaFields.push({ key: 'Company / Entity', val: meta.company_name });
+    if (meta.document_date && meta.document_date !== 'Unknown Date')
+        metaFields.push({ key: 'Document Date', val: meta.document_date });
+    if (meta.document_type && meta.document_type !== 'Unknown' && meta.document_type !== 'Document')
+        metaFields.push({ key: 'Document Type', val: meta.document_type });
+    if (docData.filename)
+        metaFields.push({ key: 'Filename', val: docData.filename });
+    if (metaFields.length > 0) groups.push({ title: 'Document Info', fields: metaFields });
+
+    // ── Group 2: Key Amounts from backend key_metrics (source of truth) ──
+    const keyMetrics = docData.key_metrics || [];
+    const amountFields = [];
+    keyMetrics.forEach(m => {
+        if (!m || !m.name) return;
+        const valStr = m.value != null ? String(m.value) : '';
+        if (!valStr) return;
+        const numVal = parseFloat(valStr.replace(/[^0-9.\-]/g, ''));
+        if (!isNaN(numVal) && numVal > 1e7) return;
+        const display = typeof m.value === 'number' ? m.value.toLocaleString() : valStr;
+        if (!seenVals.has(m.name + display)) {
+            seenVals.add(m.name + display);
+            seenVals.add(display);
+            amountFields.push({ key: m.name, val: display });
+        }
+    });
+    if (amountFields.length > 0) groups.push({ title: 'Key Amounts', fields: amountFields });
+
+    // ── Group 3: Supplementary chunk-based extraction (secondary) ──
+    const chunks = docData.detected_chunks || [];
+    const extractedFields = [];
+    const currencyRe = /(?:PKR|USD|EUR|GBP|Rs\.?|Rs|\$|EUR)\s*[,\d]+(?:\.\d{1,2})?/g;
+    const dateRe = /\b\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}\b|\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+\d{1,2},?\s+\d{4}\b/gi;
+    const totalLabelRe = /total|amount due|net|subtotal|tax|balance/i;
+
+    chunks.filter(c => c.type === 'marginalia').slice(0, 3).forEach(c => {
+        const text = (c.text || '').trim().slice(0, 80);
+        if (text && !seenVals.has(text)) { seenVals.add(text); extractedFields.push({ key: 'Header / Label', val: text }); }
+    });
+    chunks.filter(c => ['table', 'table_cell'].includes(c.type)).forEach(c => {
+        const text = c.text || '';
+        if (!totalLabelRe.test(text)) return;
+        (text.match(currencyRe) || []).slice(0, 1).forEach(v => {
+            const cleaned = v.replace(/[^0-9.]/g, '');
+            const num = parseFloat(cleaned);
+            if (isNaN(num) || num > 1e7) return;
+            if (!seenVals.has(v)) { seenVals.add(v); extractedFields.push({ key: 'Total / Amount', val: v }); }
+        });
+    });
+    chunks.filter(c => ['text', 'table', 'table_cell'].includes(c.type)).forEach(c => {
+        const text = c.text || '';
+        (text.match(dateRe) || []).slice(0, 1).forEach(v => {
+            if (!seenVals.has(v)) { seenVals.add(v); extractedFields.push({ key: 'Date', val: v }); }
+        });
+    });
+    if (extractedFields.length > 0) groups.push({ title: 'Extracted Values', fields: extractedFields.slice(0, 15) });
+
+    if (groups.length === 0) {
+        container.innerHTML = '<div class="extract-empty"><p>No extractable fields found in this document</p></div>';
+        return;
+    }
+    container.innerHTML = groups.map(g => `
+        <div class="extract-group">
+            <div class="extract-group-title">${g.title}</div>
+            <div class="extract-fields">
+                ${g.fields.map(f => `<div class="extract-field"><div class="extract-field-key">${f.key}</div><div class="extract-field-val">${f.val}</div></div>`).join('')}
+            </div>
+        </div>`).join('');
+}

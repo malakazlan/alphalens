@@ -11,6 +11,13 @@ import tempfile
 import traceback
 
 try:
+    import docx  # python-docx
+    DOCX_AVAILABLE = True
+except ImportError:
+    docx = None
+    DOCX_AVAILABLE = False
+
+try:
     from landingai_ade import LandingAIADE
     ADE_SDK_AVAILABLE = True
 except ImportError:
@@ -110,10 +117,11 @@ def serialize_ade_object(obj: Any) -> Dict[str, Any]:
 
 def process_document(file_path: str) -> Dict[str, Any]:
     """
-    Process a financial document using Landing.AI ADE
+    Process a financial document using Landing.AI ADE.
+    Supports: PDF, DOCX/DOC, HTML/HTM, PNG/JPG/JPEG/TIFF (images).
     
     Args:
-        file_path: Path to the uploaded PDF file
+        file_path: Path to the uploaded file
         
     Returns:
         A dictionary with the processed document data
@@ -121,8 +129,16 @@ def process_document(file_path: str) -> Dict[str, Any]:
     print(f"Processing document: {file_path}")
     
     try:
-        # Step 1: Extract text from PDF for basic processing
-        pdf_text = extract_text_from_pdf(file_path)
+        # Step 1: Extract raw text based on file type (used for fallback / vector store)
+        file_ext = Path(file_path).suffix.lower()
+        if file_ext in ('.docx', '.doc'):
+            pdf_text = extract_text_from_docx(file_path)
+        elif file_ext in ('.html', '.htm'):
+            pdf_text = extract_text_from_html(file_path)
+        elif file_ext in ('.png', '.jpg', '.jpeg', '.tiff', '.tif', '.webp'):
+            pdf_text = ""  # ADE handles image files directly — no pre-extraction needed
+        else:
+            pdf_text = extract_text_from_pdf(file_path)
         
         # Step 2: Call Landing.AI ADE Parse API - this is the main extraction
         # Landing.AI ADE Parse dynamically detects document structure (tables, text, metadata)
@@ -139,59 +155,98 @@ def process_document(file_path: str) -> Dict[str, Any]:
         # This extracts whatever structure Landing.AI detected (tables, chunks, metadata)
         financial_data = map_to_financial_schema(ade_response, pdf_text)
         
-        # Step 5: Create vector store for document (async/background for speed)
-        document_id = os.path.basename(file_path).split('.')[0]
-        vector_store_path = f"./data/vector_stores/{document_id}"
-        
-        # Create vector embeddings from the document (optimized - save data first, embeddings later)
-        # Save financial data immediately for quick access
-        os.makedirs(vector_store_path, exist_ok=True)
-        financial_data_path = os.path.join(vector_store_path, "financial_data.json")
-        with open(financial_data_path, "w") as f:
-            json.dump(financial_data, f)
-        
-        # Create vector store in background (non-blocking for faster response)
-        try:
-            create_vector_store(
-                financial_data, 
-                pdf_text, 
-                vector_store_path
-            )
-        except Exception as e:
-            print(f"Warning: Vector store creation failed (non-critical): {str(e)}")
-            # Continue without vector store - document is still usable
-        
-        # Generate a simple summary (quick version)
-        summary = generate_summary(financial_data, pdf_text)
-        financial_data["summary"] = summary
-        
-        # Save the raw document for future reference
-        financial_data["original_text"] = pdf_text
-        
-        # Store the parsed markdown for better context
-        if "markdown" in ade_response:
-            financial_data["markdown"] = ade_response["markdown"]
-        
-        # Preserve detected chunks for UI visualization (keep original markdown for tables)
+        # ── Build detected_chunks + cell sub-chunks BEFORE vector store ──
+        # This must happen before create_vector_store so cell-level vectors
+        # are included in the embeddings.
+        ade_grounding: dict = {}
+        raw_grounding = ade_response.get("grounding")
+        if isinstance(raw_grounding, dict):
+            ade_grounding = raw_grounding
+
+        _TD_RE = re.compile(r'<td\s+id=["\']([^"\']+)["\']>(.*?)</td>', re.DOTALL | re.IGNORECASE)
+
         if ade_response.get("chunks"):
             financial_data["detected_chunks"] = []
             for chunk in ade_response["chunks"]:
-                # Keep original markdown for proper table rendering
+                chunk_id   = chunk.get("id") or ""
+                chunk_type = chunk.get("type") or "text"
+                chunk_grounding = chunk.get("grounding", {}) or {}
+                chunk_page = chunk_grounding.get("page")
+                chunk_box  = chunk_grounding.get("box")
+
                 raw_markdown = chunk.get("markdown") or chunk.get("text") or chunk.get("content") or ""
                 cleaned_text = normalize_chunk_text(raw_markdown)
-                
+
                 financial_data["detected_chunks"].append({
-                    "id": chunk.get("id"),
-                    "type": chunk.get("type"),
-                    "text": cleaned_text,
-                    "markdown": raw_markdown,  # Keep original markdown for table rendering
-                    "page": chunk.get("grounding", {}).get("page"),
-                    "box": chunk.get("grounding", {}).get("box")
+                    "id":       chunk_id,
+                    "type":     chunk_type,
+                    "text":     cleaned_text,
+                    "markdown": raw_markdown,
+                    "page":     chunk_page,
+                    "box":      chunk_box
                 })
-        
+
+                if chunk_type == "table" and ade_grounding:
+                    for td_id, td_raw_text in _TD_RE.findall(raw_markdown):
+                        cell_text = re.sub(r'<[^>]+>', '', td_raw_text).strip()
+                        if not cell_text:
+                            continue
+
+                        g_entry = ade_grounding.get(td_id)
+                        if not g_entry:
+                            continue
+
+                        cell_box  = g_entry.get("box")
+                        cell_page = g_entry.get("page", chunk_page)
+                        pos       = g_entry.get("position", {}) or {}
+                        row_idx   = pos.get("row", 0)
+                        col_idx   = pos.get("col", 0)
+
+                        financial_data["detected_chunks"].append({
+                            "id":              td_id,
+                            "type":            "table_cell",
+                            "parent_table_id": chunk_id,
+                            "text":            cell_text,
+                            "markdown":        cell_text,
+                            "page":            cell_page,
+                            "box":             cell_box,
+                            "row":             row_idx,
+                            "col":             col_idx,
+                        })
+
+                elif chunk_type in ("figure", "chart", "graph"):
+                    financial_data["detected_chunks"][-1].update({
+                        "subtype":    chunk.get("subtype", chunk_type),
+                        "description": chunk.get("description", ""),
+                        "chart_data": chunk.get("data", {}),
+                    })
+
+        # Generate summary and store supplementary data
+        summary = generate_summary(financial_data, pdf_text)
+        financial_data["summary"] = summary
+        financial_data["original_text"] = pdf_text
+        if "markdown" in ade_response:
+            financial_data["markdown"] = ade_response["markdown"]
+        if ade_grounding:
+            financial_data["ade_grounding"] = ade_grounding
+
+        # ── Now create vector store (detected_chunks are available) ──
+        document_id = os.path.basename(file_path).split('.')[0]
+        vector_store_path = f"./data/vector_stores/{document_id}"
+        os.makedirs(vector_store_path, exist_ok=True)
+
+        financial_data_path = os.path.join(vector_store_path, "financial_data.json")
+        with open(financial_data_path, "w") as f:
+            json.dump(financial_data, f)
+
+        try:
+            create_vector_store(financial_data, pdf_text, vector_store_path)
+        except Exception as e:
+            print(f"Warning: Vector store creation failed (non-critical): {str(e)}")
+
         # Save debug info
         save_debug_info(document_id, ade_response, {}, financial_data)
-        
+
         return financial_data
     except Exception as e:
         print(f"Error in process_document: {str(e)}")
@@ -212,9 +267,7 @@ def process_document(file_path: str) -> Dict[str, Any]:
         }
 
 def extract_text_from_pdf(file_path: str) -> str:
-    """
-    Extract text from a PDF file
-    """
+    """Extract plain text from a PDF file using PyPDF2."""
     text = ""
     try:
         with open(file_path, "rb") as file:
@@ -224,9 +277,46 @@ def extract_text_from_pdf(file_path: str) -> str:
                 text += page.extract_text() + "\n"
     except Exception as e:
         print(f"Error extracting text from PDF: {str(e)}")
-        text = "Error extracting text from PDF."
-    
+        text = ""
     return text
+
+
+def extract_text_from_docx(file_path: str) -> str:
+    """Extract plain text from a DOCX/DOC file using python-docx."""
+    if not DOCX_AVAILABLE:
+        print("python-docx not installed. Run: pip install python-docx")
+        return ""
+    try:
+        document = docx.Document(file_path)
+        paragraphs = [p.text for p in document.paragraphs if p.text.strip()]
+        # Also extract table cell text
+        for table in document.tables:
+            for row in table.rows:
+                row_text = "  |  ".join(cell.text.strip() for cell in row.cells if cell.text.strip())
+                if row_text:
+                    paragraphs.append(row_text)
+        return "\n".join(paragraphs)
+    except Exception as e:
+        print(f"Error extracting text from DOCX: {str(e)}")
+        return ""
+
+
+def extract_text_from_html(file_path: str) -> str:
+    """Extract plain text from an HTML file using BeautifulSoup."""
+    if not BS4_AVAILABLE:
+        print("BeautifulSoup not installed. Run: pip install beautifulsoup4")
+        return ""
+    try:
+        with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+            html_content = f.read()
+        soup = BeautifulSoup(html_content, "html.parser")
+        # Remove script/style noise
+        for tag in soup(["script", "style", "head", "meta"]):
+            tag.decompose()
+        return soup.get_text(separator="\n", strip=True)
+    except Exception as e:
+        print(f"Error extracting text from HTML: {str(e)}")
+        return ""
 
 def call_landing_ai_ade_parse(file_path: str) -> Dict[str, Any]:
     """
@@ -643,19 +733,57 @@ def safely_get_text(item: Any) -> str:
     return ""
 
 
+_CURRENCY_PATTERNS = [
+    (re.compile(r'\b(?:pak\s*rs\.?|pkr|pakistani\s*rupee)', re.I), "PKR"),
+    (re.compile(r'\b(?:inr|indian\s*rupee|₹)', re.I), "INR"),
+    (re.compile(r'\b(?:eur|euro|€)', re.I), "EUR"),
+    (re.compile(r'\b(?:gbp|pound\s*sterling|£)', re.I), "GBP"),
+    (re.compile(r'\b(?:jpy|japanese\s*yen|¥)', re.I), "JPY"),
+    (re.compile(r'\b(?:aed|dirham)', re.I), "AED"),
+    (re.compile(r'\b(?:sar|saudi\s*riyal)', re.I), "SAR"),
+    (re.compile(r'\b(?:rs\.?\s)', re.I), "PKR"),
+    (re.compile(r'\$|usd|us\s*dollar', re.I), "USD"),
+]
+
+
+def detect_currency(financial_data: Dict[str, Any]) -> str:
+    """Detect the document's currency from table headers, chunk text, and metadata."""
+    search_texts: List[str] = []
+    for tbl in financial_data.get("tables", []):
+        search_texts.extend(tbl.get("header") or [])
+        search_texts.append(tbl.get("title") or "")
+    for chunk in financial_data.get("detected_chunks", []):
+        ctype = chunk.get("type", "")
+        if ctype in ("table", "marginalia", "text"):
+            search_texts.append((chunk.get("text") or "")[:500])
+
+    combined = " ".join(search_texts)
+    for pattern, code in _CURRENCY_PATTERNS:
+        if pattern.search(combined):
+            return code
+    return "USD"
+
+
 def append_metric(
     financial_data: Dict[str, Any],
     name: str,
     value: Optional[float],
-    unit: str = "USD",
+    unit: str = "",
     period: str = "Current Period",
     source: Optional[str] = None,
 ) -> None:
-    """Append a metric if it does not already exist."""
+    """Append a metric if it does not already exist.
+
+    If *unit* is empty or 'USD' (legacy default), we auto-detect from the
+    document's table headers / chunk text so the LLM formats the currency
+    correctly.
+    """
     if value is None:
         return
     if any(metric.get("name", "").lower() == name.lower() for metric in financial_data.get("key_metrics", [])):
         return
+    if not unit or unit == "USD":
+        unit = detect_currency(financial_data)
     metric_entry = {
         "name": name,
         "value": value,
@@ -958,32 +1086,92 @@ def map_to_financial_schema(ade_response: Dict[str, Any], pdf_text: str) -> Dict
         if "chunks" in ade_response:
             chunks = ade_response["chunks"]
             
-            # First pass: Look for metadata in text chunks
+            # ── First pass: extract metadata from chunks (context-aware) ──
+            # Helper: reject lines that look like disclaimers / sentences
+            def _looks_like_entity(text: str) -> bool:
+                t = text.strip()
+                if not t or len(t) < 3 or len(t) > 80:
+                    return False
+                t_lower = t.lower()
+                if t_lower.startswith(("the ", "each ", "this ", "these ", "as noted")):
+                    return False
+                if " include " in t_lower or " intended " in t_lower or " prepared " in t_lower:
+                    return False
+                if t.count(" ") > 12:
+                    return False
+                return True
+
+            # Helper: strip IDs / reference numbers from an entity string
+            _ID_STRIP_RE = re.compile(r'\s*[\*]+\s*\d+\s*[\*]*')
+            def _clean_entity(text: str) -> str:
+                cleaned = _ID_STRIP_RE.sub('', text).strip(' *')
+                return cleaned if len(cleaned) >= 3 else text.strip()
+
+            # Pass 1a: company from marginalia (title-like short phrases)
+            _TITLE_SEP_RE = re.compile(r'\s*[-–—:]\s*')
+            _GENERIC_DOC_LABELS = {"challan", "challan form", "invoice", "receipt",
+                                   "bill", "fee bill", "statement", "report",
+                                   "form", "voucher", "slip", "memo", "notice"}
             for chunk in chunks:
-                # Always safely get the text
+                if financial_data["metadata"]["company_name"] != "Unknown Company":
+                    break
                 chunk_text = safely_get_text(chunk)
                 chunk_type = chunk.get("type", "")
-                
-                # Process only if we have valid text
-                if chunk_text:
+                if not chunk_text:
+                    continue
+                if chunk_type == "marginalia":
+                    for line in chunk_text.split('\n'):
+                        line = line.strip()
+                        if not _looks_like_entity(line):
+                            continue
+                        parts = _TITLE_SEP_RE.split(line)
+                        non_generic = [p.strip() for p in parts
+                                       if p.strip().lower() not in _GENERIC_DOC_LABELS
+                                       and len(p.strip()) >= 3
+                                       and _looks_like_entity(p.strip())
+                                       and not re.match(r'^[\d/\s:,\.aAmMpP]+$', p.strip())]
+                        if non_generic:
+                            financial_data["metadata"]["company_name"] = _clean_entity(non_generic[0])
+                            break
+                        for part in parts:
+                            part = part.strip()
+                            if len(part) >= 3 and _looks_like_entity(part):
+                                if not re.match(r'^[\d/\s:,\.aAmMpP]+$', part):
+                                    financial_data["metadata"]["company_name"] = _clean_entity(part)
+                                    break
+                        if financial_data["metadata"]["company_name"] != "Unknown Company":
+                            break
+
+            # Pass 1b: company from text/table chunks (US-style suffix, tightened)
+            if financial_data["metadata"]["company_name"] == "Unknown Company":
+                for chunk in chunks:
+                    chunk_text = safely_get_text(chunk)
+                    if not chunk_text:
+                        continue
                     chunk_text_lower = chunk_text.lower()
-                    
-                    # Look for company name
-                    if financial_data["metadata"]["company_name"] == "Unknown Company":
-                        if "company" in chunk_text_lower or "corporation" in chunk_text_lower or "inc" in chunk_text_lower:
-                            for line in chunk_text.split('\n'):
-                                line = line.strip()
-                                if len(line) > 5 and any(term in line.lower() for term in ["inc", "corp", "ltd", "llc"]):
-                                    financial_data["metadata"]["company_name"] = line
-                                    break
-                    
-                    # Look for document date
-                    if financial_data["metadata"]["document_date"] == "Unknown Date":
-                        if "date" in chunk_text_lower or "period" in chunk_text_lower or "quarter" in chunk_text_lower:
-                            for line in chunk_text.split('\n'):
-                                if ("quarter" in line.lower() or "period" in line.lower()) and ("ended" in line.lower() or "ending" in line.lower()):
-                                    financial_data["metadata"]["document_date"] = line
-                                    break
+                    if any(term in chunk_text_lower for term in ["company", "corporation", "inc", "bank", "limited"]):
+                        for line in chunk_text.split('\n'):
+                            line = line.strip()
+                            if _looks_like_entity(line) and any(t in line.lower() for t in ["inc", "corp", "ltd", "llc", "bank", "limited", "university"]):
+                                financial_data["metadata"]["company_name"] = _clean_entity(line)
+                                break
+                    if financial_data["metadata"]["company_name"] != "Unknown Company":
+                        break
+
+            # Pass 1c: date from chunks (quarter/period/ended style)
+            for chunk in chunks:
+                if financial_data["metadata"]["document_date"] != "Unknown Date":
+                    break
+                chunk_text = safely_get_text(chunk)
+                if not chunk_text:
+                    continue
+                chunk_text_lower = chunk_text.lower()
+                if "date" in chunk_text_lower or "period" in chunk_text_lower or "quarter" in chunk_text_lower:
+                    for line in chunk_text.split('\n'):
+                        ll = line.lower()
+                        if ("quarter" in ll or "period" in ll) and ("ended" in ll or "ending" in ll):
+                            financial_data["metadata"]["document_date"] = line.strip()
+                            break
             
             # Second pass: Process ALL chunks from Landing.AI (tables, text, charts, etc.)
             # Landing.AI detects structure across the entire document - we capture everything
@@ -1100,6 +1288,52 @@ def map_to_financial_schema(ade_response: Dict[str, Any], pdf_text: str) -> Dict
                     print(f"  Table {idx}: '{table['title']}' - {len(table.get('header', []))} cols, {len(table.get('rows', []))} rows")
             else:
                 print("⚠ Warning: No tables detected in document. This might indicate a parsing issue.")
+
+            # ── Post-table pass: derive company from first table row if still unknown ──
+            if financial_data["metadata"]["company_name"] == "Unknown Company" and financial_data["tables"]:
+                for tbl in financial_data["tables"]:
+                    rows = tbl.get("rows") or []
+                    header = tbl.get("header") or []
+                    if not rows:
+                        continue
+                    first_row = rows[0]
+                    candidate = ""
+                    if header:
+                        candidate = str(first_row.get(header[0], "")).strip()
+                        if not candidate and len(header) > 1:
+                            candidate = str(first_row.get(header[1], "")).strip()
+                    else:
+                        candidate = str(next(iter(first_row.values()), "")).strip()
+                    candidate = _clean_entity(candidate)
+                    if candidate and _looks_like_entity(candidate) and not re.match(r'^[\d\s,\.\-]+$', candidate):
+                        financial_data["metadata"]["company_name"] = candidate
+                        break
+
+            # ── Post-table pass: derive document date from table rows ──
+            _DATE_LABELS = {"due date", "date", "document date", "as at", "period ended",
+                            "year ended", "report date", "statement date", "effective date"}
+            if financial_data["metadata"]["document_date"] == "Unknown Date" and financial_data["tables"]:
+                for tbl in financial_data["tables"]:
+                    rows = tbl.get("rows") or []
+                    header = tbl.get("header") or []
+                    for row in rows:
+                        label = ""
+                        if header:
+                            label = str(row.get(header[0], "")).strip()
+                        else:
+                            label = str(next(iter(row.values()), "")).strip()
+                        if label.lower().rstrip(":") in _DATE_LABELS:
+                            value = ""
+                            if header and len(header) > 1:
+                                value = str(row.get(header[1], "")).strip()
+                            else:
+                                vals = list(row.values())
+                                value = str(vals[1]).strip() if len(vals) > 1 else ""
+                            if value and len(value) > 4:
+                                financial_data["metadata"]["document_date"] = value
+                                break
+                    if financial_data["metadata"]["document_date"] != "Unknown Date":
+                        break
         
         # If no financial statements were found through tables, try regex extraction
         if not financial_data["income_statement"] and not financial_data["balance_sheet"]:
@@ -1127,31 +1361,79 @@ def map_to_financial_schema(ade_response: Dict[str, Any], pdf_text: str) -> Dict
                 append_metric(financial_data, "Operating Cash Flow", operating_cash)
                 financial_data["cash_flow"]["operating_cash_flow"] = operating_cash
         
-        # For fee documents - try to extract fee amounts
-        fee_amount = extract_metric(pdf_text, ["fee", "total fee", "amount", "total amount", "payment"])
-        if fee_amount and not any(metric["name"].lower() == "fee amount" for metric in financial_data["key_metrics"]):
-            append_metric(financial_data, "Fee Amount", fee_amount)
+        # ── Fee amount fallback: only if no table-derived total exists ──
+        _has_total_metric = any(
+            "total" in m["name"].lower() and ("amount" in m["name"].lower() or "due" in m["name"].lower())
+            for m in financial_data["key_metrics"]
+        )
+        if not _has_total_metric:
+            fee_amount = extract_metric(
+                pdf_text,
+                ["total fee", "total amount", "total due", "amount due", "total amount due"],
+                require_total_context=True
+            )
+            if fee_amount:
+                try:
+                    numeric_val = float(str(fee_amount).replace(",", "").replace("Rs.", "").replace("Rs", "").strip())
+                    if numeric_val < 1e7:
+                        if not any(m["name"].lower() == "fee amount" for m in financial_data["key_metrics"]):
+                            append_metric(financial_data, "Fee Amount", fee_amount)
+                except (ValueError, TypeError):
+                    pass
         
-        # Infer document type from content if not already identified
-        # This adapts to whatever Landing.AI found in the document
+        # ── Infer document type: chunk-based first, then pdf_lower fallback ──
         if financial_data["metadata"]["document_type"] == "Document":
-            pdf_lower = pdf_text.lower()
-            if "invoice" in pdf_lower:
-                financial_data["metadata"]["document_type"] = "Invoice"
-            elif "fee" in pdf_lower or "payment" in pdf_lower:
-                financial_data["metadata"]["document_type"] = "Fee Document"
-            elif "statement" in pdf_lower and "financial" in pdf_lower:
-                financial_data["metadata"]["document_type"] = "Financial Statement"
-            elif "balance sheet" in pdf_lower:
-                financial_data["metadata"]["document_type"] = "Balance Sheet"
-            elif "income statement" in pdf_lower or "profit and loss" in pdf_lower:
-                financial_data["metadata"]["document_type"] = "Income Statement"
-            elif "cash flow" in pdf_lower:
-                financial_data["metadata"]["document_type"] = "Cash Flow Statement"
-            elif "receipt" in pdf_lower:
-                financial_data["metadata"]["document_type"] = "Receipt"
-            elif "report" in pdf_lower:
-                financial_data["metadata"]["document_type"] = "Financial Report"
+            _doc_type_resolved = False
+
+            # Priority 1: check chunk content for high-confidence phrases
+            if "chunks" in ade_response:
+                for chunk in ade_response["chunks"]:
+                    ct = safely_get_text(chunk)
+                    if not ct:
+                        continue
+                    cl = ct.lower()
+                    if "financial statement" in cl or "model financial statements" in cl:
+                        financial_data["metadata"]["document_type"] = "Financial Statement"
+                        _doc_type_resolved = True
+                        break
+                    if "balance sheet" in cl or "statement of financial position" in cl:
+                        financial_data["metadata"]["document_type"] = "Balance Sheet"
+                        _doc_type_resolved = True
+                        break
+                    if "income statement" in cl or "profit and loss" in cl or "statement of operations" in cl:
+                        financial_data["metadata"]["document_type"] = "Income Statement"
+                        _doc_type_resolved = True
+                        break
+                    if "cash flow" in cl or "statement of cash flows" in cl:
+                        financial_data["metadata"]["document_type"] = "Cash Flow Statement"
+                        _doc_type_resolved = True
+                        break
+                    if "invoice" in cl and chunk.get("type", "") in ("text", "marginalia"):
+                        financial_data["metadata"]["document_type"] = "Invoice"
+                        _doc_type_resolved = True
+                        break
+
+            # Priority 2: pdf_text fallback (financial-statements checked first)
+            if not _doc_type_resolved:
+                pdf_lower = pdf_text.lower()
+                if "financial statement" in pdf_lower or ("statement" in pdf_lower and "financial" in pdf_lower):
+                    financial_data["metadata"]["document_type"] = "Financial Statement"
+                elif "balance sheet" in pdf_lower:
+                    financial_data["metadata"]["document_type"] = "Balance Sheet"
+                elif "income statement" in pdf_lower or "profit and loss" in pdf_lower:
+                    financial_data["metadata"]["document_type"] = "Income Statement"
+                elif "cash flow" in pdf_lower:
+                    financial_data["metadata"]["document_type"] = "Cash Flow Statement"
+                elif "invoice" in pdf_lower:
+                    financial_data["metadata"]["document_type"] = "Invoice"
+                elif "receipt" in pdf_lower:
+                    financial_data["metadata"]["document_type"] = "Receipt"
+                elif "challan" in pdf_lower or ("fee" in pdf_lower and "payment" in pdf_lower):
+                    financial_data["metadata"]["document_type"] = "Fee Document"
+                elif "fee" in pdf_lower or "payment" in pdf_lower:
+                    financial_data["metadata"]["document_type"] = "Fee Document"
+                elif "report" in pdf_lower:
+                    financial_data["metadata"]["document_type"] = "Financial Report"
         
         return financial_data
     
@@ -1305,24 +1587,27 @@ def extract_number_from_line(line: str) -> Optional[float]:
     except Exception:
         return None
 
-def extract_metric(text: str, keywords: List[str]) -> Optional[float]:
+def extract_metric(text: str, keywords: List[str], *, require_total_context: bool = False) -> Optional[float]:
     """
-    Extract a financial metric from text based on keywords
-    
-    This is a very simplified approach for MVP purposes.
-    In production, you would use more sophisticated techniques.
+    Extract a financial metric from text based on keywords.
+
+    When *require_total_context* is True the matching line must also contain
+    'total' or 'due' (or equivalent context words).  This prevents picking up
+    stray numbers (like late-fee rates or student IDs) when scanning pdf_text.
     """
+    _CONTEXT_WORDS = {"total", "due", "net", "payable", "balance"}
     try:
         lines = text.lower().split('\n')
-        
+
         for line in lines:
             for keyword in keywords:
                 if keyword in line:
-                    # Try to extract number from the line
+                    if require_total_context and not any(cw in line for cw in _CONTEXT_WORDS):
+                        continue
                     number = extract_number_from_line(line)
                     if number is not None:
                         return number
-        
+
         return None
     except Exception:
         return None

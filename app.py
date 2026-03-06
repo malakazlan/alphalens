@@ -259,12 +259,28 @@ async def upload_document(
     try:
         # Read file content
         file_content = await file.read()
-        
+
         if not file_content:
             raise HTTPException(status_code=400, detail="File is empty")
-        
-        # Check for duplicate document (same filename for same user)
+
+        # Validate file type — only supported formats are accepted
+        ALLOWED_EXTENSIONS = {
+            '.pdf', '.docx', '.doc',
+            '.html', '.htm',
+            '.png', '.jpg', '.jpeg', '.tiff', '.tif', '.webp'
+        }
         filename = file.filename or "document.pdf"
+        file_ext = os.path.splitext(filename)[1].lower()
+        if file_ext not in ALLOWED_EXTENSIONS:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Unsupported file type '{file_ext}'. "
+                    "Alpha Lens accepts: PDF, DOCX, HTML, PNG, JPG, TIFF."
+                )
+            )
+
+
         existing_doc = database_service.get_document_by_filename(user_id, filename, access_token=access_token)
         if existing_doc:
             raise HTTPException(
@@ -509,7 +525,48 @@ def process_document_background(document_id: str, user_id: str, file_path: str, 
             except:
                 pass
 
+@app.delete("/documents/{document_id}")
+async def delete_document(document_id: str, request: Request, current_user: dict = Depends(get_current_user)):
+    """Delete a document and its stored files for the current user"""
+    user_id = current_user["id"]
+
+    # Get access token for RLS
+    auth_header = request.headers.get("Authorization")
+    access_token = auth_header.split(" ")[1] if (auth_header and auth_header.startswith("Bearer ")) else request.cookies.get("access_token")
+
+    # Verify document exists and belongs to this user
+    document = database_service.get_document(document_id, user_id, access_token=access_token)
+    if not document:
+        raise HTTPException(status_code=404, detail="Document not found or access denied")
+
+    # Delete the file from storage (best-effort — don't fail if already gone)
+    file_path = document.get("file_path")
+    if file_path:
+        try:
+            storage_service.delete_file(file_path)
+            print(f"✓ Deleted storage file: {file_path}")
+        except Exception as e:
+            print(f"⚠️ Could not delete storage file {file_path}: {e}")
+
+    # Delete processed data from storage (best-effort)
+    processed_path = document.get("processed_data_path")
+    if processed_path:
+        try:
+            storage_service.delete_file(processed_path)
+        except Exception:
+            pass
+
+    # Delete the database record
+    deleted = database_service.delete_document(document_id, user_id)
+    if not deleted:
+        raise HTTPException(status_code=500, detail="Failed to delete document from database")
+
+    print(f"✓ Document {document_id} deleted by user {user_id}")
+    return {"success": True, "document_id": document_id, "message": "Document deleted successfully"}
+
+
 @app.get("/documents/{document_id}/status")
+
 async def get_document_status(document_id: str, request: Request, current_user: dict = Depends(get_current_user)):
     """Get the processing status of a document"""
     user_id = current_user["id"]
@@ -557,20 +614,16 @@ async def get_document(document_id: str, request: Request, current_user: dict = 
         "upload_time": document.get("upload_time"),
     }
     
-    # Check if file exists in storage
+    # DO NOT download the file just to check it exists.
+    # That caused 329KB full-file download on every GET /documents/{id} poll,
+    # creating infinite-loop logs + browser PDF tab opening.
     file_path = document.get("file_path")
-    file_missing = False
-    if file_path:
-        try:
-            # Try to check if file exists (this will fail if file is missing)
-            storage_service.download_file(file_path, access_token=access_token)
-        except Exception as e:
-            print(f"⚠️ File not found in storage: {file_path} - {str(e)}")
-            file_missing = True
-            # Mark document as having missing file
-            doc_info["file_missing"] = True
-            doc_info["error_message"] = "File was deleted from storage"
-    
+    file_missing = not bool(file_path)
+    if file_missing:
+        doc_info["file_missing"] = True
+        doc_info["error_message"] = "File path not recorded in database"
+
+
     # Load processed data from storage if available
     processed_data_path = document.get("processed_data_path")
     if processed_data_path:

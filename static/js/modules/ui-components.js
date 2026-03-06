@@ -40,7 +40,7 @@ function saveAnalyzerState() {
         selectedDocumentId: typeof window.getSelectedDocumentId === 'function' ? window.getSelectedDocumentId() : null
     };
     sessionStorage.setItem('analyzerState', JSON.stringify(state));
-    
+
     // Also update URL parameters - always update if we have a document
     const urlParams = {};
     if (state.selectedDocumentId) {
@@ -87,7 +87,7 @@ function showAnalyzerInitialState() {
     const resultState = document.getElementById('analyzer-result-state');
     const analyzerContainer = document.getElementById('analyzer-section');
     const pageContainer = document.querySelector('.page');
-    
+
     // CRITICAL: Ensure analyzer section is visible and has proper styling
     if (analyzerContainer) {
         analyzerContainer.style.display = 'block';
@@ -99,7 +99,7 @@ function showAnalyzerInitialState() {
         analyzerContainer.style.height = 'auto';
         analyzerContainer.style.overflow = 'visible';
     }
-    
+
     // CRITICAL: Completely hide result state - it has absolute positioning that covers everything
     if (resultState) {
         resultState.style.setProperty('display', 'none', 'important');
@@ -114,7 +114,7 @@ function showAnalyzerInitialState() {
             dashboard.style.setProperty('display', 'none', 'important');
         }
     }
-    
+
     // Completely hide loading state
     if (loadingState) {
         loadingState.style.setProperty('display', 'none', 'important');
@@ -123,7 +123,7 @@ function showAnalyzerInitialState() {
         loadingState.style.setProperty('pointer-events', 'none', 'important');
         loadingState.style.setProperty('z-index', '-1', 'important');
     }
-    
+
     // CRITICAL: Show initial state with all properties - make it clearly visible
     if (initialState) {
         initialState.style.setProperty('display', 'block', 'important');
@@ -137,7 +137,7 @@ function showAnalyzerInitialState() {
         initialState.style.setProperty('min-height', 'auto', 'important');
         initialState.style.setProperty('background', 'transparent', 'important');
     }
-    
+
     // Remove classes to restore padding
     if (analyzerContainer) {
         analyzerContainer.classList.remove('result-state-active');
@@ -145,10 +145,10 @@ function showAnalyzerInitialState() {
     if (pageContainer) {
         pageContainer.classList.remove('analyzer-result-active');
     }
-    
+
     currentAnalyzerState = 'initial';
     saveAnalyzerState();
-    
+
     // Force a reflow to ensure styles are applied
     if (initialState) {
         initialState.offsetHeight; // Trigger reflow
@@ -160,14 +160,14 @@ function showAnalyzerLoadingState() {
     const loadingState = document.getElementById('analyzer-loading-state');
     const resultState = document.getElementById('analyzer-result-state');
     const analyzerContainer = document.getElementById('analyzer-section');
-    
+
     // Hide initial state
     if (initialState) {
         initialState.style.display = 'none';
         initialState.style.visibility = 'hidden';
         initialState.style.opacity = '0';
     }
-    
+
     // Hide result state completely
     if (resultState) {
         resultState.style.display = 'none';
@@ -180,7 +180,7 @@ function showAnalyzerLoadingState() {
             dashboard.style.display = 'none';
         }
     }
-    
+
     // Show loading state
     if (loadingState) {
         // Chrome-compatible display fix
@@ -191,12 +191,12 @@ function showAnalyzerLoadingState() {
         // Force reflow for Chrome
         loadingState.offsetHeight;
     }
-    
+
     // Remove result state classes from container
     if (analyzerContainer) {
         analyzerContainer.classList.remove('result-state-active');
     }
-    
+
     currentAnalyzerState = 'loading';
     saveAnalyzerState();
 }
@@ -207,14 +207,14 @@ function showAnalyzerResultState() {
     const resultState = document.getElementById('analyzer-result-state');
     const analyzerContainer = document.getElementById('analyzer-section');
     const pageContainer = document.querySelector('.page');
-    
+
     // Hide initial state
     if (initialState) {
         initialState.style.display = 'none';
         initialState.style.visibility = 'hidden';
         initialState.style.opacity = '0';
     }
-    
+
     // Hide loading state completely - use !important to override any CSS
     if (loadingState) {
         loadingState.style.setProperty('display', 'none', 'important');
@@ -223,7 +223,7 @@ function showAnalyzerResultState() {
         loadingState.style.setProperty('pointer-events', 'none', 'important');
         loadingState.style.setProperty('z-index', '-1', 'important');
     }
-    
+
     // Show result state
     if (resultState) {
         resultState.style.display = 'block';
@@ -232,14 +232,14 @@ function showAnalyzerResultState() {
         resultState.style.pointerEvents = 'auto';
         resultState.style.zIndex = '1';
     }
-    
+
     // Add classes to remove padding
     if (analyzerContainer) analyzerContainer.classList.add('result-state-active');
     if (pageContainer) pageContainer.classList.add('analyzer-result-active');
-    
+
     currentAnalyzerState = 'result';
     saveAnalyzerState();
-    
+
     // Update URL with active tab if available
     const activeTab = document.querySelector('.main-tab.active');
     if (activeTab) {
@@ -248,14 +248,14 @@ function showAnalyzerResultState() {
             updateUrlParams({ tab: tabName });
         }
     }
-    
+
     // Initialize sidebar and resizer when result state is shown
     setTimeout(() => {
         initializeSidebar();
         if (typeof initializeResizer === 'function') {
             initializeResizer();
         }
-        
+
         // Force sidebar to be visible
         const dashboard = resultState.querySelector('.dashboard');
         const sidebar = document.getElementById('workspace-sidebar');
@@ -286,12 +286,12 @@ function initializeSidebar() {
     const resultState = document.getElementById('analyzer-result-state');
     const dashboard = resultState ? resultState.querySelector('.dashboard') : null;
     const sidebar = document.getElementById('workspace-sidebar');
-    
+
     if (!sidebarToggle || !sidebarCloseBtn || !dashboard || !sidebar) {
         console.warn('Sidebar elements not found');
         return;
     }
-    
+
     // Load saved sidebar state from localStorage
     // Default to open (visible) unless explicitly saved as collapsed
     const savedState = localStorage.getItem('sidebar-collapsed');
@@ -302,24 +302,24 @@ function initializeSidebar() {
         dashboard.classList.remove('sidebar-collapsed');
         localStorage.setItem('sidebar-collapsed', 'false');
     }
-    
+
     // Open sidebar
     function openSidebar() {
         dashboard.classList.remove('sidebar-collapsed');
         localStorage.setItem('sidebar-collapsed', 'false');
         updateSidebarToggleVisibility();
     }
-    
+
     // Close sidebar
     function closeSidebar() {
         dashboard.classList.add('sidebar-collapsed');
         localStorage.setItem('sidebar-collapsed', 'true');
         updateSidebarToggleVisibility();
     }
-    
+
     sidebarToggle.addEventListener('click', openSidebar);
     sidebarCloseBtn.addEventListener('click', closeSidebar);
-    
+
     // Update toggle button visibility
     updateSidebarToggleVisibility();
 }
@@ -329,9 +329,9 @@ function updateSidebarToggleVisibility() {
     const sidebarToggle = document.getElementById('sidebar-toggle');
     const resultState = document.getElementById('analyzer-result-state');
     const dashboard = resultState ? resultState.querySelector('.dashboard') : null;
-    
+
     if (!sidebarToggle || !dashboard) return;
-    
+
     if (dashboard.classList.contains('sidebar-collapsed')) {
         sidebarToggle.style.display = 'flex';
     } else {
@@ -345,19 +345,20 @@ function initializeResizer() {
     const leftPanel = document.querySelector('.document-viewer-section');
     const rightPanel = document.querySelector('.parse-panel-section');
     const container = document.querySelector('.main-content-area');
-    
+
     if (!resizer || !leftPanel || !rightPanel || !container) return;
-    
+
     let isResizing = false;
     let startX = 0;
     let startLeftWidth = 0;
-    
+    let _resizePending = null; // debounce handle
+
     // Set initial widths - 50/50 split
     const containerWidth = container.offsetWidth || container.clientWidth;
     const initialLeftWidth = containerWidth / 2;
     leftPanel.style.flex = `0 0 ${initialLeftWidth}px`;
     rightPanel.style.flex = '1 1 auto';
-    
+
     // Load saved width from localStorage
     const savedLeftWidth = localStorage.getItem('left-panel-width');
     if (savedLeftWidth) {
@@ -367,7 +368,7 @@ function initializeResizer() {
             rightPanel.style.flex = '1 1 auto';
         }
     }
-    
+
     resizer.addEventListener('mousedown', (e) => {
         isResizing = true;
         startX = e.clientX;
@@ -378,100 +379,82 @@ function initializeResizer() {
         e.preventDefault();
         e.stopPropagation();
     });
-    
+
     const handleMouseMove = (e) => {
         if (!isResizing) return;
-        
+
         const deltaX = e.clientX - startX;
         const containerWidth = container.offsetWidth;
         const resizerWidth = resizer.offsetWidth;
-        
+
         // Calculate new left panel width
         let newLeftWidth = startLeftWidth + deltaX;
-        
+
         // Minimum and maximum widths
         const minWidth = 250;
         const maxWidth = containerWidth - 250 - resizerWidth;
-        
+
         // Clamp the width
         newLeftWidth = Math.max(minWidth, Math.min(maxWidth, newLeftWidth));
-        
-        // Apply new width - left panel gets fixed width, right panel flexes
+
+        // Apply new width instantly (NO re-render during drag — just update flex)
         leftPanel.style.flex = `0 0 ${newLeftWidth}px`;
         rightPanel.style.flex = '1 1 auto';
         rightPanel.style.minWidth = '250px';
-        
+
         // Save to localStorage
         localStorage.setItem('left-panel-width', newLeftWidth.toString());
-        
-        // Trigger resize to redraw PDF/image
-        handlePanelResize();
+        // Don't call handlePanelResize here — wait for mouseup
     };
-    
-    // Function to handle panel resize and redraw content
+
+    // Function to handle panel resize and redraw content ONCE after drag ends
     function handlePanelResize() {
-        // Use requestAnimationFrame to debounce resize
-        if (handlePanelResize.timeout) {
-            cancelAnimationFrame(handlePanelResize.timeout);
-        }
-        handlePanelResize.timeout = requestAnimationFrame(() => {
+        // Clear any pending re-render
+        if (_resizePending) clearTimeout(_resizePending);
+        _resizePending = setTimeout(() => {
+            _resizePending = null;
+            // Skip if currently dragging
+            if (isResizing) return;
             // Redraw PDF if it exists
+            const pdfWrapper = document.getElementById('pdf-wrapper');
             if (typeof pdfDocInstance !== 'undefined' && pdfDocInstance) {
-                // Check if we're using multi-page view
-                const pdfWrapper = document.getElementById('pdf-wrapper');
                 const pageContainers = pdfWrapper?.querySelectorAll('.pdf-page-container');
                 if (pageContainers && pageContainers.length > 0) {
-                    // Multi-page view - redraw all pages
-                    if (typeof renderAllPdfPages === 'function') {
-                        renderAllPdfPages();
-                    }
+                    if (typeof renderAllPdfPages === 'function') renderAllPdfPages();
                 } else if (typeof currentPdfPage !== 'undefined' && currentPdfPage) {
-                    // Single page view - redraw current page
-                    if (typeof renderPdfPage === 'function') {
-                        renderPdfPage(currentPdfPage);
-                    }
+                    if (typeof renderPdfPage === 'function') renderPdfPage(currentPdfPage);
                 }
             }
-            
-            // Redraw image if it exists
-            const pdfWrapper = document.getElementById('pdf-wrapper');
+            // Redraw image overlays if present
             const imageContainer = pdfWrapper?.querySelector('.image-container');
             if (imageContainer) {
                 const img = imageContainer.querySelector('img');
-                if (img && img.complete) {
-                    // Recalculate and redraw image overlays
-                    if (typeof currentOverlayChunks !== 'undefined' && typeof drawImageOverlays === 'function') {
-                        const chunks = currentOverlayChunks || [];
-                        if (chunks.length > 0) {
-                            // Remove existing overlay
-                            const existingOverlay = imageContainer.querySelector('.image-overlay');
-                            if (existingOverlay) {
-                                existingOverlay.remove();
-                            }
-                            // Redraw overlays with new dimensions
-                            drawImageOverlays(img, chunks);
-                        }
-                    }
+                if (img && img.complete && typeof currentOverlayChunks !== 'undefined' && typeof drawImageOverlays === 'function') {
+                    const existingOverlay = imageContainer.querySelector('.image-overlay');
+                    if (existingOverlay) existingOverlay.remove();
+                    drawImageOverlays(img, currentOverlayChunks || []);
                 }
             }
-        });
+        }, 50);
     }
-    
+
     const handleMouseUp = () => {
         if (isResizing) {
             isResizing = false;
             document.body.style.cursor = '';
             document.body.style.userSelect = '';
             resizer.style.background = 'transparent';
+            // Re-render PDF ONCE after drag ends
+            handlePanelResize();
         }
     };
-    
+
     document.addEventListener('mousemove', handleMouseMove);
     document.addEventListener('mouseup', handleMouseUp);
-    
+
     // Also handle mouse leave to stop resizing
     document.addEventListener('mouseleave', handleMouseUp);
-    
+
     // Add ResizeObserver to watch for panel size changes
     if (window.ResizeObserver) {
         const resizeObserver = new ResizeObserver((entries) => {
@@ -481,9 +464,9 @@ function initializeResizer() {
             }
             resizeObserver.timeout = setTimeout(() => {
                 handlePanelResize();
-            }, 150);
+            }, 50);
         });
-        
+
         // Observe both panels
         resizeObserver.observe(leftPanel);
         resizeObserver.observe(rightPanel);

@@ -428,23 +428,95 @@ Your response:
             client = openai.OpenAI(api_key=self.openai_api_key)
             
             response = client.chat.completions.create(
-                model="gpt-3.5-turbo",
+                model="gpt-4o-mini",
                 messages=[
-                    {"role": "system", "content": "You are ALPHA LENS, a document assistant. Answer questions directly and concisely. For simple questions, answer in 1 sentence. Never be verbose."},
+                    {"role": "system", "content": "You are ALPHA LENS, an expert financial document reasoning assistant. Think step-by-step: identify relevant data, extract values, reason about relationships. Answer concisely. For simple questions, answer in 1 sentence. Never fabricate data."},
                     {"role": "user", "content": prompt}
                 ],
                 temperature=0.2,
-                max_tokens=150
+                max_tokens=300
             )
             
-            # Extract the answer from the response
             answer = response.choices[0].message.content
-            
             return answer
         
         except Exception as e:
             print(f"Error calling OpenAI API: {str(e)}")
             return self.generate_fallback_response(query, financial_data)
+
+    def generate_full_context_response(
+        self,
+        query: str,
+        full_context: str,
+        financial_data: Dict[str, Any] = None,
+        conversation_context: Optional[str] = None,
+    ) -> str:
+        """Answer a query using the full ADE markdown with inline element IDs.
+
+        The LLM sees the entire document and cites element IDs as [[id]].
+        """
+        try:
+            if not self.openai_api_key:
+                return ""
+
+            client = openai.OpenAI(api_key=self.openai_api_key)
+
+            metadata = (financial_data or {}).get("metadata", {})
+            company = metadata.get("company_name", "")
+            doc_type = metadata.get("document_type", "Document")
+            doc_date = metadata.get("date", "")
+            doc_identity_parts = [f"Document type: {doc_type}"]
+            if company and company not in ("Unknown", "Unknown Company"):
+                doc_identity_parts.append(f"Company: {company}")
+            if doc_date:
+                doc_identity_parts.append(f"Date: {doc_date}")
+            doc_identity = " | ".join(doc_identity_parts)
+
+            history_block = ""
+            if conversation_context:
+                history_block = (
+                    f"\nRecent conversation:\n{conversation_context}\n"
+                )
+
+            system_msg = (
+                "You are ALPHA LENS, an expert document analysis assistant. "
+                "You receive the full document content with element IDs in square brackets like [0-q]. "
+                "When you state a fact from the document, cite the element ID(s) that contain it using [[id]] format. "
+                "Answer concisely (1-3 sentences for simple questions, more for complex ones). "
+                "Use the document's own currency and units -- never assume USD unless the document states it. "
+                "If the answer is not in the document, say exactly: "
+                '"I cannot find the answer in the provided document." '
+                "Never fabricate data."
+            )
+
+            user_msg = (
+                f"{doc_identity}\n\n"
+                f"--- DOCUMENT CONTENT ---\n{full_context}\n--- END ---\n\n"
+                f"{history_block}"
+                f"Question: {query}\n\n"
+                "Instructions:\n"
+                "- Cite element IDs using [[id]] for every value you reference.\n"
+                "- IMPORTANT: Cite the VALUE cell, not the label cell. Example: in '| Tuition Fee [0-r] | 143,990 [0-s] |', "
+                "cite [[0-s]] (the value), not [[0-r]] (the label).\n"
+                "- Place citations right after the value: 'The fine is 500 [[0-q]]'.\n"
+                "- If the same value appears in multiple tables, cite up to 4 value cells.\n"
+                "- Answer directly. No preamble."
+            )
+
+            response = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {"role": "system", "content": system_msg},
+                    {"role": "user", "content": user_msg},
+                ],
+                temperature=0.1,
+                max_tokens=500,
+            )
+            return response.choices[0].message.content or ""
+
+        except Exception as e:
+            print(f"Error in generate_full_context_response: {e}")
+            return ""
 
     def generate_finance_response(
         self,
@@ -473,16 +545,22 @@ Your response:
                     metadata_lines.append(f"- {key.replace('_', ' ').title()}: {value}")
             metadata_text = "\n".join(metadata_lines) if metadata_lines else "N/A"
             
+            _CURRENCY_SYMBOLS = {
+                "USD": "$", "EUR": "€", "GBP": "£", "JPY": "¥",
+                "INR": "₹", "PKR": "PKR ", "AED": "AED ", "SAR": "SAR ",
+            }
+
             metrics_lines = []
             for metric in (key_metrics or [])[:8]:
                 name = metric.get("name")
                 value = metric.get("value")
-                unit = metric.get("unit")
+                unit = metric.get("unit", "")
                 if name and value is not None:
+                    sym = _CURRENCY_SYMBOLS.get(unit, f"{unit} " if unit else "")
                     if isinstance(value, (int, float)):
-                        formatted = f"${value:,.2f}" if unit == "USD" else f"{value:,}"
+                        formatted = f"{sym}{value:,.2f}" if unit in ("USD", "EUR", "GBP") else f"{sym}{value:,.0f}"
                     else:
-                        formatted = str(value)
+                        formatted = f"{sym}{value}"
                     metrics_lines.append(f"- {name}: {formatted}")
             metrics_text = "\n".join(metrics_lines) if metrics_lines else "N/A"
             
@@ -524,17 +602,23 @@ Recent conversation (for resolving follow-ups like \"this\", \"that\", or \"prev
             if is_simple_question:
                 prompt = f"""Answer this question in 1 sentence maximum. NO explanations, NO summaries.
 
-Context:
+Document metadata:
+{metadata_text}
+
+Key metrics:
+{metrics_text}
+{tables_context}
+
+Context blocks:
 {context_text or 'N/A'}
 
 Question: {query}
 
 Answer format:
-- For names: "Your name is [name]" or "The name is [name]"
-- For dates: "The date is [date]"
-- For amounts: "The amount is [amount]"
-- For "what did I ask": Answer what was asked previously in 1 sentence
-- If not found: "I cannot find the answer in the provided document."
+- For amounts: Use the document's own currency (e.g. "PKR 143,990" not "$143,990"). State ONLY the value.
+- For names: State the name directly.
+- For dates: State the date directly.
+- If not found in context above: "I cannot find the answer in the provided document."
 
 Your answer (1 sentence only):
 """
@@ -629,7 +713,7 @@ INSTRUCTIONS:
 Your response (short summary, plain paragraphs only):
 """
                 else:
-                    prompt = f"""You are ALPHA LENS, an expert financial document analysis assistant. Answer questions with precision, context, and clarity.
+                    prompt = f"""You are ALPHA LENS, an expert financial document reasoning assistant.
 
 Document metadata:
 {metadata_text}
@@ -638,63 +722,62 @@ Key metrics:
 {metrics_text}
 {tables_context}
 
-Context blocks (each block is labeled with an ID in brackets):
+Context blocks (each labeled with [block_id]):
 {context_text or 'N/A'}
 
 {history_block}
 
 Question: {query}
 
-EXPERT-LEVEL RESPONSE GUIDELINES:
+REASONING INSTRUCTIONS:
+1. Identify which context blocks above contain data relevant to the question.
+2. Extract the specific values, names, or facts from those blocks.
+3. If the question asks "why", "how", or "compare", reason about the relationship between values (e.g. "Total Amount Due of **149,990** = Tuition Fee 143,990 + Misc charges 5,500 + Fine 500").
+4. Give a direct answer in 2-5 sentences. Start with the answer, then explain.
+5. Cite every fact with [[block_id]] matching the IDs in brackets above.
+6. Use **bold** for key numbers, names, and dates.
+7. If the information is NOT in the context above, say exactly: "I cannot find the answer in the provided document."
+8. NEVER fabricate numbers. NEVER summarize the whole document when a specific question is asked.
 
-1. **Answer Structure** (2-4 sentences):
-   - **First sentence**: Direct, factual answer to the question
-   - **Second sentence**: Context or explanation from the document
-   - **Third sentence** (if needed): Additional detail or implication
-   - **Fourth sentence** (if needed): Related information or clarification
-
-2. **Financial Terminology**:
-   - If the question involves financial terms (revenue, EBITDA, leverage, etc.), briefly explain what the term means in context
-   - Example: "Revenue of $5M represents total income from sales [explain briefly if term is complex]"
-   - Use **bold** for key numbers, names, and important terms
-
-3. **Mathematical Context**:
-   - If the answer involves calculations or numbers, explain the calculation method briefly
-   - Show relationships between numbers when relevant
-   - Example: "Net income of $2M is calculated as Revenue ($5M) minus Expenses ($3M)"
-
-4. **Content Accuracy**:
-   - Answer ONLY from the document context provided
-   - If information is not in the document: "I cannot find the answer in the provided document." (exact phrase)
-   - Never guess or assume - be explicit about data availability
-
-5. **Citations**: 
-   - Add [[chunk_id]] at the end of sentences that reference specific document sections
-   - Cite sources for all numbers and facts
-
-6. **Formatting**:
-   - Use **bold** for important numbers, names, dates, and key terms
-   - Use bullet points (-) only when listing 3+ items
-   - Use markdown for better readability
-
-7. **NEVER**: 
-   - Write more than 4 sentences
-   - Give full document summaries
-   - Be verbose or repetitive
-   - Hallucinate numbers or facts not in the document
-
-Your response (2-4 sentences, expert-level analysis):
+Your response:
 """
             
-            # Adjust max_tokens based on question type
-            max_tokens = 50 if is_simple_question else 250  # Increased for expert-level explanations
-            
-            system_message = "You are ALPHA LENS, a document assistant. Answer questions directly and concisely. For simple questions, answer in 1 sentence. Never be verbose."
+            max_tokens = 150 if is_simple_question else 400
+
+            doc_meta_parts = []
+            if metadata.get("company_name") and metadata["company_name"] not in ("Unknown", "Unknown Company"):
+                doc_meta_parts.append(f"Company: {metadata['company_name']}")
+            if metadata.get("document_date") and metadata["document_date"] != "Unknown Date":
+                doc_meta_parts.append(f"Date: {metadata['document_date']}")
+            if metadata.get("document_type") and metadata["document_type"] not in ("Unknown", "Document"):
+                doc_meta_parts.append(f"Type: {metadata['document_type']}")
+            currency = ""
+            if key_metrics:
+                currency = (key_metrics[0].get("unit") or "")
+            if currency:
+                doc_meta_parts.append(f"Currency: {currency}")
+            doc_identity = (" | ".join(doc_meta_parts) + ". ") if doc_meta_parts else ""
+
             if is_simple_question:
-                system_message = "You are ALPHA LENS. Answer in exactly 1 sentence. NO explanations, NO summaries, just the answer."
+                system_message = (
+                    f"You are ALPHA LENS. {doc_identity}"
+                    "Answer in exactly 1 sentence. Use the document's own currency — "
+                    "never assume USD unless stated. NO explanations, NO summaries, just the answer."
+                )
+            else:
+                system_message = (
+                    f"You are ALPHA LENS, an expert financial document reasoning assistant. {doc_identity}"
+                    "You think step-by-step before answering: first identify which context blocks contain relevant data, "
+                    "then extract the specific values, then reason about relationships between them. "
+                    "Use the document's own currency — never assume USD unless explicitly stated. "
+                    "Cite every factual claim using [[chunk_id]] markers matching the block IDs provided. "
+                    "If the document context does not contain the answer, say exactly: "
+                    "\"I cannot find the answer in the provided document.\" "
+                    "Never fabricate numbers or facts."
+                )
             
             response = client.chat.completions.create(
-                model="gpt-3.5-turbo",
+                model="gpt-4o-mini",
                 messages=[
                     {"role": "system", "content": system_message},
                     {"role": "user", "content": prompt}
@@ -876,7 +959,7 @@ Your response (use markdown formatting):
 """
             
             response = client.chat.completions.create(
-                model="gpt-3.5-turbo",
+                model="gpt-4o-mini",
                 messages=[
                     {"role": "system", "content": "You are ALPHA LENS, a senior financial analyst specializing in document analysis and summarization."},
                     {"role": "user", "content": prompt}
@@ -1210,7 +1293,7 @@ User Query: {query}
 Provide a 2-3 sentence explanation of the trends, focusing on what they mean and their significance. Be specific and reference the data provided."""
             
             response = client.chat.completions.create(
-                model="gpt-3.5-turbo",
+                model="gpt-4o-mini",
                 messages=[
                     {"role": "system", "content": "You are a financial analyst. Explain financial trends clearly and concisely."},
                     {"role": "user", "content": prompt}
@@ -1242,7 +1325,7 @@ User Query: {query}
 Provide a 2-3 sentence explanation of the comparison, highlighting key differences and their significance. Be specific and reference the data provided."""
             
             response = client.chat.completions.create(
-                model="gpt-3.5-turbo",
+                model="gpt-4o-mini",
                 messages=[
                     {"role": "system", "content": "You are a financial analyst. Explain financial comparisons clearly and concisely."},
                     {"role": "user", "content": prompt}

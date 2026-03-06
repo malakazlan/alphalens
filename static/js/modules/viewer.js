@@ -21,14 +21,14 @@ const chunkIdToNumber = new Map();
 // Get numbered label for a chunk
 function getNumberedLabel(chunkType, chunkId) {
     if (!chunkId) return chunkType.toUpperCase();
-    
+
     // Check if we already assigned a number to this chunk
     if (chunkIdToNumber.has(chunkId)) {
         const number = chunkIdToNumber.get(chunkId);
         const type = chunkIdToNumber.get(chunkId + '_type');
         return `${type} ${number}`;
     }
-    
+
     // Assign new number based on type
     let label = '';
     let number = 0;
@@ -36,6 +36,12 @@ function getNumberedLabel(chunkType, chunkId) {
         tableCounter++;
         number = tableCounter;
         label = `Table ${number}`;
+    } else if (chunkType === 'table_cell') {
+        // table_cell: context-aware label — no counter, just type name
+        // Matches Landing.AI behavior: label shows "tableCell" when a cell is active
+        chunkIdToNumber.set(chunkId, 0);
+        chunkIdToNumber.set(chunkId + '_type', 'tableCell');
+        return 'tableCell';
     } else if (chunkType === 'chart' || chunkType === 'graph') {
         chartCounter++;
         number = chartCounter;
@@ -49,11 +55,11 @@ function getNumberedLabel(chunkType, chunkId) {
         number = textCounter;
         label = `Text ${number}`;
     }
-    
+
     // Store the mapping
     chunkIdToNumber.set(chunkId, number);
     chunkIdToNumber.set(chunkId + '_type', label.split(' ')[0]);
-    
+
     return label;
 }
 
@@ -66,31 +72,44 @@ function resetCounters() {
     chunkIdToNumber.clear();
 }
 
+// Overlay label: use API naming "tableCell" for table_cell (Landing.AI grounding type)
+function appendOverlayLabelOrCellIcon(box, chunkType, chunkId) {
+    var labelSpan = document.createElement('span');
+    labelSpan.className = 'overlay-label';
+    if (chunkType === 'table_cell') {
+        labelSpan.textContent = 'tableCell';  // matches API grounding entry type
+    } else {
+        labelSpan.textContent = getNumberedLabel(chunkType, chunkId || '');
+    }
+    box.appendChild(labelSpan);
+    return labelSpan;
+}
+
 // Draw overlays on image
 function drawImageOverlays(imgElement, chunks) {
     if (!imgElement || !chunks || chunks.length === 0) return;
-    
+
     // Wait for image to load
     if (!imgElement.complete) {
         imgElement.onload = () => drawImageOverlays(imgElement, chunks);
         return;
     }
-    
+
     // Get image dimensions after load
     const imgWidth = imgElement.naturalWidth || imgElement.width;
     const imgHeight = imgElement.naturalHeight || imgElement.height;
     const displayWidth = imgElement.offsetWidth || imgElement.clientWidth;
     const displayHeight = imgElement.offsetHeight || imgElement.clientHeight;
-    
+
     if (!imgWidth || !imgHeight) {
         // Wait a bit more if dimensions aren't available
         setTimeout(() => drawImageOverlays(imgElement, chunks), 100);
         return;
     }
-    
+
     const scaleX = displayWidth / imgWidth;
     const scaleY = displayHeight / imgHeight;
-    
+
     // Create overlay container
     const overlay = document.createElement('div');
     overlay.className = 'pdf-overlay';
@@ -101,28 +120,29 @@ function drawImageOverlays(imgElement, chunks) {
     overlay.style.height = `${displayHeight}px`;
     overlay.style.pointerEvents = 'none';
     overlay.style.zIndex = '10';
-    
+
     // Draw bounding boxes for chunks
     chunks.forEach(chunk => {
         if (chunk.bbox && Array.isArray(chunk.bbox) && chunk.bbox.length >= 4) {
             const [x, y, width, height] = chunk.bbox;
-            
+
             const box = document.createElement('div');
-            box.className = 'overlay-box';
+            const chunkType = (chunk.type || 'text').toLowerCase();
+            const _typeClass = (['figure', 'chart', 'graph'].includes(chunkType))
+                ? 'overlay-box--figure'
+                : (['table', 'table_cell'].includes(chunkType))
+                    ? 'overlay-box--table'
+                    : 'overlay-box--text';
+            box.className = `overlay-box ${_typeClass}`;
+            box.dataset.chunkType = chunkType;
             box.style.left = `${x * scaleX}px`;
             box.style.top = `${y * scaleY}px`;
             box.style.width = `${width * scaleX}px`;
             box.style.height = `${height * scaleY}px`;
-            
-            const chunkType = (chunk.type || 'text').toLowerCase();
-            const label = getNumberedLabel(chunkType, chunk.id || '');
-            
-            const labelSpan = document.createElement('span');
-            labelSpan.textContent = label;
-            labelSpan.className = 'overlay-label';
-            box.appendChild(labelSpan);
-            
-            // Add hover event listeners to show/hide label
+
+            const labelSpan = appendOverlayLabelOrCellIcon(box, chunkType, chunk.id || '');
+
+            // Add hover event listeners to show/hide label/icon
             box.addEventListener('mouseenter', () => {
                 labelSpan.style.opacity = '1';
                 labelSpan.style.visibility = 'visible';
@@ -136,11 +156,11 @@ function drawImageOverlays(imgElement, chunks) {
                 labelSpan.style.opacity = '1';
                 labelSpan.style.visibility = 'visible';
             });
-            
+
             overlay.appendChild(box);
         }
     });
-    
+
     // Wrap image and overlay in container if not already wrapped
     let container = imgElement.parentElement;
     if (!container || !container.classList.contains('image-container')) {
@@ -150,12 +170,12 @@ function drawImageOverlays(imgElement, chunks) {
         container.style.display = 'inline-block';
         container.style.width = '100%';
         container.style.textAlign = 'center';
-        
+
         const parent = imgElement.parentNode;
         parent.insertBefore(container, imgElement);
         container.appendChild(imgElement);
     }
-    
+
     container.appendChild(overlay);
 }
 
@@ -164,22 +184,22 @@ async function renderAllPdfPages() {
     const pdfWrapper = document.getElementById('pdf-wrapper');
     if (!pdfDocInstance || !pdfWrapper) return;
     const totalPages = pdfDocInstance.numPages;
-    
+
     // Clear wrapper completely - remove all existing content including static canvas
     pdfWrapper.innerHTML = '';
-    
+
     // Also remove any legacy overlay elements that might exist
     const legacyOverlay = document.getElementById('pdf-overlay');
     if (legacyOverlay && legacyOverlay.parentNode === pdfWrapper) {
         legacyOverlay.remove();
     }
-    
+
     // Update page indicator - show current page / total pages
     const pageIndicator = document.getElementById('page-indicator');
     if (pageIndicator) {
         pageIndicator.textContent = `1 / ${totalPages}`;
     }
-    
+
     // Disable navigation buttons since we're showing all pages
     const pdfPrevButton = document.getElementById('pdf-prev');
     const pdfNextButton = document.getElementById('pdf-next');
@@ -189,20 +209,20 @@ async function renderAllPdfPages() {
     if (pdfNextButton) {
         pdfNextButton.disabled = true;
     }
-    
+
     const wrapperWidth = pdfWrapper.clientWidth;
-    
+
     // Render all pages
     for (let pageNum = 1; pageNum <= totalPages; pageNum++) {
         try {
             const page = await pdfDocInstance.getPage(pageNum);
             const baseViewport = page.getViewport({ scale: 1 });
-            
+
             // Account for device pixel ratio to prevent blurriness when zooming
             const devicePixelRatio = window.devicePixelRatio || 1;
             const scale = (wrapperWidth / baseViewport.width) * devicePixelRatio;
             const viewport = page.getViewport({ scale: scale / devicePixelRatio });
-            
+
             // Create container for this page
             const pageContainer = document.createElement('div');
             pageContainer.className = 'pdf-page-container';
@@ -211,14 +231,14 @@ async function renderAllPdfPages() {
             pageContainer.style.width = `${viewport.width}px`;
             pageContainer.style.height = `${viewport.height}px`;
             pageContainer.dataset.pageNumber = pageNum;
-            
+
             // Create canvas for this page with high DPI support - Chrome compatible
             const canvas = document.createElement('canvas');
-            const context = canvas.getContext('2d', { 
+            const context = canvas.getContext('2d', {
                 alpha: false,  // Chrome optimization
                 desynchronized: false  // Chrome compatibility
             });
-            
+
             // Set canvas size accounting for device pixel ratio
             // Chrome requires explicit integer values
             const canvasWidth = Math.floor(viewport.width * devicePixelRatio);
@@ -227,13 +247,13 @@ async function renderAllPdfPages() {
             canvas.height = canvasHeight;
             canvas.style.width = `${viewport.width}px`;
             canvas.style.height = `${viewport.height}px`;
-            
+
             // Chrome-specific: Clear canvas before rendering
             context.clearRect(0, 0, canvasWidth, canvasHeight);
-            
+
             // Scale context to account for device pixel ratio
             context.scale(devicePixelRatio, devicePixelRatio);
-            
+
             // Use high-quality rendering - Chrome compatible
             context.imageSmoothingEnabled = true;
             context.imageSmoothingQuality = 'high';
@@ -241,14 +261,14 @@ async function renderAllPdfPages() {
             if (context.imageSmoothingEnabled !== undefined) {
                 context.imageSmoothingEnabled = true;
             }
-            
+
             // Render page
             await page.render({ canvasContext: context, viewport }).promise;
-            
+
             // Chrome-specific: Force canvas update
             canvas.style.imageRendering = 'auto';
             pageContainer.appendChild(canvas);
-            
+
             // Create overlay for this page
             const overlay = document.createElement('div');
             overlay.className = 'pdf-overlay';
@@ -259,10 +279,10 @@ async function renderAllPdfPages() {
             overlay.style.height = `${viewport.height}px`;
             overlay.style.pointerEvents = 'none';
             pageContainer.appendChild(overlay);
-            
+
             // Draw overlays for this page
             drawPageOverlays(overlay, viewport, pageNum);
-            
+
             pdfWrapper.appendChild(pageContainer);
         } catch (error) {
             console.error(`Error rendering PDF page ${pageNum}:`, error);
@@ -276,11 +296,11 @@ async function renderPdfPage(pageNumber) {
     const pdfWrapper = document.getElementById('pdf-wrapper');
     const pdfOverlay = document.getElementById('pdf-overlay');
     // Chrome-compatible context creation
-    const pdfContext = pdfCanvas ? pdfCanvas.getContext('2d', { 
+    const pdfContext = pdfCanvas ? pdfCanvas.getContext('2d', {
         alpha: false,  // Chrome optimization
         desynchronized: false  // Chrome compatibility
     }) : null;
-    
+
     if (!pdfDocInstance || !pdfContext) return;
     const totalPages = pdfDocInstance.numPages;
     currentPdfPage = Math.min(Math.max(pageNumber, 1), totalPages);
@@ -294,7 +314,7 @@ async function renderPdfPage(pageNumber) {
         const page = await pdfDocInstance.getPage(currentPdfPage);
         const baseViewport = page.getViewport({ scale: 1 });
         const wrapperWidth = pdfWrapper ? pdfWrapper.clientWidth : baseViewport.width;
-        
+
         // Account for device pixel ratio to prevent blurriness when zooming
         const devicePixelRatio = window.devicePixelRatio || 1;
         const scale = (wrapperWidth / baseViewport.width) * devicePixelRatio;
@@ -308,14 +328,14 @@ async function renderPdfPage(pageNumber) {
         pdfCanvas.height = canvasHeight;
         pdfCanvas.style.width = `${viewport.width}px`;
         pdfCanvas.style.height = `${viewport.height}px`;
-        
+
         // Chrome-specific: Clear canvas before rendering
         pdfContext.clearRect(0, 0, canvasWidth, canvasHeight);
-        
+
         // Reset transform and scale context to account for device pixel ratio
         pdfContext.setTransform(1, 0, 0, 1, 0, 0); // Reset transform
         pdfContext.scale(devicePixelRatio, devicePixelRatio);
-        
+
         // Use high-quality rendering - Chrome compatible
         pdfContext.imageSmoothingEnabled = true;
         pdfContext.imageSmoothingQuality = 'high';
@@ -325,7 +345,7 @@ async function renderPdfPage(pageNumber) {
         }
 
         await page.render({ canvasContext: pdfContext, viewport }).promise;
-        
+
         // Chrome-specific: Force canvas update
         pdfCanvas.style.imageRendering = 'auto';
         if (typeof drawOverlays === 'function') {
@@ -354,7 +374,14 @@ function drawPageOverlays(overlayElement, viewport, pageNumber) {
         if (!chunk.box) return;
         const box = chunk.box;
         const overlayBox = document.createElement('div');
-        overlayBox.className = 'overlay-box';
+        const chunkType = (chunk.type || 'text').toLowerCase();
+        const _tc = (['figure', 'chart', 'graph'].includes(chunkType))
+            ? 'overlay-box--figure'
+            : (['table', 'table_cell'].includes(chunkType))
+                ? 'overlay-box--table'
+                : 'overlay-box--text';
+        overlayBox.className = `overlay-box ${_tc}`;
+        overlayBox.dataset.chunkType = chunkType;
         overlayBox.style.position = 'absolute';
         overlayBox.style.left = `${box.left * viewport.width}px`;
         overlayBox.style.top = `${box.top * viewport.height}px`;
@@ -369,13 +396,7 @@ function drawPageOverlays(overlayElement, viewport, pageNumber) {
         overlayBox.style.pointerEvents = 'auto';
         overlayBox.style.cursor = 'pointer';
 
-        const label = document.createElement('span');
-        const chunkType = (chunk.type || 'zone').toLowerCase();
-        // Get numbered label based on type
-        const numberedLabel = getNumberedLabel(chunkType, chunkId || '');
-        label.textContent = numberedLabel;
-        label.className = 'overlay-label';
-        overlayBox.appendChild(label);
+        const label = appendOverlayLabelOrCellIcon(overlayBox, chunkType, chunkId || '');
 
         overlayBox.addEventListener('mouseenter', () => {
             label.style.opacity = '1';
@@ -390,14 +411,9 @@ function drawPageOverlays(overlayElement, viewport, pageNumber) {
         overlayBox.addEventListener('mouseleave', () => {
             label.style.opacity = '0';
             label.style.visibility = 'hidden';
-            if (typeof highlightChunk === 'function') {
-                highlightChunk(null);
-            }
-            if (typeof highlightMarkdownSection === 'function') {
-                highlightMarkdownSection(null);
-            }
+            if (typeof highlightChunk === 'function') highlightChunk(null);
+            if (typeof highlightMarkdownSection === 'function') highlightMarkdownSection(null);
         });
-        // Also support touch events for mobile
         overlayBox.addEventListener('touchstart', () => {
             label.style.opacity = '1';
             label.style.visibility = 'visible';
@@ -429,7 +445,14 @@ function drawOverlays(viewport) {
         if (!chunk.box) return;
         const box = chunk.box;
         const overlayBox = document.createElement('div');
-        overlayBox.className = 'overlay-box';
+        const _legacyType = (chunk.type || 'text').toLowerCase();
+        const _ltc = (['figure', 'chart', 'graph'].includes(_legacyType))
+            ? 'overlay-box--figure'
+            : (['table', 'table_cell'].includes(_legacyType))
+                ? 'overlay-box--table'
+                : 'overlay-box--text';
+        overlayBox.className = `overlay-box ${_ltc}`;
+        overlayBox.dataset.chunkType = _legacyType;
         overlayBox.style.left = `${box.left * viewport.width}px`;
         overlayBox.style.top = `${box.top * viewport.height}px`;
         overlayBox.style.width = `${(box.right - box.left) * viewport.width}px`;
@@ -441,32 +464,20 @@ function drawOverlays(viewport) {
         }
         overlayBox.dataset.chunkId = chunkId || '';
 
-        const label = document.createElement('span');
-        const chunkType = (chunk.type || 'zone').toLowerCase();
-        const numberedLabel = getNumberedLabel(chunkType, chunkId || '');
-        label.textContent = numberedLabel;
-        label.className = 'overlay-label';
-        overlayBox.appendChild(label);
+        const chunkTypeLegacy = (chunk.type || 'zone').toLowerCase();
+        const label = appendOverlayLabelOrCellIcon(overlayBox, chunkTypeLegacy, chunkId || '');
 
         overlayBox.addEventListener('mouseenter', () => {
             label.style.opacity = '1';
             label.style.visibility = 'visible';
-            if (typeof highlightChunk === 'function') {
-                highlightChunk(chunkId || '');
-            }
-            if (typeof highlightMarkdownSection === 'function') {
-                highlightMarkdownSection(chunkId || '');
-            }
+            if (typeof highlightChunk === 'function') highlightChunk(chunkId || '');
+            if (typeof highlightMarkdownSection === 'function') highlightMarkdownSection(chunkId || '');
         });
         overlayBox.addEventListener('mouseleave', () => {
             label.style.opacity = '0';
             label.style.visibility = 'hidden';
-            if (typeof highlightChunk === 'function') {
-                highlightChunk(null);
-            }
-            if (typeof highlightMarkdownSection === 'function') {
-                highlightMarkdownSection(null);
-            }
+            if (typeof highlightChunk === 'function') highlightChunk(null);
+            if (typeof highlightMarkdownSection === 'function') highlightMarkdownSection(null);
         });
         // Also support touch events for mobile
         overlayBox.addEventListener('touchstart', () => {
@@ -484,41 +495,36 @@ function drawOverlays(viewport) {
     });
 }
 
-// Highlight PDF region
+// Highlight PDF region and scroll it into view
 function highlightPdfRegion(chunkId) {
-    // Find all overlay boxes in all page containers (for multi-page view)
-    const allOverlayBoxes = document.querySelectorAll('.pdf-overlay .overlay-box');
-    
-    // Remove all highlights
-    allOverlayBoxes.forEach(box => {
-        box.classList.remove('highlighted', 'active');
+    // Remove all existing highlights
+    document.querySelectorAll('.overlay-box.active').forEach(box => {
+        box.classList.remove('active');
     });
-    
-    // Also check legacy single overlay
-    const pdfOverlay = document.getElementById('pdf-overlay');
-    if (pdfOverlay) {
-        pdfOverlay.querySelectorAll('.overlay-box').forEach(box => {
-            box.classList.remove('highlighted', 'active');
-        });
+
+    if (!chunkId) return;
+
+    // Search across ALL page-level overlays
+    let target = document.querySelector(`.pdf-overlay .overlay-box[data-chunk-id="${chunkId}"]`);
+
+    // Fallback: legacy single overlay
+    if (!target) {
+        const pdfOverlay = document.getElementById('pdf-overlay');
+        if (pdfOverlay) {
+            target = pdfOverlay.querySelector(`.overlay-box[data-chunk-id="${chunkId}"]`);
+        }
     }
-    
-    // Highlight the matching region ONLY - NO SCROLLING on left side
-    // Left side PDF stays completely static
-    if (chunkId) {
-        // Try to find in all page containers first
-        const overlayBox = document.querySelector(`.pdf-overlay .overlay-box[data-chunk-id="${chunkId}"]`);
-        if (overlayBox) {
-            overlayBox.classList.add('highlighted', 'active');
-            // NO SCROLLING - just highlight the region
-        } else if (pdfOverlay) {
-            // Fallback to legacy single overlay
-            const legacyBox = pdfOverlay.querySelector(`.overlay-box[data-chunk-id="${chunkId}"]`);
-            if (legacyBox) {
-                legacyBox.classList.add('highlighted', 'active');
-            }
+
+    if (target) {
+        target.classList.add('active');
+        // Smooth scroll the page container into view so users can see the highlighted region
+        const pageContainer = target.closest('.pdf-page-container');
+        if (pageContainer) {
+            pageContainer.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
         }
     }
 }
+window.highlightPdfRegion = highlightPdfRegion;
 
 // Render document preview (PDF or image)
 // Track rendering state to prevent duplicates
@@ -530,16 +536,16 @@ async function renderDocumentPreview(docData) {
     const pageIndicator = document.getElementById('page-indicator');
     const getSelectedDocumentId = window.getSelectedDocumentId || (() => null);
     const selectedDocumentId = getSelectedDocumentId();
-    
+
     if (!pdfWrapper) return;
-    
+
     const docId = docData?.document_id || selectedDocumentId;
-    
+
     // Prevent duplicate rendering - if already rendering the same document, skip
     if (isRendering && lastRenderedDocId === docId) {
         return;
     }
-    
+
     // Prevent duplicate rendering - if document already rendered, skip unless data changed
     if (!isRendering && lastRenderedDocId === docId && pdfWrapper.children.length > 0) {
         // Check if we have processed data - if yes, document is already rendered
@@ -547,14 +553,14 @@ async function renderDocumentPreview(docData) {
             return;
         }
     }
-    
+
     // Mark as rendering
     isRendering = true;
     lastRenderedDocId = docId;
-    
+
     // Clear wrapper completely before rendering to prevent duplicates
     pdfWrapper.innerHTML = '';
-    
+
     if (!docData || docData.status !== 'complete') {
         if (pageIndicator) pageIndicator.textContent = 'Preview unavailable';
         pdfDocInstance = null;
@@ -565,7 +571,7 @@ async function renderDocumentPreview(docData) {
         }
         return;
     }
-    
+
     // CRITICAL FIX: Don't render if we don't have processed data (detected_chunks)
     // This prevents clearing bounding boxes when incomplete data is passed
     if (!docData.detected_chunks && !docData.document_markdown) {
@@ -583,18 +589,18 @@ async function renderDocumentPreview(docData) {
         isRendering = false;
         return;
     }
-    
+
     // Reset counters for new document
     resetCounters();
-    
+
     // Detect file type from filename
     const filename = docData.filename || '';
     const fileExtension = filename.split('.').pop()?.toLowerCase() || '';
     const isImage = ['png', 'jpg', 'jpeg', 'gif', 'bmp', 'tiff', 'webp'].includes(fileExtension);
     const isPdf = fileExtension === 'pdf';
-    
+
     const fileUrl = `${API_BASE_URL}/documents/${docId}/file?cache=${Date.now()}`;
-    
+
     try {
         // Get auth token
         const getAuthToken = window.getAuthToken || (() => null);
@@ -603,19 +609,19 @@ async function renderDocumentPreview(docData) {
         if (token) {
             headers['Authorization'] = `Bearer ${token}`;
         }
-        
+
         if (isImage) {
             // Render image file
             if (pageIndicator) {
                 pageIndicator.textContent = 'Image';
             }
-            
+
             // Disable navigation buttons for images
             const pdfPrevButton = document.getElementById('pdf-prev');
             const pdfNextButton = document.getElementById('pdf-next');
             if (pdfPrevButton) pdfPrevButton.disabled = true;
             if (pdfNextButton) pdfNextButton.disabled = true;
-            
+
             // Create image element
             const img = document.createElement('img');
             img.style.maxWidth = '100%';
@@ -624,7 +630,7 @@ async function renderDocumentPreview(docData) {
             img.style.margin = '0 auto';
             img.style.borderRadius = '8px';
             img.style.boxShadow = '0 2px 8px rgba(0,0,0,0.1)';
-            
+
             // Handle image load
             img.onload = () => {
                 // Draw overlays if chunks are available
@@ -633,40 +639,40 @@ async function renderDocumentPreview(docData) {
                     drawImageOverlays(img, currentOverlayChunks);
                 }
             };
-            
+
             img.onerror = () => {
                 pdfWrapper.innerHTML = `<div style="padding: 20px; text-align: center; color: var(--text-secondary);">
                     <p>Unable to load image preview.</p>
                 </div>`;
             };
-            
+
             // Load image with authentication - always use fetch to ensure cookies/headers are sent
             fetch(fileUrl, {
                 credentials: 'include',
                 headers: headers
             })
-            .then(response => {
-                if (!response.ok) {
-                    throw new Error(`Failed to load image: ${response.status} ${response.statusText}`);
-                }
-                return response.blob();
-            })
-            .then(blob => {
-                const objectUrl = URL.createObjectURL(blob);
-                img.src = objectUrl;
-                pdfWrapper.innerHTML = '';
-                pdfWrapper.appendChild(img);
-                isRendering = false;
-            })
-            .catch(error => {
-                console.error('Error loading image:', error);
-                pdfWrapper.innerHTML = `<div style="padding: 20px; text-align: center; color: var(--text-secondary);">
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error(`Failed to load image: ${response.status} ${response.statusText}`);
+                    }
+                    return response.blob();
+                })
+                .then(blob => {
+                    const objectUrl = URL.createObjectURL(blob);
+                    img.src = objectUrl;
+                    pdfWrapper.innerHTML = '';
+                    pdfWrapper.appendChild(img);
+                    isRendering = false;
+                })
+                .catch(error => {
+                    console.error('Error loading image:', error);
+                    pdfWrapper.innerHTML = `<div style="padding: 20px; text-align: center; color: var(--text-secondary);">
                     <p>Unable to load image preview.</p>
                     <p style="font-size: 0.85rem; margin-top: 8px;">${error.message || 'Unknown error'}</p>
                 </div>`;
-                isRendering = false;
-            });
-            
+                    isRendering = false;
+                });
+
         } else if (isPdf && window.pdfjsLib) {
             // Render PDF file - use fetch to ensure authentication works
             try {
@@ -675,23 +681,23 @@ async function renderDocumentPreview(docData) {
                     credentials: 'include',
                     headers: headers
                 });
-                
+
                 if (!response.ok) {
                     throw new Error(`Failed to load PDF: ${response.status} ${response.statusText}`);
                 }
-                
+
                 const blob = await response.blob();
                 const objectUrl = URL.createObjectURL(blob);
-                
+
                 // Load PDF from blob URL
                 const loadingTask = window.pdfjsLib.getDocument({
                     url: objectUrl,
                     withCredentials: false  // Not needed for blob URLs
                 });
-                
+
                 pdfDocInstance = await loadingTask.promise;
                 currentOverlayChunks = docData.detected_chunks || [];
-            
+
                 // Pre-assign numbers to all chunks for consistent labeling
                 if (currentOverlayChunks) {
                     currentOverlayChunks.forEach(chunk => {
@@ -699,7 +705,7 @@ async function renderDocumentPreview(docData) {
                         getNumberedLabel(chunkType, chunk.id || '');
                     });
                 }
-            
+
                 await renderAllPdfPages();
                 isRendering = false;
             } catch (pdfError) {

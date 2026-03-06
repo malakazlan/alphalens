@@ -21,12 +21,19 @@
 }
 
 #analyzer-section {
-    /* min-height: calc(100vh - 60px); */
+    /* layout managed by flex parent */
+    display: flex;
+    flex-direction: column;
 }
 
+
 .analyzer-initial-state {
-    /* min-height: calc(100vh - 160px); */
+    /* layout managed by flex parent */
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
 }
+
 
 .coming-soon-section {
     /* min-height: calc(100vh - 60px); */
@@ -1076,4 +1083,952 @@
         gap: 28px;
         padding: 36px 16px 24px;
     }
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   EXTRACTED TABLE — Landing.AI-style (pixel-perfect match)
+   Matches: white bg, light-gray row borders, right-aligned numbers,
+   section header rows spanning full width, clean outer border.
+   ═══════════════════════════════════════════════════════════════════ */
+
+.extracted-table-wrapper {
+    overflow-x: auto;
+    border-radius: 4px;
+    border: 1px solid #e5e7eb;
+    margin: 8px 0 16px;
+    background: #fff;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+}
+
+.extracted-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.84rem;
+    font-family: 'Inter', -apple-system, sans-serif;
+    background: #fff;
+    table-layout: auto;
+}
+
+/* Header row */
+.extracted-table thead tr {
+    background: #f9fafb;
+    border-bottom: 1px solid #d1d5db;
+}
+
+.extracted-table th {
+    color: #374151;
+    font-weight: 600;
+    text-align: left;
+    padding: 10px 16px;
+    border-bottom: 1px solid #d1d5db;
+    border-right: 1px solid #f3f4f6;
+    white-space: nowrap;
+    font-size: 0.82rem;
+    letter-spacing: 0.01em;
+}
+
+.extracted-table th:last-child {
+    border-right: none;
+}
+
+/* Body cells */
+.extracted-table td {
+    padding: 8px 16px;
+    border-bottom: 1px solid #f3f4f6;
+    border-right: 1px solid #f3f4f6;
+    color: #111827;
+    vertical-align: middle;
+    line-height: 1.45;
+}
+
+.extracted-table td:last-child {
+    border-right: none;
+}
+
+.extracted-table tbody tr:last-child td {
+    border-bottom: none;
+}
+
+/* Alternating rows: every-other gets very light background */
+.extracted-table tbody tr:nth-child(even) td {
+    background: #fafafa;
+}
+
+/* Row hover */
+.extracted-table tbody tr:hover td {
+    background: #f0fdf4 !important;
+    transition: background 0.15s ease;
+}
+
+/* ── Right-align numeric cells ──────────────────────────────────────
+   ADE returns numeric values in cells. Detect via content and right-align.
+   Also: any <td> that contains ONLY digits, commas, dots, $, %, () = numeric
+   ──────────────────────────────────────────────────────────────────*/
+.extracted-table td:not(:first-child) {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+}
+
+.extracted-table th:not(:first-child) {
+    text-align: right;
+}
+
+/* ── Section header rows (full-width label like "Assets", "Current Assets")
+   These are rows where a single <td> spans all columns via colspan,
+   or rows where all but the first td are empty — style them as group headers.
+   ──────────────────────────────────────────────────────────────────*/
+.extracted-table td[colspan] {
+    font-weight: 600;
+    color: #1f2937;
+    background: #f9fafb !important;
+    border-bottom: 1px solid #e5e7eb;
+    text-align: left !important;
+}
+
+/* Total rows (last row of a section — bold) */
+.extracted-table tr.total-row td,
+.extracted-table tr:has(> td:first-child:matches([class*=total], [class*=Total])) td {
+    font-weight: 600;
+    border-top: 1px solid #d1d5db;
+}
+
+/* Cell-level highlight when chat citation is clicked */
+.extracted-table td.cell-highlighted {
+    background: #bbf7d0 !important;
+    outline: 2px solid #059669;
+    outline-offset: -2px;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   LANDING.AI-STYLE TYPE-COLORED OVERLAYS + MARKDOWN HIGHLIGHTS
+   All values use !important to beat style.css .overlay-box green defaults
+   Text   → #32D583  (emerald green)
+   Table  → #2193FD  (blue)
+   Figure → #FF5CFF  (pink/purple)
+   ═══════════════════════════════════════════════════════════════ */
+
+/* ── Override style.css base .overlay-box green globally ───── */
+.overlay-box {
+    border-radius: 2px !important;
+    transition: background 0.12s ease, border-color 0.12s ease, box-shadow 0.12s ease !important;
+    transform: none !important;
+    /* kill style.css scale(1.02) hover */
+}
+
+/* Kill the generic green active/highlighted from style.css */
+.overlay-box.active,
+.overlay-box.highlighted {
+    background: transparent !important;
+    box-shadow: none !important;
+}
+
+/* ── Text zones (green) ────────────────────────────────────── */
+.overlay-box--text {
+    border: 1.5px solid #32D583 !important;
+    background: rgba(50, 213, 131, 0.18) !important;
+}
+
+.overlay-box--text:hover {
+    background: rgba(50, 213, 131, 0.32) !important;
+    box-shadow: 0 0 0 1.5px #32D583 !important;
+    transform: none !important;
+}
+
+.overlay-box--text.active {
+    background: transparent !important;
+    border: 2px solid #32D583 !important;
+    box-shadow: 0 0 0 1px #32D583 !important;
+}
+
+/* ── Table zones (blue) — matches Landing.AI blue fill ─────── */
+.overlay-box--table {
+    border: 1.5px solid #2193FD !important;
+    background: rgba(33, 147, 253, 0.12) !important;
+}
+
+.overlay-box--table:hover {
+    background: rgba(33, 147, 253, 0.22) !important;
+    box-shadow: 0 0 0 1.5px #2193FD !important;
+    transform: none !important;
+}
+
+.overlay-box--table.active {
+    background: transparent !important;
+    border: 2.5px solid #2193FD !important;
+    box-shadow: 0 0 0 1px #2193FD !important;
+}
+
+/* ── TableCell sub-zones: INVISIBLE at rest, visible ONLY when .active ── */
+/* At rest: completely hidden — no border, no fill, no pointer interference   */
+.overlay-box[data-chunk-type="table_cell"] {
+    border: none !important;
+    background: transparent !important;
+    pointer-events: none !important;
+    opacity: 0 !important;
+}
+
+/* Active (triggered by markdown cell click): solid blue border + soft fill   */
+.overlay-box[data-chunk-type="table_cell"].active {
+    border: 2px solid #2193FD !important;
+    background: rgba(33, 147, 253, 0.15) !important;
+    box-shadow: 0 0 0 3px rgba(33, 147, 253, 0.22) !important;
+    pointer-events: auto !important;
+    opacity: 1 !important;
+    border-radius: 2px !important;
+}
+
+/* Keep label always visible (not just on hover) when cell overlay is active  */
+.overlay-box[data-chunk-type="table_cell"].active .overlay-label {
+    opacity: 1 !important;
+    visibility: visible !important;
+}
+
+/* ── Figure / Chart / Graph zones (pink) ───────────────────── */
+.overlay-box--figure {
+    border: 1.5px solid #FF5CFF !important;
+    background: rgba(255, 92, 255, 0.13) !important;
+}
+
+.overlay-box--figure:hover {
+    background: rgba(255, 92, 255, 0.26) !important;
+    box-shadow: 0 0 0 1.5px #FF5CFF !important;
+    transform: none !important;
+}
+
+.overlay-box--figure.active {
+    background: transparent !important;
+    border: 2px solid #FF5CFF !important;
+    box-shadow: 0 0 0 1px #FF5CFF !important;
+}
+
+/* ── Overlay label tags (colored pill per type) ─────────────── */
+.overlay-label {
+    position: absolute !important;
+    top: -20px !important;
+    left: 0 !important;
+    font-size: 10px !important;
+    font-weight: 700 !important;
+    padding: 1px 5px !important;
+    border-radius: 3px 3px 0 0 !important;
+    white-space: nowrap !important;
+    opacity: 0 !important;
+    visibility: hidden !important;
+    transition: opacity 0.12s !important;
+    pointer-events: none !important;
+    z-index: 20 !important;
+}
+
+.overlay-box--text .overlay-label {
+    background: #32D583 !important;
+    color: #000 !important;
+}
+
+.overlay-box--table .overlay-label {
+    background: #2193FD !important;
+    color: #fff !important;
+}
+
+.overlay-box--figure .overlay-label {
+    background: #FF5CFF !important;
+    color: #fff !important;
+}
+
+.overlay-box:hover .overlay-label {
+    opacity: 1 !important;
+    visibility: visible !important;
+}
+
+/* ── Markdown section highlight — override style.css green ─── */
+.markdown-section.highlighted {
+    border-radius: 6px !important;
+    box-shadow: none !important;
+    transform: none !important;
+}
+
+/* Reset style.css green highlight */
+.markdown-section.highlighted {
+    border-color: inherit !important;
+    background: transparent !important;
+}
+
+.markdown-section.highlighted--text {
+    background-color: rgba(50, 213, 131, 0.09) !important;
+    border: 1.5px solid #32D583 !important;
+    box-shadow: 0 0 0 3px rgba(50, 213, 131, 0.12) !important;
+}
+
+.markdown-section.highlighted--table {
+    background-color: rgba(33, 147, 253, 0.09) !important;
+    border: 1.5px solid #2193FD !important;
+    box-shadow: 0 0 0 3px rgba(33, 147, 253, 0.12) !important;
+}
+
+.markdown-section.highlighted--figure {
+    background-color: rgba(255, 92, 255, 0.08) !important;
+    border: 1.5px solid #FF5CFF !important;
+    box-shadow: 0 0 0 3px rgba(255, 92, 255, 0.10) !important;
+}
+
+/* ── Section type badge colors ──────────────────────────────── */
+.markdown-section[data-chunk-type="text"] .section-type {
+    color: #059669 !important;
+}
+
+.markdown-section[data-chunk-type="table"] .section-type,
+.markdown-section[data-chunk-type="table_cell"] .section-type {
+    color: #1d6fce !important;
+}
+
+.markdown-section[data-chunk-type="figure"] .section-type,
+.markdown-section[data-chunk-type="chart"] .section-type,
+.markdown-section[data-chunk-type="graph"] .section-type {
+    color: #c026d3 !important;
+}
+
+/* ── Extracted table: Landing.AI style — no heavy colors ────── */
+.extracted-table {
+    border-collapse: collapse !important;
+    font-size: 0.84rem !important;
+}
+
+/* Neutral light gray header — NOT dark blue */
+.extracted-table thead th {
+    background: #f8fafc !important;
+    color: #374151 !important;
+    font-weight: 600 !important;
+    border-bottom: 2px solid #e2e8f0 !important;
+    border-color: #e2e8f0 !important;
+    padding: 8px 12px !important;
+    text-align: left !important;
+}
+
+/* Clean white/very-light-blue alternating rows */
+.extracted-table tbody tr:nth-child(odd) {
+    background: #fff !important;
+}
+
+.extracted-table tbody tr:nth-child(even) {
+    background: #f9fafb !important;
+}
+
+.extracted-table tbody tr:hover {
+    background: rgba(33, 147, 253, 0.07) !important;
+}
+
+.extracted-table td {
+    border-color: #e5e7eb !important;
+    padding: 7px 12px !important;
+}
+
+/* ── Cell-level highlight → table blue outline, NO heavy fill ── */
+.extracted-table td.cell-highlighted {
+    background: rgba(33, 147, 253, 0.14) !important;
+    outline: 2px solid #2193FD !important;
+    outline-offset: -2px !important;
+    border-radius: 2px !important;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   COMPACT WORKSPACE SIDEBAR  — matches Landing.AI thin sidebar
+   ═══════════════════════════════════════════════════════════════ */
+#workspace-sidebar,
+.control-panel#workspace-sidebar {
+    width: 220px !important;
+    min-width: 180px !important;
+    max-width: 240px !important;
+    padding: 12px 10px !important;
+    overflow-x: hidden !important;
+}
+
+/* Sidebar header: tighter */
+#workspace-sidebar .sidebar-header {
+    padding: 0 0 10px 0 !important;
+    margin-bottom: 8px !important;
+}
+
+#workspace-sidebar .panel-title {
+    font-size: 0.78rem !important;
+    font-weight: 700 !important;
+    text-transform: uppercase !important;
+    letter-spacing: 0.08em !important;
+    color: var(--text-secondary) !important;
+}
+
+#workspace-sidebar .panel-subtitle,
+#workspace-sidebar .sidebar-subtitle {
+    font-size: 0.72rem !important;
+    color: var(--text-secondary) !important;
+    line-height: 1.3 !important;
+    display: none !important;
+    /* hide the "Track ingestion…" description */
+}
+
+/* Logged-in-as row: compact */
+#workspace-sidebar .user-info,
+#workspace-sidebar .logged-in-info,
+#workspace-sidebar .sidebar-user {
+    font-size: 0.72rem !important;
+    padding: 6px 0 !important;
+    color: var(--text-secondary) !important;
+    white-space: nowrap !important;
+    overflow: hidden !important;
+    text-overflow: ellipsis !important;
+}
+
+/* Recent files list: smaller items */
+#workspace-sidebar .document-list li,
+#workspace-sidebar .recent-file-item,
+#workspace-sidebar .doc-item {
+    padding: 5px 7px !important;
+    font-size: 0.75rem !important;
+    line-height: 1.3 !important;
+    border-radius: 4px !important;
+}
+
+#workspace-sidebar .document-list .doc-name,
+#workspace-sidebar .doc-filename {
+    font-size: 0.75rem !important;
+    font-weight: 500 !important;
+}
+
+#workspace-sidebar .doc-date,
+#workspace-sidebar .upload-time {
+    font-size: 0.68rem !important;
+    color: var(--text-secondary) !important;
+}
+
+/* Status badges: smaller */
+#workspace-sidebar .status-badge,
+#workspace-sidebar .doc-status {
+    font-size: 0.65rem !important;
+    padding: 1px 6px !important;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   COMPACT ICON-RAIL WORKSPACE SIDEBAR  (Landing.AI Style)
+   ═══════════════════════════════════════════════════════════════ */
+
+/* ── Result-state layout: rail + main area side by side ──────── */
+#analyzer-result-state {
+    display: flex !important;
+    flex-direction: row !important;
+    height: 100% !important;
+    overflow: hidden !important;
+    position: relative;
+}
+
+/* ── The rail itself — light background, black outline icons ── */
+#analyzer-result-state .ws-rail,
+#workspace-rail.ws-rail,
+.ws-rail {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    width: 56px;
+    min-width: 56px;
+    height: 100%;
+    background: #f1f5f9 !important;
+    border-right: 1px solid rgba(0, 0, 0, 0.08);
+    padding: 10px 0;
+    gap: 4px;
+    position: relative;
+    z-index: 50;
+    flex-shrink: 0;
+}
+
+/* Logo at top */
+.ws-rail-logo {
+    width: 38px;
+    height: 38px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin-bottom: 8px;
+}
+
+/* Generic rail icon button — black outline icons on light rail */
+.ws-rail-btn {
+    position: relative;
+    width: 38px;
+    height: 38px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: transparent;
+    border: none;
+    border-radius: 10px;
+    cursor: pointer;
+    color: #0f172a;
+    transition: background 0.15s, color 0.15s;
+    outline: none;
+}
+
+/* Ensure SVG icons render as clear stroke shapes */
+.ws-rail-btn svg {
+    stroke: currentColor;
+    fill: none;
+    flex-shrink: 0;
+}
+
+.ws-rail-btn:hover,
+.ws-rail-btn--active {
+    background: rgba(0, 0, 0, 0.06);
+    color: #0f172a;
+}
+
+.ws-rail-btn:hover svg,
+.ws-rail-btn--active svg {
+    stroke: currentColor;
+}
+
+.ws-rail-btn:active {
+    transform: scale(0.93);
+}
+
+/* Upload button: green pill — black outline icon on light rail */
+.ws-rail-btn--upload {
+    width: 38px;
+    height: 38px;
+    background: #22c55e !important;
+    color: #fff !important;
+    border-radius: 12px !important;
+    margin-top: 4px;
+    box-shadow: 0 2px 8px rgba(34, 197, 94, 0.35);
+    transition: background 0.15s, box-shadow 0.15s, transform 0.1s;
+}
+
+.ws-rail-btn--upload svg {
+    stroke: #0f172a !important;
+    fill: none !important;
+}
+
+.ws-rail-btn--upload:hover {
+    background: #16a34a !important;
+    box-shadow: 0 4px 14px rgba(34, 197, 94, 0.5);
+}
+
+.ws-rail-btn--upload:hover svg {
+    stroke: #0f172a !important;
+}
+
+/* Documents badge */
+.ws-badge {
+    position: absolute;
+    top: 4px;
+    right: 4px;
+    min-width: 14px;
+    height: 14px;
+    background: #6366f1;
+    color: #fff;
+    font-size: 9px;
+    font-weight: 700;
+    border-radius: 7px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0 3px;
+    pointer-events: none;
+    line-height: 1;
+}
+
+/* Spacer pushes avatar to bottom */
+.ws-rail-spacer {
+    flex: 1;
+}
+
+/* User avatar — icon + initials */
+.ws-rail-avatar {
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    justify-content: center;
+    gap: 2px;
+    color: #fff;
+    font-size: 10px;
+    font-weight: 700;
+    cursor: pointer;
+    margin-bottom: 4px;
+    border: 2px solid rgba(99, 102, 241, 0.35);
+    transition: border-color 0.15s;
+}
+
+.ws-rail-avatar-icon {
+    flex-shrink: 0;
+    width: 14px;
+    height: 14px;
+    opacity: 0.95;
+    stroke: currentColor;
+    fill: none;
+}
+
+.ws-rail-avatar-initials {
+    line-height: 1;
+    font-size: 9px;
+}
+
+.ws-rail-avatar:hover {
+    border-color: #6366f1;
+}
+
+/* ── Documents item + flyout panel ───────────────────────────── */
+.ws-rail-item {
+    position: relative;
+}
+
+.ws-flyout {
+    position: absolute;
+    left: calc(100% + 8px);
+    top: 0;
+    width: 280px;
+    background: #ffffff;
+    border: 1px solid #e5e7eb;
+    border-radius: 12px;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.18);
+    opacity: 0;
+    visibility: hidden;
+    transform: translateX(-8px);
+    transition: opacity 0.18s ease, transform 0.18s ease, visibility 0.18s;
+    z-index: 200;
+    overflow: hidden;
+    max-height: 70vh;
+    display: flex;
+    flex-direction: column;
+}
+
+/* Show flyout on hover of the parent item */
+.ws-rail-item--docs:hover .ws-flyout,
+.ws-flyout.ws-flyout--open {
+    opacity: 1;
+    visibility: visible;
+    transform: translateX(0);
+}
+
+.ws-flyout-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 14px 8px;
+    font-size: 0.82rem;
+    font-weight: 700;
+    color: #1a1a1a;
+    border-bottom: 1px solid #f0f0f0;
+    flex-shrink: 0;
+}
+
+.ws-flyout-count {
+    background: rgba(99, 102, 241, 0.2);
+    color: #6366f1;
+    font-size: 0.7rem;
+    font-weight: 700;
+    border-radius: 10px;
+    padding: 1px 7px;
+}
+
+.ws-flyout-list {
+    list-style: none;
+    margin: 0;
+    padding: 6px 0;
+    overflow-y: auto;
+    flex: 1;
+}
+
+.ws-flyout-list::-webkit-scrollbar {
+    width: 4px;
+}
+
+.ws-flyout-list::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.12);
+    border-radius: 4px;
+}
+
+/* Document items in flyout */
+.ws-flyout-list .document-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 14px;
+    cursor: pointer;
+    transition: background 0.12s;
+    border: none;
+    background: transparent;
+}
+
+.ws-flyout-list .document-item:hover {
+    background: #f5f5f5;
+}
+
+.ws-flyout-list .document-item.active {
+    background: rgba(99, 102, 241, 0.08);
+}
+
+.ws-flyout-list .doc-icon {
+    width: 28px;
+    height: 28px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #f3f4f6;
+    border-radius: 6px;
+    flex-shrink: 0;
+    color: #ef4444;
+    font-size: 10px;
+    font-weight: 700;
+}
+
+.ws-flyout-list .doc-icon--img {
+    color: #22c55e;
+}
+
+.ws-flyout-list .doc-icon--pdf {
+    color: #ef4444;
+}
+
+.ws-flyout-list .doc-info {
+    overflow: hidden;
+    flex: 1;
+}
+
+.ws-flyout-list .doc-name {
+    font-size: 0.8rem;
+    font-weight: 500;
+    color: #111111;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.ws-flyout-list .doc-meta-small {
+    font-size: 0.68rem;
+    color: #6b7280;
+    margin-top: 1px;
+    display: flex;
+    align-items: center;
+    gap: 3px;
+}
+
+/* 3-dot kebab button inside flyout items */
+.ws-flyout-list .doc-kebab {
+    flex-shrink: 0;
+    width: 24px;
+    height: 24px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: transparent;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    /* Dark grey dots — visible on white flyout background */
+    color: #4b5563;
+    fill: #4b5563;
+    opacity: 0;
+    transition: opacity 0.15s, background 0.12s, color 0.12s;
+    padding: 0;
+}
+
+.ws-flyout-list .doc-kebab svg {
+    fill: #4b5563;
+}
+
+.ws-flyout-list .document-item:hover .doc-kebab {
+    opacity: 1;
+}
+
+.ws-flyout-list .doc-kebab:hover {
+    background: #fee2e2;
+    color: #ef4444;
+}
+
+.ws-flyout-list .doc-kebab:hover svg {
+    fill: #ef4444;
+}
+
+/* Presaved doc cards: 3-dot kebab */
+.presaved-doc-item {
+    position: relative;
+}
+
+.presaved-doc-kebab {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    width: 28px;
+    height: 28px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: transparent;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+    /* Semi-transparent dark dots visible on dark card bg */
+    color: rgba(255, 255, 255, 0.6);
+    fill: rgba(255, 255, 255, 0.6);
+    opacity: 0;
+    transition: opacity 0.15s, background 0.12s;
+    z-index: 5;
+}
+
+.presaved-doc-kebab svg {
+    fill: rgba(255, 255, 255, 0.7);
+}
+
+.presaved-doc-item:hover .presaved-doc-kebab {
+    opacity: 1;
+}
+
+.presaved-doc-kebab:hover {
+    background: rgba(239, 68, 68, 0.1);
+    color: #ef4444;
+}
+
+/* Delete confirm tooltip */
+.doc-delete-confirm {
+    position: absolute;
+    top: 36px;
+    right: 8px;
+    background: #fff;
+    border: 1px solid #fca5a5;
+    border-radius: 8px;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.14);
+    padding: 8px 12px;
+    z-index: 100;
+    white-space: nowrap;
+    font-size: 0.78rem;
+    color: #111;
+    display: none;
+}
+
+.doc-delete-confirm.show {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+}
+
+.doc-delete-confirm button {
+    padding: 3px 10px;
+    border-radius: 5px;
+    border: none;
+    font-size: 0.75rem;
+    cursor: pointer;
+    font-weight: 600;
+}
+
+.doc-delete-confirm .btn-confirm-delete {
+    background: #ef4444;
+    color: #fff;
+}
+
+.doc-delete-confirm .btn-cancel-delete {
+    background: #f3f4f6;
+    color: #333;
+}
+
+/* ── main-content-area fills remaining space ──────────────────── */
+.main-content-area {
+    flex: 1 !important;
+    min-width: 0;
+    display: flex !important;
+    overflow: hidden;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   EXTRACT TAB STYLES
+   ═══════════════════════════════════════════════════════════════ */
+.extract-panel-header {
+    padding: 14px 16px 10px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+    flex-shrink: 0;
+}
+
+.extract-subtitle {
+    font-size: 0.78rem;
+    color: var(--text-secondary, #888);
+    margin-top: 3px;
+}
+
+.extract-content {
+    flex: 1;
+    overflow-y: auto;
+    padding: 12px 16px;
+}
+
+.extract-empty {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    height: 200px;
+    color: var(--text-secondary, #666);
+    font-size: 0.85rem;
+}
+
+.extract-empty svg {
+    opacity: 0.4;
+}
+
+/* Extract field cards grid */
+.extract-group {
+    margin-bottom: 20px;
+}
+
+.extract-group-title {
+    font-size: 0.72rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: #6366f1;
+    margin-bottom: 8px;
+}
+
+.extract-fields {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.extract-field {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 8px 12px;
+    background: var(--bg-secondary, #16171a);
+    border-radius: 8px;
+    border: 1px solid rgba(255, 255, 255, 0.05);
+    transition: border-color 0.12s;
+}
+
+.extract-field:hover {
+    border-color: rgba(99, 102, 241, 0.3);
+}
+
+.extract-field-key {
+    font-size: 0.75rem;
+    color: var(--text-secondary, #888);
+    flex-shrink: 0;
+    width: 38%;
+    padding-top: 1px;
+}
+
+.extract-field-val {
+    font-size: 0.82rem;
+    font-weight: 500;
+    color: var(--text, #fff);
+    flex: 1;
+    word-break: break-word;
+}
+
+.extract-confidence {
+    font-size: 0.65rem;
+    color: #22c55e;
+    background: rgba(34, 197, 94, 0.1);
+    border-radius: 4px;
+    padding: 1px 5px;
+    flex-shrink: 0;
+    margin-top: 2px;
 }

@@ -5,9 +5,17 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Alpha Lens — Financial Analysis Platform</title>
-    <link rel="stylesheet" href="/static/css/style.css?v=6.0">
+    <link rel="stylesheet" href="/static/css/style.css?v=7.0">
     <link rel="stylesheet" href="/static/css/finbot.css?v=5.0">
-    <link rel="stylesheet" href="/static/css/_premium_additions.css?v=3.0">
+    <link rel="stylesheet" href="/static/css/_premium_additions.css?v=13.0">
+
+
+
+
+
+
+
+
 </head>
 
 <body>
@@ -160,8 +168,9 @@
                 </div>
 
                 <!-- Hidden file input for action cards -->
-                <input type="file" id="action-card-file-input" accept=".pdf,.png,.jpg,.jpeg,.gif,.bmp,.tiff"
-                    style="display: none;">
+                <input type="file" id="action-card-file-input"
+                    accept=".pdf,.docx,.doc,.html,.htm,.png,.jpg,.jpeg,.tiff,.tif,.webp" style="display: none;">
+
 
                 <!-- Action Cards -->
                 <div class="action-cards-container">
@@ -263,196 +272,201 @@
 
             <!-- Result State: Document Viewer + Parse Panel -->
             <div class="analyzer-result-state" id="analyzer-result-state" style="display: none;">
-                <button class="sidebar-toggle" id="sidebar-toggle" title="Toggle Sidebar">
-                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-                        stroke-linecap="round" stroke-linejoin="round">
-                        <line x1="3" y1="12" x2="21" y2="12"></line>
-                        <line x1="3" y1="6" x2="21" y2="6"></line>
-                        <line x1="3" y1="18" x2="21" y2="18"></line>
-                    </svg>
-                </button>
+                <!-- ── Compact Icon-Rail Workspace Sidebar (Landing.AI style) ─────── -->
+                <aside class="ws-rail" id="workspace-rail">
+                    <!-- Alpha Lens Logo -->
+                    <div class="ws-rail-logo" title="Alpha Lens">
+                        <img src="/static/img/ALPHA LENS LOGO.png" alt="Alpha Lens"
+                            style="width:32px;height:32px;object-fit:contain;border-radius:6px;">
+                    </div>
 
-                <div class="dashboard">
-                    <aside class="control-panel glass-card" id="workspace-sidebar">
-                        <div class="sidebar-header">
-                            <div class="sidebar-header-left">
-                                <button class="back-to-cards-btn-inline" id="back-to-cards-btn" title="Back to Cards">
-                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                                        stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                                        <path d="M19 12H5M12 19l-7-7 7-7"></path>
-                                    </svg>
-                                </button>
-                                <div>
-                                    <div class="panel-title">Workspace</div>
-                                    <p class="doc-meta">Track ingestion & switch between documents.</p>
-                                </div>
-                            </div>
-                            <button class="sidebar-close-btn" id="sidebar-close-btn" title="Close Sidebar">
-                                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                                    stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                                    <line x1="18" y1="6" x2="6" y2="18"></line>
-                                    <line x1="6" y1="6" x2="18" y2="18"></line>
-                                </svg>
-                            </button>
-                        </div>
-                        <div
-                            style="margin-bottom: 16px; padding: 12px; background: var(--bg-secondary); border-radius: 10px; width: 100%; box-sizing: border-box;">
-                            <div style="font-size: 0.85rem; color: var(--text-secondary);">Logged in as</div>
-                            <div id="user-info"
-                                style="font-size: 0.95rem; font-weight: 500; color: var(--text); margin-top: 4px;">-
-                            </div>
-                        </div>
-                        <div id="document-status"></div>
+                    <!-- Home → back to analyzer initial state (not site home) -->
+                    <button type="button" class="ws-rail-btn" id="ws-home-btn" title="Analyzer Home" data-rail-action="home">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                            stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+                            <polyline points="9 22 9 12 15 12 15 22" />
+                        </svg>
+                    </button>
 
-                        <!-- Recent Files Section -->
-                        <div class="recent-files-section">
-                            <div class="recent-files-header">
-                                <div class="recent-files-icon">
-                                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                                        stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                                        <!-- Two overlapping documents icon -->
-                                        <rect x="9" y="2" width="12" height="16" rx="2" fill="none"></rect>
-                                        <path d="M5 6H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-1"></path>
-                                        <path d="M9 2v4h4"></path>
-                                        <path d="M5 10v4h4"></path>
-                                    </svg>
-                                </div>
-                                <h3 class="recent-files-title">Recent Files</h3>
+                    <!-- Documents (hover = flyout) -->
+                    <div class="ws-rail-item ws-rail-item--docs" id="ws-docs-item">
+                        <button class="ws-rail-btn ws-rail-btn--active" id="ws-docs-btn" title="Recent Files">
+                            <!-- Two overlapping pages icon (Landing.AI style) -->
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M8 2H16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2z" />
+                                <path d="M4 6c-.55 0-1 .45-1 1v13c0 1.1.9 2 2 2h11c.55 0 1-.45 1-1" />
+                            </svg>
+                            <span class="ws-badge" id="ws-docs-badge">0</span>
+                        </button>
+                        <!-- Flyout Panel -->
+                        <div class="ws-flyout" id="ws-flyout">
+                            <div class="ws-flyout-header">
+                                <span>Files</span>
+                                <span class="ws-flyout-count" id="ws-flyout-count">0</span>
                             </div>
-                            <ul id="document-list" class="document-list">
+                            <ul class="ws-flyout-list" id="document-list">
                                 <!-- Populated dynamically -->
                             </ul>
                         </div>
-                    </aside>
+                    </div>
 
-                    <div class="main-content-area">
-                        <!-- Left: Document Viewer -->
-                        <div class="document-viewer-section resizable-panel">
-                            <div class="document-stage glass-card">
-                                <!-- Document Header: Doc name, Upload new file -->
-                                <div class="document-header-bar">
-                                    <span id="selected-file-name" class="document-name">No document selected</span>
-                                    <button type="button" class="upload-icon-btn" id="file-select-btn" title="Upload Document" aria-label="Upload new file">
-                                        <svg class="arrow-up-icon" width="14" height="14" viewBox="0 0 24 24"
-                                            fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"
-                                            stroke-linejoin="round">
-                                            <line x1="12" y1="19" x2="12" y2="5"></line>
-                                            <polyline points="5 12 12 5 19 12"></polyline>
-                                        </svg>
-                                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none"
-                                            stroke="currentColor" stroke-width="2">
-                                            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
-                                            <polyline points="17 8 12 3 7 8"></polyline>
-                                            <line x1="12" y1="3" x2="12" y2="15"></line>
-                                        </svg>
-                                    </button>
-                                </div>
-                                <div class="pdf-wrapper" id="pdf-wrapper">
-                                    <!-- Canvas elements will be created dynamically by renderAllPdfPages() -->
-                                </div>
+                    <!-- Upload -->
+                    <button class="ws-rail-btn ws-rail-btn--upload" id="file-select-btn" title="Upload Document"
+                        type="button">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                            stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                            <polyline points="16 16 12 12 8 16" />
+                            <line x1="12" y1="12" x2="12" y2="21" />
+                            <path d="M20.39 18.39A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3" />
+                        </svg>
+                    </button>
+
+                    <!-- Spacer -->
+                    <div class="ws-rail-spacer"></div>
+
+                    <!-- User Avatar (bottom) — icon + initials -->
+                    <div class="ws-rail-avatar" id="ws-user-avatar" title="Logged in">
+                        <svg class="ws-rail-avatar-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                            <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
+                            <circle cx="12" cy="7" r="4" />
+                        </svg>
+                        <span id="ws-user-initials" class="ws-rail-avatar-initials">?</span>
+                    </div>
+                </aside>
+
+
+
+                <div class="main-content-area">
+                    <!-- Left: Document Viewer -->
+                    <div class="document-viewer-section resizable-panel">
+                        <div class="document-stage glass-card">
+                            <!-- Document Header: Doc name -->
+                            <div class="document-header-bar">
+                                <span id="selected-file-name" class="document-name">No document selected</span>
+                            </div>
+
+                            <div class="pdf-wrapper" id="pdf-wrapper">
+                                <!-- Canvas elements will be created dynamically by renderAllPdfPages() -->
                             </div>
                         </div>
+                    </div>
 
-                        <!-- Resizer Handle -->
-                        <div class="resizer-handle" id="resizer-handle"></div>
+                    <!-- Resizer Handle -->
+                    <div class="resizer-handle" id="resizer-handle"></div>
 
-                        <!-- Right: Parse Data Panel -->
-                        <div class="parse-panel-section resizable-panel">
-                            <div class="glass-card" style="display: flex; flex-direction: column; height: 100%;">
-                                <!-- Top Level Tabs: Parse, Extract, Chat -->
-                                <div class="main-tabs">
-                                    <button class="main-tab active" data-tab="parse">Parse</button>
-                                    <button class="main-tab" data-tab="extract">Extract</button>
-                                    <button class="main-tab" data-tab="chat">Chat</button>
-                                </div>
+                    <!-- Right: Parse Data Panel -->
+                    <div class="parse-panel-section resizable-panel">
+                        <div class="glass-card" style="display: flex; flex-direction: column; height: 100%;">
+                            <!-- Top Level Tabs: Parse, Extract, Chat -->
+                            <div class="main-tabs">
+                                <button class="main-tab active" data-tab="parse">Parse</button>
+                                <button class="main-tab" data-tab="extract">Extract</button>
+                                <button class="main-tab" data-tab="chat">Chat</button>
+                            </div>
 
-                                <!-- Parse Tab Content -->
-                                <div class="tab-content-wrapper" id="parse-tab-content">
-                                    <div class="parse-panel-header">
-                                        <div class="panel-title">Parsed Data</div>
-                                        <div class="parse-view-tabs">
-                                            <button class="parse-view-tab active" data-view="markdown">Markdown</button>
-                                            <button class="parse-view-tab" data-view="json">JSON</button>
-                                        </div>
-                                    </div>
-                                    <div class="parse-content" id="parse-content">
-                                        <div id="markdown-view">
-                                            <p class="doc-meta">Select a document to view parsed data</p>
-                                        </div>
-                                        <div id="json-view" style="display: none;">
-                                            <pre id="json-content" class="json-view"></pre>
-                                        </div>
+                            <!-- Parse Tab Content -->
+                            <div class="tab-content-wrapper" id="parse-tab-content">
+                                <div class="parse-panel-header">
+                                    <div class="panel-title">Parsed Data</div>
+                                    <div class="parse-view-tabs">
+                                        <button class="parse-view-tab active" data-view="markdown">Markdown</button>
+                                        <button class="parse-view-tab" data-view="json">JSON</button>
                                     </div>
                                 </div>
+                                <div class="parse-content" id="parse-content">
+                                    <div id="markdown-view">
+                                        <p class="doc-meta">Select a document to view parsed data</p>
+                                    </div>
+                                    <div id="json-view" style="display: none;">
+                                        <pre id="json-content" class="json-view"></pre>
+                                    </div>
+                                </div>
+                            </div>
 
-                                <!-- Extract Tab Content -->
-                                <div class="tab-content-wrapper" id="extract-tab-content" style="display: none;">
+                            <!-- Extract Tab Content -->
+                            <div class="tab-content-wrapper" id="extract-tab-content" style="display: none;">
+                                <div class="extract-panel-header">
                                     <div class="panel-title">Extract</div>
-                                    <p class="doc-meta">Schema-based extraction coming soon</p>
+                                    <div class="extract-subtitle">Key fields extracted from the document by Landing.AI
+                                    </div>
                                 </div>
+                                <div class="extract-content" id="extract-content">
+                                    <div class="extract-empty">
+                                        <svg width="40" height="40" viewBox="0 0 24 24" fill="none"
+                                            stroke="currentColor" stroke-width="1.5">
+                                            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                                            <polyline points="14 2 14 8 20 8" />
+                                            <line x1="16" y1="13" x2="8" y2="13" />
+                                            <line x1="16" y1="17" x2="8" y2="17" />
+                                        </svg>
+                                        <p>Select a document to extract key fields</p>
+                                    </div>
+                                </div>
+                            </div>
 
-                                <!-- Chat Tab Content -->
-                                <div class="tab-content-wrapper chat-area" id="chat-tab-content" style="display: none;">
-                                    <div class="chat-container">
-                                        <!-- Chat Header with Description -->
-                                        <div class="chat-header">
-                                            <div class="chat-icon">
-                                                <!-- Test tube and flask icon -->
-                                                <svg width="64" height="64" viewBox="0 0 64 64" fill="none"
-                                                    xmlns="http://www.w3.org/2000/svg">
-                                                    <!-- Flask -->
-                                                    <path
-                                                        d="M20 16 L20 48 L16 52 L16 56 L48 56 L48 52 L44 48 L44 16 L20 16 Z"
-                                                        fill="#10b981" opacity="0.9" />
-                                                    <path d="M20 16 L44 16 L44 20 L20 20 Z" fill="#10b981" />
-                                                    <path d="M18 20 L18 24 L46 24 L46 20 Z" fill="#10b981"
-                                                        opacity="0.7" />
-                                                    <!-- Test tube -->
-                                                    <path
-                                                        d="M40 12 L40 32 L36 36 L36 40 L48 40 L48 36 L44 32 L44 12 L40 12 Z"
-                                                        fill="#06b6d4" opacity="0.9" />
-                                                    <circle cx="42" cy="8" r="3" fill="#06b6d4" />
-                                                    <!-- Bubbles -->
-                                                    <circle cx="24" cy="28" r="2" fill="#10b981" opacity="0.6" />
-                                                    <circle cx="30" cy="32" r="1.5" fill="#10b981" opacity="0.5" />
-                                                    <circle cx="26" cy="38" r="1.5" fill="#10b981" opacity="0.5" />
-                                                    <circle cx="38" cy="18" r="1.5" fill="#06b6d4" opacity="0.6" />
-                                                    <circle cx="46" cy="22" r="1" fill="#06b6d4" opacity="0.5" />
+
+                            <!-- Chat Tab Content -->
+                            <div class="tab-content-wrapper chat-area" id="chat-tab-content" style="display: none;">
+                                <div class="chat-container">
+                                    <!-- Chat Header with Description -->
+                                    <div class="chat-header">
+                                        <div class="chat-icon">
+                                            <!-- Test tube and flask icon -->
+                                            <svg width="64" height="64" viewBox="0 0 64 64" fill="none"
+                                                xmlns="http://www.w3.org/2000/svg">
+                                                <!-- Flask -->
+                                                <path
+                                                    d="M20 16 L20 48 L16 52 L16 56 L48 56 L48 52 L44 48 L44 16 L20 16 Z"
+                                                    fill="#10b981" opacity="0.9" />
+                                                <path d="M20 16 L44 16 L44 20 L20 20 Z" fill="#10b981" />
+                                                <path d="M18 20 L18 24 L46 24 L46 20 Z" fill="#10b981" opacity="0.7" />
+                                                <!-- Test tube -->
+                                                <path
+                                                    d="M40 12 L40 32 L36 36 L36 40 L48 40 L48 36 L44 32 L44 12 L40 12 Z"
+                                                    fill="#06b6d4" opacity="0.9" />
+                                                <circle cx="42" cy="8" r="3" fill="#06b6d4" />
+                                                <!-- Bubbles -->
+                                                <circle cx="24" cy="28" r="2" fill="#10b981" opacity="0.6" />
+                                                <circle cx="30" cy="32" r="1.5" fill="#10b981" opacity="0.5" />
+                                                <circle cx="26" cy="38" r="1.5" fill="#10b981" opacity="0.5" />
+                                                <circle cx="38" cy="18" r="1.5" fill="#06b6d4" opacity="0.6" />
+                                                <circle cx="46" cy="22" r="1" fill="#06b6d4" opacity="0.5" />
+                                            </svg>
+                                        </div>
+                                        <p class="chat-description">
+                                            Test our Agentic Document Extraction API by chatting with the doc. See
+                                            how it finds answers from forms, reports, and figures and highlights the
+                                            exact sources in the document.
+                                        </p>
+                                    </div>
+
+                                    <!-- Example Prompts Section -->
+                                    <div class="example-prompts-section" id="example-prompts-section"
+                                        style="display: none;">
+                                        <div class="example-prompts-title">Example prompts</div>
+                                        <div class="example-prompts-list" id="example-prompts-list">
+                                            <!-- Will be populated dynamically -->
+                                        </div>
+                                    </div>
+
+                                    <!-- Chat Messages Area -->
+                                    <div class="chat-messages" id="chat-messages">
+                                        <!-- Messages will be added here -->
+                                    </div>
+
+                                    <!-- Chat Input Area -->
+                                    <div class="chat-input-container">
+                                        <div class="chat-input">
+                                            <input type="text" id="chat-input" placeholder="Type your question">
+                                            <button id="chat-send" type="button" class="chat-send-btn">
+                                                <svg width="20" height="20" viewBox="0 0 24 24" fill="none"
+                                                    stroke="currentColor" stroke-width="2">
+                                                    <line x1="22" y1="2" x2="11" y2="13"></line>
+                                                    <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
                                                 </svg>
-                                            </div>
-                                            <p class="chat-description">
-                                                Test our Agentic Document Extraction API by chatting with the doc. See
-                                                how it finds answers from forms, reports, and figures and highlights the
-                                                exact sources in the document.
-                                            </p>
-                                        </div>
-
-                                        <!-- Example Prompts Section -->
-                                        <div class="example-prompts-section" id="example-prompts-section"
-                                            style="display: none;">
-                                            <div class="example-prompts-title">Example prompts</div>
-                                            <div class="example-prompts-list" id="example-prompts-list">
-                                                <!-- Will be populated dynamically -->
-                                            </div>
-                                        </div>
-
-                                        <!-- Chat Messages Area -->
-                                        <div class="chat-messages" id="chat-messages">
-                                            <!-- Messages will be added here -->
-                                        </div>
-
-                                        <!-- Chat Input Area -->
-                                        <div class="chat-input-container">
-                                            <div class="chat-input">
-                                                <input type="text" id="chat-input" placeholder="Type your question">
-                                                <button id="chat-send" type="button" class="chat-send-btn">
-                                                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none"
-                                                        stroke="currentColor" stroke-width="2">
-                                                        <line x1="22" y1="2" x2="11" y2="13"></line>
-                                                        <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
-                                                    </svg>
-                                                </button>
-                                            </div>
+                                            </button>
                                         </div>
                                     </div>
                                 </div>
@@ -461,90 +475,91 @@
                     </div>
                 </div>
             </div>
-        </main>
+    </div>
+    </main>
 
-        <!-- Reports Section (inside .page for natural footer scroll) -->
-        <div id="reports-section" class="coming-soon-section" style="display: none;">
-            <div class="glass-card" style="text-align: center; padding: 80px 40px;">
-                <h2 style="font-size: 2.5rem; color: var(--text); margin-bottom: 16px;">Reports</h2>
-                <p style="font-size: 1.2rem; color: var(--text-secondary); margin-bottom: 32px;">Coming Soon</p>
-                <p style="color: var(--text-secondary); max-width: 600px; margin: 0 auto;">Automated report generation
-                    feature is under development.</p>
-            </div>
+    <!-- Reports Section (inside .page for natural footer scroll) -->
+    <div id="reports-section" class="coming-soon-section" style="display: none;">
+        <div class="glass-card" style="text-align: center; padding: 80px 40px;">
+            <h2 style="font-size: 2.5rem; color: var(--text); margin-bottom: 16px;">Reports</h2>
+            <p style="font-size: 1.2rem; color: var(--text-secondary); margin-bottom: 32px;">Coming Soon</p>
+            <p style="color: var(--text-secondary); max-width: 600px; margin: 0 auto;">Automated report generation
+                feature is under development.</p>
         </div>
+    </div>
 
-        <div id="optimizer-section" class="coming-soon-section" style="display: none;">
-            <div class="glass-card" style="text-align: center; padding: 80px 40px;">
-                <h2 style="font-size: 2.5rem; color: var(--text); margin-bottom: 16px;">Optimizer</h2>
-                <p style="font-size: 1.2rem; color: var(--text-secondary); margin-bottom: 32px;">Coming Soon</p>
-                <p style="color: var(--text-secondary); max-width: 600px; margin: 0 auto;">Portfolio optimization
-                    feature is under development.</p>
-            </div>
+    <div id="optimizer-section" class="coming-soon-section" style="display: none;">
+        <div class="glass-card" style="text-align: center; padding: 80px 40px;">
+            <h2 style="font-size: 2.5rem; color: var(--text); margin-bottom: 16px;">Optimizer</h2>
+            <p style="font-size: 1.2rem; color: var(--text-secondary); margin-bottom: 32px;">Coming Soon</p>
+            <p style="color: var(--text-secondary); max-width: 600px; margin: 0 auto;">Portfolio optimization
+                feature is under development.</p>
         </div>
+    </div>
 
-        <div id="spreadsheet-section" class="coming-soon-section" style="display: none;">
-            <div class="glass-card" style="text-align: center; padding: 80px 40px;">
-                <h2 style="font-size: 2.5rem; color: var(--text); margin-bottom: 16px;">Spreadsheet</h2>
-                <p style="font-size: 1.2rem; color: var(--text-secondary); margin-bottom: 32px;">Coming Soon</p>
-                <p style="color: var(--text-secondary); max-width: 600px; margin: 0 auto;">Spreadsheet integration
-                    feature is under development.</p>
-            </div>
+    <div id="spreadsheet-section" class="coming-soon-section" style="display: none;">
+        <div class="glass-card" style="text-align: center; padding: 80px 40px;">
+            <h2 style="font-size: 2.5rem; color: var(--text); margin-bottom: 16px;">Spreadsheet</h2>
+            <p style="font-size: 1.2rem; color: var(--text-secondary); margin-bottom: 32px;">Coming Soon</p>
+            <p style="color: var(--text-secondary); max-width: 600px; margin: 0 auto;">Spreadsheet integration
+                feature is under development.</p>
         </div>
+    </div>
 
-        <!-- Footer — inside .page, scrolls naturally like landing page -->
-        <footer class="main-footer">
-            <div class="footer-container">
-                <!-- Brand column -->
-                <div class="footer-column">
-                    <div class="footer-brand">
-                        <div class="footer-logo-icon">
-                            <img src="/static/img/ALPHA%20LENS%20LOGO.png" alt="Alpha Lens Logo">
-                        </div>
-                        <h3 class="footer-title">Alpha Lens</h3>
+    <!-- Footer — inside .page, scrolls naturally like landing page -->
+    <footer class="main-footer">
+        <div class="footer-container">
+            <!-- Brand column -->
+            <div class="footer-column">
+                <div class="footer-brand">
+                    <div class="footer-logo-icon">
+                        <img src="/static/img/ALPHA%20LENS%20LOGO.png" alt="Alpha Lens Logo">
                     </div>
-                    <p class="footer-tagline">Empowering smarter <em>financial</em> decisions through AI.</p>
+                    <h3 class="footer-title">Alpha Lens</h3>
                 </div>
-                <!-- Quick Links -->
-                <div class="footer-column">
-                    <h3>Quick Links</h3>
-                    <ul class="footer-links">
-                        <li><a href="#" onclick="showFeature('analyzer'); return false;">Analyzer</a></li>
-                        <li><a href="#" onclick="showFeature('reports'); return false;">Reports</a></li>
-                        <li><a href="#" onclick="showFeature('optimizer'); return false;">Optimizer</a></li>
-                        <li><a href="#" onclick="showFeature('finbot'); return false;">FinBot AI</a></li>
-                    </ul>
-                </div>
-                <!-- Contact -->
-                <div class="footer-column">
-                    <h3>Contact</h3>
-                    <p class="footer-contact">support@alphalens.com</p>
-                    <div class="footer-social">
-                        <a href="#" class="social-icon" aria-label="Twitter">
-                            <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor">
-                                <path
-                                    d="M19 4.74c-.74.33-1.54.55-2.38.65.85-.51 1.5-1.32 1.81-2.28-.8.47-1.68.81-2.62 1a4.1 4.1 0 0 0-6.99 3.74A11.64 11.64 0 0 1 1.39 3.62a4.1 4.1 0 0 0 1.27 5.48 4.05 4.05 0 0 1-1.86-.51v.05a4.1 4.1 0 0 0 3.29 4.02 4.1 4.1 0 0 1-1.85.07 4.1 4.1 0 0 0 3.83 2.85A8.23 8.23 0 0 1 1 16.41a11.62 11.62 0 0 0 6.29 1.84c7.55 0 11.68-6.26 11.68-11.68 0-.18 0-.35-.01-.53a8.35 8.35 0 0 0 2.05-2.13z" />
-                            </svg>
-                        </a>
-                        <a href="#" class="social-icon" aria-label="LinkedIn">
-                            <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor">
-                                <path
-                                    d="M18.52 0H1.48C.66 0 0 .66 0 1.48v17.04C0 19.34.66 20 1.48 20h17.04c.82 0 1.48-.66 1.48-1.48V1.48C20 .66 19.34 0 18.52 0zM5.93 17.04H2.96V7.5h2.97v9.54zM4.45 6.2c-.95 0-1.72-.77-1.72-1.72 0-.95.77-1.72 1.72-1.72.95 0 1.72.77 1.72 1.72 0 .95-.77 1.72-1.72 1.72zm12.59 10.84h-2.97v-4.64c0-1.11-.02-2.53-1.54-2.53-1.54 0-1.78 1.2-1.78 2.45v4.72H7.78V7.5h2.85v1.3h.04c.4-.75 1.37-1.54 2.82-1.54 3.01 0 3.57 1.98 3.57 4.55v5.23z" />
-                            </svg>
-                        </a>
-                        <a href="#" class="social-icon" aria-label="GitHub">
-                            <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor">
-                                <path fill-rule="evenodd"
-                                    d="M10 0C4.48 0 0 4.48 0 10c0 4.42 2.87 8.17 6.84 9.5.5.08.66-.23.66-.51v-1.69c-2.77.6-3.36-1.34-3.36-1.34-.46-1.16-1.11-1.47-1.11-1.47-.91-.62.07-.6.07-.6 1 .07 1.53 1.03 1.53 1.03.89 1.52 2.34 1.08 2.91.83.09-.65.35-1.09.63-1.34-2.22-.25-4.55-1.11-4.55-4.94 0-1.11.38-2 1.03-2.71-.1-.25-.45-1.29.1-2.64 0 0 .84-.27 2.75 1.02.79-.22 1.65-.33 2.5-.33.85 0 1.71.11 2.5.33 1.91-1.29 2.75-1.02 2.75-1.02.55 1.35.2 2.39.1 2.64.65.71 1.03 1.6 1.03 2.71 0 3.84-2.34 4.69-4.57 4.94.36.31.69.92.69 1.85v2.74c0 .27.16.59.67.5C17.14 18.17 20 14.42 20 10c0-5.52-4.48-10-10-10z"
-                                    clip-rule="evenodd" />
-                            </svg>
-                        </a>
-                    </div>
+                <p class="footer-tagline">Empowering smarter <em>financial</em> decisions through AI.</p>
+            </div>
+            <!-- Quick Links -->
+            <div class="footer-column">
+                <h3>Quick Links</h3>
+                <ul class="footer-links">
+                    <li><a href="#" onclick="showFeature('analyzer'); return false;">Analyzer</a></li>
+                    <li><a href="#" onclick="showFeature('reports'); return false;">Reports</a></li>
+                    <li><a href="#" onclick="showFeature('optimizer'); return false;">Optimizer</a></li>
+                    <li><a href="#" onclick="showFeature('finbot'); return false;">FinBot AI</a></li>
+                </ul>
+            </div>
+            <!-- Contact -->
+            <div class="footer-column">
+                <h3>Contact</h3>
+                <p class="footer-contact">support@alphalens.com</p>
+                <div class="footer-social">
+                    <a href="#" class="social-icon" aria-label="Twitter">
+                        <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor">
+                            <path
+                                d="M19 4.74c-.74.33-1.54.55-2.38.65.85-.51 1.5-1.32 1.81-2.28-.8.47-1.68.81-2.62 1a4.1 4.1 0 0 0-6.99 3.74A11.64 11.64 0 0 1 1.39 3.62a4.1 4.1 0 0 0 1.27 5.48 4.05 4.05 0 0 1-1.86-.51v.05a4.1 4.1 0 0 0 3.29 4.02 4.1 4.1 0 0 1-1.85.07 4.1 4.1 0 0 0 3.83 2.85A8.23 8.23 0 0 1 1 16.41a11.62 11.62 0 0 0 6.29 1.84c7.55 0 11.68-6.26 11.68-11.68 0-.18 0-.35-.01-.53a8.35 8.35 0 0 0 2.05-2.13z" />
+                        </svg>
+                    </a>
+                    <a href="#" class="social-icon" aria-label="LinkedIn">
+                        <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor">
+                            <path
+                                d="M18.52 0H1.48C.66 0 0 .66 0 1.48v17.04C0 19.34.66 20 1.48 20h17.04c.82 0 1.48-.66 1.48-1.48V1.48C20 .66 19.34 0 18.52 0zM5.93 17.04H2.96V7.5h2.97v9.54zM4.45 6.2c-.95 0-1.72-.77-1.72-1.72 0-.95.77-1.72 1.72-1.72.95 0 1.72.77 1.72 1.72 0 .95-.77 1.72-1.72 1.72zm12.59 10.84h-2.97v-4.64c0-1.11-.02-2.53-1.54-2.53-1.54 0-1.78 1.2-1.78 2.45v4.72H7.78V7.5h2.85v1.3h.04c.4-.75 1.37-1.54 2.82-1.54 3.01 0 3.57 1.98 3.57 4.55v5.23z" />
+                        </svg>
+                    </a>
+                    <a href="#" class="social-icon" aria-label="GitHub">
+                        <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor">
+                            <path fill-rule="evenodd"
+                                d="M10 0C4.48 0 0 4.48 0 10c0 4.42 2.87 8.17 6.84 9.5.5.08.66-.23.66-.51v-1.69c-2.77.6-3.36-1.34-3.36-1.34-.46-1.16-1.11-1.47-1.11-1.47-.91-.62.07-.6.07-.6 1 .07 1.53 1.03 1.53 1.03.89 1.52 2.34 1.08 2.91.83.09-.65.35-1.09.63-1.34-2.22-.25-4.55-1.11-4.55-4.94 0-1.11.38-2 1.03-2.71-.1-.25-.45-1.29.1-2.64 0 0 .84-.27 2.75 1.02.79-.22 1.65-.33 2.5-.33.85 0 1.71.11 2.5.33 1.91-1.29 2.75-1.02 2.75-1.02.55 1.35.2 2.39.1 2.64.65.71 1.03 1.6 1.03 2.71 0 3.84-2.34 4.69-4.57 4.94.36.31.69.92.69 1.85v2.74c0 .27.16.59.67.5C17.14 18.17 20 14.42 20 10c0-5.52-4.48-10-10-10z"
+                                clip-rule="evenodd" />
+                        </svg>
+                    </a>
                 </div>
             </div>
-            <div class="footer-bottom">
-                &copy; 2025 Alpha Lens. Built with AI for smarter financial decisions.
-            </div>
-        </footer>
+        </div>
+        <div class="footer-bottom">
+            &copy; 2025 Alpha Lens. Built with AI for smarter financial decisions.
+        </div>
+    </footer>
 
     </div><!-- end .page -->
 
@@ -591,7 +606,8 @@
             <!-- Topbar -->
             <div class="finbot-chat-topbar">
                 <div class="finbot-chat-topbar-left">
-                    <span class="finbot-topbar-icon"><img src="/static/img/finbot.png" alt="FinBot" class="finbot-topbar-logo"></span>
+                    <span class="finbot-topbar-icon"><img src="/static/img/finbot.png" alt="FinBot"
+                            class="finbot-topbar-logo"></span>
                     <div>
                         <div class="finbot-chat-topbar-title">Financial Assistant</div>
                         <div class="finbot-chat-topbar-sub">Ask about stocks, markets, investments&#8230;</div>
@@ -610,7 +626,8 @@
             <div class="finbot-chat-body" id="finbot-chat-body">
                 <div class="finbot-messages" id="finbot-messages">
                     <div class="finbot-welcome" id="finbot-welcome">
-                        <div class="finbot-welcome-glyph"><img src="/static/img/finbot.png" alt="FinBot" class="finbot-welcome-logo"></div>
+                        <div class="finbot-welcome-glyph"><img src="/static/img/finbot.png" alt="FinBot"
+                                class="finbot-welcome-logo"></div>
                         <h2 class="finbot-welcome-title">Ask FinBot</h2>
                         <p class="finbot-welcome-text">Get live stock prices, market news, and personalised investment
                             insights.</p>
@@ -687,11 +704,28 @@
     <!-- Load modules in dependency order -->
     <script src="/static/js/modules/utils.js?v=1.0"></script>
     <script src="/static/js/modules/auth.js?v=1.0"></script>
-    <script src="/static/js/modules/navigation.js?v=4.0"></script>
-    <script src="/static/js/modules/ui-components.js?v=1.0"></script>
-    <script src="/static/js/modules/documents.js?v=1.0"></script>
-    <script src="/static/js/modules/viewer.js?v=1.0"></script>
-    <script src="/static/js/modules/content.js?v=1.0"></script>
+    <script src="/static/js/modules/navigation.js?v=5.0"></script>
+
+    <script src="/static/js/modules/ui-components.js?v=3.0"></script>
+
+
+    <script src="/static/js/modules/documents.js?v=5.0"></script>
+
+
+
+    <script src="/static/js/modules/viewer.js?v=5.0"></script>
+
+
+
+    <script src="/static/js/modules/content.js?v=12.0"></script>
+
+
+
+
+
+
+
+
     <script src="/static/js/modules/chat.js?v=1.0"></script>
     <script src="/static/js/modules/reports.js?v=4.0"></script>
     <script src="/static/js/modules/finbot.js?v=2.0"></script>

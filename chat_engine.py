@@ -12,12 +12,362 @@ try:
 except ImportError:
     openai = None
 
-MAX_CONTEXT_CHARS = 8000
+MAX_CONTEXT_CHARS = 16000
 CITATION_PATTERN = re.compile(r"\[\[([^\]]+)\]\]")
+_FULL_CONTEXT_TOKEN_LIMIT = 30000
 
 # In-memory conversation history (in production, use Redis or database)
 # Format: {document_id: [{query: str, answer: str, timestamp: str}, ...]}
 conversation_history: Dict[str, List[Dict[str, Any]]] = {}
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Full-context builder -- convert ADE markdown to LLM-readable text
+# with inline element IDs the LLM can cite as [[id]]
+# ═══════════════════════════════════════════════════════════════════
+
+_ANCHOR_RE = re.compile(r"<a\s+id=['\"]([^'\"]+)['\"]\s*/?\s*>\s*</a>", re.IGNORECASE)
+_TABLE_OPEN_RE = re.compile(r"<table\s+id=['\"]([^'\"]+)['\"]>", re.IGNORECASE)
+_TD_WITH_ID_RE = re.compile(
+    r"<td\s+id=['\"]([^'\"]+)['\"](?:\s+colspan=['\"]?\d+['\"]?)?\s*>(.*?)</td>",
+    re.DOTALL | re.IGNORECASE,
+)
+_TR_RE = re.compile(r"<tr>(.*?)</tr>", re.DOTALL | re.IGNORECASE)
+_HTML_TAG_RE = re.compile(r"<[^>]+>")
+
+
+def _build_full_context(financial_data: Dict[str, Any]) -> Optional[str]:
+    """Convert ADE markdown into compact LLM-readable text with inline IDs.
+
+    Returns None if markdown is unavailable or exceeds the token limit,
+    signalling the caller to fall back to RAG.
+    """
+    raw_md = (financial_data.get("markdown") or "").strip()
+    if not raw_md:
+        return None
+
+    est_tokens = len(raw_md) // 4
+    if est_tokens > _FULL_CONTEXT_TOKEN_LIMIT:
+        return None
+
+    parts: List[str] = []
+    pos = 0
+
+    while pos < len(raw_md):
+        anchor_m = _ANCHOR_RE.search(raw_md, pos)
+        table_m = _TABLE_OPEN_RE.search(raw_md, pos)
+
+        next_pos = len(raw_md)
+        if anchor_m:
+            next_pos = min(next_pos, anchor_m.start())
+        if table_m:
+            next_pos = min(next_pos, table_m.start())
+
+        if next_pos == len(raw_md) and not anchor_m and not table_m:
+            trailing = _HTML_TAG_RE.sub("", raw_md[pos:]).strip()
+            if trailing:
+                parts.append(trailing)
+            break
+
+        if anchor_m and anchor_m.start() == next_pos:
+            between = _HTML_TAG_RE.sub("", raw_md[pos:anchor_m.start()]).strip()
+            if between:
+                parts.append(between)
+
+            chunk_id = anchor_m.group(1)
+            end_of_anchor = anchor_m.end()
+            next_element = _ANCHOR_RE.search(raw_md, end_of_anchor)
+            next_table = _TABLE_OPEN_RE.search(raw_md, end_of_anchor)
+
+            text_end = len(raw_md)
+            if next_element:
+                text_end = min(text_end, next_element.start())
+            if next_table:
+                text_end = min(text_end, next_table.start())
+
+            text_block = _HTML_TAG_RE.sub("", raw_md[end_of_anchor:text_end]).strip()
+            if text_block:
+                parts.append(f"[{chunk_id}] {text_block}")
+            pos = text_end
+
+        elif table_m and table_m.start() == next_pos:
+            between = _HTML_TAG_RE.sub("", raw_md[pos:table_m.start()]).strip()
+            if between:
+                parts.append(between)
+
+            table_id = table_m.group(1)
+            table_close_idx = raw_md.find("</table>", table_m.end())
+            if table_close_idx == -1:
+                table_close_idx = len(raw_md)
+            table_html = raw_md[table_m.start():table_close_idx + len("</table>")]
+
+            table_lines = [f"[Table {table_id}]"]
+            for tr_m in _TR_RE.finditer(table_html):
+                cells = _TD_WITH_ID_RE.findall(tr_m.group(1))
+                if not cells:
+                    continue
+                row_parts = []
+                for cell_id, cell_html in cells:
+                    cell_text = re.sub(r"<[^>]+>", "", cell_html).strip()
+                    if cell_text:
+                        row_parts.append(f"{cell_text} [{cell_id}]")
+                    else:
+                        row_parts.append(f"[{cell_id}]")
+                table_lines.append("| " + " | ".join(row_parts) + " |")
+            parts.append("\n".join(table_lines))
+            pos = table_close_idx + len("</table>")
+
+        else:
+            between = _HTML_TAG_RE.sub("", raw_md[pos:next_pos]).strip()
+            if between:
+                parts.append(between)
+            pos = next_pos
+
+    return "\n\n".join(parts)
+
+
+_CELL_TEXT_FROM_MD_RE = re.compile(
+    r"<td\s+id=['\"]([^'\"]+)['\"](?:\s+colspan=['\"]?\d+['\"]?)?\s*>(.*?)</td>",
+    re.DOTALL | re.IGNORECASE,
+)
+
+
+def _build_cell_text_lookup(financial_data: Dict[str, Any]) -> Dict[str, str]:
+    """Build {cell_id: cell_text} from ADE markdown for citation display."""
+    lookup: Dict[str, str] = {}
+    raw_md = financial_data.get("markdown", "")
+    if not raw_md:
+        return lookup
+    for cell_id, cell_html in _CELL_TEXT_FROM_MD_RE.findall(raw_md):
+        text = re.sub(r"<[^>]+>", "", cell_html).strip()
+        if text:
+            lookup[cell_id] = text
+    return lookup
+
+
+def _parse_id_citations(
+    answer_text: str,
+    grounding: Dict[str, Any],
+    detected_chunks: List[Dict[str, Any]],
+    financial_data: Dict[str, Any] = None,
+) -> Tuple[str, List[Dict[str, Any]]]:
+    """Extract [[id]] markers from LLM response, map to grounding bboxes.
+
+    Returns (clean_answer, citations) where citations use the same dict
+    schema the frontend already expects.
+    """
+    chunk_lookup: Dict[str, Dict[str, Any]] = {}
+    for ch in detected_chunks:
+        cid = ch.get("id")
+        if cid:
+            chunk_lookup[cid] = ch
+
+    cell_text_lookup = _build_cell_text_lookup(financial_data or {})
+
+    citations: List[Dict[str, Any]] = []
+    seen: set = set()
+
+    for match in CITATION_PATTERN.findall(answer_text or ""):
+        ref_id = match.strip()
+        if ref_id in seen:
+            continue
+        seen.add(ref_id)
+
+        g = grounding.get(ref_id)
+        chunk = chunk_lookup.get(ref_id)
+        if not g and not chunk:
+            continue
+
+        page = g.get("page", 0) if g else (chunk.get("page", 0) if chunk else 0)
+        g_type = (g.get("type", "") if g else "").lower()
+
+        if "cell" in g_type or (chunk and chunk.get("type") == "table_cell"):
+            type_label = "table, cell"
+            chunk_type = "table_cell"
+        elif "table" in g_type or (chunk and chunk.get("type") == "table"):
+            type_label = "table"
+            chunk_type = "table"
+        else:
+            type_label = "text"
+            chunk_type = "text"
+
+        cell_text = ""
+        if chunk:
+            cell_text = (chunk.get("text") or chunk.get("markdown") or "").strip()
+        if not cell_text:
+            cell_text = cell_text_lookup.get(ref_id, "")
+
+        page_label = f"Page {page + 1}" if isinstance(page, int) else "Page 1"
+        value_part = f" | {cell_text}" if cell_text and len(cell_text) < 80 else ""
+        visual_ref = f"{page_label}.\n{type_label}{value_part}"
+
+        citations.append({
+            "chunk_id": ref_id,
+            "title": type_label,
+            "page": page,
+            "text": cell_text[:240] if cell_text else "",
+            "type": chunk_type,
+            "visual_ref": visual_ref,
+            "value": cell_text if len(cell_text) < 80 else "",
+        })
+
+    clean_text = CITATION_PATTERN.sub("", answer_text or "").strip()
+    clean_text = re.sub(r"(\s*,\s*)+", ", ", clean_text)
+    clean_text = re.sub(r",\s*\.", ".", clean_text)
+    clean_text = re.sub(r",\s*$", ".", clean_text)
+    clean_text = re.sub(r"\s+\.", ".", clean_text)
+    clean_text = re.sub(r"\s{2,}", " ", clean_text)
+    clean_text = clean_text.strip(" ,")
+    return clean_text, citations
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Structured table lookup -- direct row search before RAG
+# ═══════════════════════════════════════════════════════════════════
+_VALUE_LOOKUP_RE = re.compile(
+    r"(?:how much|what is|what's|what are|tell me|show me|find|get|what was|give me)"
+    r"\s+(?:the\s+|my\s+|a\s+)?(.+?)(?:\?|$)",
+    re.IGNORECASE,
+)
+
+
+def _extract_query_entity(query: str) -> Optional[str]:
+    """Pull the entity from a value-lookup question.
+
+    "how much is disciplinary fine?" → "disciplinary fine"
+    "what is the tuition fee?"       → "tuition fee"
+    """
+    m = _VALUE_LOOKUP_RE.search(query)
+    if m:
+        entity = m.group(1).strip().rstrip("?. ")
+        if entity and len(entity) > 1:
+            return entity
+    return None
+
+
+def structured_table_lookup(
+    query: str,
+    financial_data: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+    """Search structured tables for an exact entity match.
+
+    Returns a dict with 'answer', 'rows', 'table_id', 'citations' on match,
+    or None if no match found.  This is O(rows) and never calls the LLM.
+    """
+    entity = _extract_query_entity(query)
+    if not entity:
+        return None
+
+    entity_lower = entity.lower()
+    entity_words = set(entity_lower.split())
+
+    best_match = None
+    best_score = 0
+
+    for tbl in financial_data.get("tables", []):
+        header = tbl.get("header") or []
+        rows = tbl.get("rows") or []
+        tbl_id = tbl.get("id", "")
+        tbl_page = tbl.get("page", 0)
+
+        for row_idx, row in enumerate(rows):
+            label = ""
+            if header:
+                label = str(row.get(header[0], "")).strip()
+            else:
+                label = str(next(iter(row.values()), "")).strip()
+            if not label:
+                continue
+
+            label_lower = label.lower()
+            label_words = set(label_lower.split())
+            overlap = entity_words & label_words
+
+            if entity_lower in label_lower:
+                score = 100
+            elif label_lower in entity_lower:
+                score = 90
+            elif len(overlap) >= max(1, len(entity_words) - 1):
+                score = 60 + len(overlap) * 10
+            else:
+                continue
+
+            if score > best_score:
+                value_col = None
+                for col in (header[1:] if header else list(row.keys())[1:]):
+                    val = str(row.get(col, "")).strip()
+                    if val and re.search(r'\d', val):
+                        value_col = col
+                        break
+
+                if value_col:
+                    best_score = score
+                    best_match = {
+                        "label": label,
+                        "value": str(row.get(value_col, "")),
+                        "column": value_col,
+                        "table_id": tbl_id,
+                        "table_title": tbl.get("title", "Table"),
+                        "page": tbl_page,
+                        "row_idx": row_idx,
+                        "full_row": row,
+                    }
+
+    if not best_match:
+        return None
+
+    val = best_match["value"]
+    label = best_match["label"]
+    col = best_match["column"]
+    page = best_match["page"]
+
+    detected_chunks = financial_data.get("detected_chunks", [])
+    cell_citations = []
+    val_stripped = val.replace(",", "").strip()
+
+    label_lower = label.lower()
+    cells_by_table_row: Dict[str, Dict[int, List[Dict]]] = {}
+    for chunk in detected_chunks:
+        if chunk.get("type") == "table_cell":
+            ptid = chunk.get("parent_table_id", "")
+            row_idx = chunk.get("row")
+            if ptid and row_idx is not None:
+                cells_by_table_row.setdefault(ptid, {}).setdefault(row_idx, []).append(chunk)
+
+    for chunk in detected_chunks:
+        if chunk.get("type") != "table_cell":
+            continue
+        cell_text = (chunk.get("text") or "").replace(",", "").strip()
+        if cell_text != val_stripped and val not in (chunk.get("text") or ""):
+            continue
+
+        ptid = chunk.get("parent_table_id", "")
+        row_idx = chunk.get("row")
+        siblings = cells_by_table_row.get(ptid, {}).get(row_idx, [])
+        row_has_label = any(label_lower in (s.get("text") or "").lower() for s in siblings)
+        if not row_has_label:
+            continue
+
+        p = chunk.get("page", 0)
+        page_label = f"Page {p + 1}" if isinstance(p, int) else "Page 1"
+        cell_citations.append({
+            "chunk_id": chunk.get("id", ""),
+            "title": "table_cell",
+            "page": p,
+            "text": (chunk.get("text") or "")[:240],
+            "type": "table_cell",
+            "visual_ref": f"{page_label}.\ntable, cell | {val}",
+            "value": val,
+        })
+
+    return {
+        "answer": val,
+        "label": label,
+        "column": col,
+        "citations": cell_citations,
+        "table_id": best_match["table_id"],
+        "table_title": best_match["table_title"],
+    }
 
 
 def is_query_relevant_to_document(query: str, financial_data: Dict[str, Any] = None) -> bool:
@@ -263,6 +613,21 @@ def get_answer_from_document(
             save_conversation(document_id, query, answer)
         return result
     
+    # Handle greetings immediately (no RAG needed)
+    _GREETINGS = {"hi", "hello", "hey", "greetings", "good morning", "good afternoon",
+                  "good evening", "howdy", "sup", "yo", "hola"}
+    if query_lower.strip("!. ") in _GREETINGS:
+        company = (financial_data.get("metadata", {}).get("company_name") or "").strip()
+        if company and company not in ("Unknown", "Unknown Company"):
+            greeting = f"Hello! I'm ALPHA LENS. I've analyzed the **{company}** document. What would you like to know?"
+        else:
+            greeting = "Hello! I'm ALPHA LENS, your financial document assistant. Ask me anything about this document."
+        return create_result(greeting, "greeting", follow_ups=[
+            "What is the summary of this document?",
+            "What are the key metrics?",
+            "Who is this document for?",
+        ])
+
     # Handle special question types
     if is_math_question(query):
         return create_result(handle_math_question(query), "math_calculator", follow_ups=[])
@@ -299,16 +664,55 @@ def get_answer_from_document(
             summary = _generate_fallback_summary(financial_data)
         return create_result(summary, "gpt-3.5-turbo", sources=extract_summary_citations(financial_data))
     
-    # Check preferences
+    # ── Layer 1: Direct structured table lookup (no LLM, no RAG) ──
+    # For "how much is X?" / "what is the Y?" — search structured tables first.
+    table_hit = structured_table_lookup(query, financial_data)
+    if table_hit and table_hit.get("answer"):
+        return create_result(
+            table_hit["answer"],
+            "structured_table",
+            sources=table_hit.get("citations", []),
+        )
+
+    # ── Layer 2: Full-context LLM (primary path) ──
+    # Feed the entire ADE markdown with inline element IDs to the LLM.
+    # The LLM cites [[id]] which we map deterministically to grounding bboxes.
+    full_context = _build_full_context(financial_data)
+    grounding = financial_data.get("ade_grounding", {})
+    detected_chunks = financial_data.get("detected_chunks", [])
+
+    if full_context:
+        answer_text = llm_service.generate_full_context_response(
+            query=query,
+            full_context=full_context,
+            financial_data=financial_data,
+            conversation_context=conversation_history_context,
+        )
+
+        if target_sentence_count and answer_text:
+            answer_text = _truncate_to_sentences(answer_text, target_sentence_count)
+
+        if answer_text and not any(
+            phrase in answer_text.lower()
+            for phrase in ["i cannot find", "does not contain", "not provided"]
+        ):
+            clean_answer, citations = _parse_id_citations(
+                answer_text, grounding, detected_chunks, financial_data
+            )
+            return create_result(
+                clean_answer or answer_text,
+                "full_context",
+                sources=citations,
+            )
+
+    # ── Layer 3: RAG fallback (large docs or missing markdown) ──
     wants_list_format = any(kw in query_lower for kw in ["in bullets", "in bullet points", "as bullets", "in a list", "list"])
     simple_patterns = [r'what is (my|the) (name|date|amount|value|number)', r'who (am i|is)', r'when (is|was)', r'where (is|was)', r'how much']
     is_simple_question = any(re.search(p, query_lower) for p in simple_patterns)
-    
-    # Search and build context
-    relevant_chunks = similarity_search(query, vector_store_path, top_k=8)
+
+    relevant_chunks = similarity_search(query, vector_store_path, top_k=10)
     context_blocks = build_context_blocks(relevant_chunks, financial_data)
-    
-    # Enhance context if sparse
+
     if len(context_blocks) < 3 and financial_data:
         if financial_data.get("metadata"):
             context_blocks.append({
@@ -316,17 +720,16 @@ def get_answer_from_document(
                 "source": "metadata", "text": json.dumps(financial_data.get("metadata", {}), indent=2)
             })
         if financial_data.get("key_metrics"):
-            metrics_text = "\n".join([f"{m.get('name', '')}: {m.get('value', '')} {m.get('unit', '')}" 
+            metrics_text = "\n".join([f"{m.get('name', '')}: {m.get('value', '')} {m.get('unit', '')}"
                                       for m in financial_data.get("key_metrics", [])[:5]])
             context_blocks.append({
                 "id": "key_metrics", "title": "Key Financial Metrics", "page": None,
                 "source": "metrics", "text": metrics_text
             })
-    
+
     if is_simple_question:
-        context_blocks = context_blocks[:3]
-    
-    # Generate answer
+        context_blocks = context_blocks[:6]
+
     answer_text = llm_service.generate_finance_response(
         query=query,
         metadata=financial_data.get("metadata", {}),
@@ -338,11 +741,9 @@ def get_answer_from_document(
         style=style_hint,
         max_sentences=target_sentence_count,
     )
-    # Optionally enforce a maximum number of sentences on the main answer text
     if target_sentence_count and answer_text:
         answer_text = _truncate_to_sentences(answer_text, target_sentence_count)
-    
-    # Fallback if answer is poor
+
     if not answer_text or any(phrase in answer_text.lower() for phrase in ["i'm sorry", "does not contain", "not provided"]):
         fallback_context = build_fallback_context(financial_data, relevant_chunks)
         fallback_answer = llm_service.generate_response(
@@ -356,10 +757,9 @@ def get_answer_from_document(
         if not fallback_answer or any(phrase in fallback_answer.lower() for phrase in ["i'm sorry", "does not contain"]):
             fallback_answer = _generate_answer_from_financial_data(query, financial_data)
         return create_result(fallback_answer, "local_llm", sources=extract_summary_citations(financial_data)[:3])
-    
-    # Extract citations and return
+
     clean_answer, citations = extract_citations_with_visual_refs(answer_text, context_blocks, financial_data, query)
-    return create_result(clean_answer or answer_text, "gpt-3.5-turbo", sources=citations)
+    return create_result(clean_answer or answer_text, "rag_fallback", sources=citations)
 
 
 def build_context_blocks(relevant_chunks: List[Dict[str, Any]], financial_data: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -381,7 +781,7 @@ def build_context_blocks(relevant_chunks: List[Dict[str, Any]], financial_data: 
             "title": metadata.get("title") or metadata.get("source") or "Context",
             "page": metadata.get("page"),
             "source": metadata.get("source"),
-            "text": text[:2000]
+            "text": text[:3000]
         })
     
     if not blocks and financial_data.get("summary"):
@@ -452,68 +852,67 @@ def _truncate_to_sentences(text: str, max_sentences: int) -> str:
 
 
 def extract_citations_with_visual_refs(
-    answer_text: str, 
+    answer_text: str,
     context_blocks: List[Dict[str, Any]],
     financial_data: Dict[str, Any],
     query: str
 ) -> tuple:
-    """Extract citations with visual references (page, table/cell, value) in Landing.AI format."""
+    """Extract citations with visual references (page, table/cell, value) in Landing.AI format.
+
+    Priority when searching for a value:
+        1. table_cell chunks (exact cell bbox) — Landing.AI-quality cell highlight
+        2. table chunks (whole table bbox) — fallback
+        3. text chunks
+
+    The chunk_id in each citation is used by viewer.js to highlight the matching
+    bounding box on the PDF, so pointing at a cell rather than a table draws a
+    tight box around exactly that cell.
+    """
     block_lookup = {block["id"]: block for block in context_blocks}
     detected_chunks = financial_data.get("detected_chunks", [])
-    tables = financial_data.get("tables", [])
-    
-    # Create lookup for detected chunks by ID
-    chunk_lookup = {}
+
+    # Separate lookups for quick access
+    chunk_lookup: Dict[str, Any] = {}
+    cell_chunks: List[Dict[str, Any]] = []
     for chunk in detected_chunks:
-        chunk_id = chunk.get("id")
-        if chunk_id:
-            chunk_lookup[chunk_id] = chunk
-    
-    # Extract answer value (numeric values mentioned in answer)
+        cid = chunk.get("id")
+        if cid:
+            chunk_lookup[cid] = chunk
+        if chunk.get("type") == "table_cell":
+            cell_chunks.append(chunk)
+
     answer_value = extract_answer_value(answer_text, query)
-    
-    citations = []
-    seen = set()
-    
+    citations: List[Dict[str, Any]] = []
+    seen: set = set()
+
+    # ── Pass 1: inline [CIT:xxx] markers embedded by LLM ────────────────────
     for match in CITATION_PATTERN.findall(answer_text or ""):
         if match in seen:
             continue
         block = block_lookup.get(match)
         chunk = chunk_lookup.get(match)
-        
+
         if block or chunk:
             seen.add(match)
-            
-            # Get page number
-            page = None
-            if chunk:
-                page = chunk.get("page")
-            elif block:
-                page = block.get("page")
-            
-            # Get chunk type (table, text, etc.)
-            chunk_type = "text"
-            if chunk:
-                chunk_type = chunk.get("type", "text")
-            
-            # Determine if it's a table
-            is_table = chunk_type == "table"
-            
-            # Get the value from answer or extract from chunk
+            page = chunk.get("page") if chunk else (block.get("page") if block else None)
+            chunk_type = chunk.get("type", "text") if chunk else "text"
+
+            if chunk_type == "table_cell":
+                type_label = "table, cell"
+            elif chunk_type == "table":
+                type_label = "table"
+            else:
+                type_label = "text"
+
             value = answer_value
             if not value and chunk:
-                # Try to extract value from chunk text
                 chunk_text = chunk.get("text", "") or chunk.get("markdown", "")
                 value = extract_numeric_value(chunk_text)
-            
-            # Build visual reference string (matching Landing.AI format)
+
             page_label = f"Page {page + 1}" if isinstance(page, int) else "Page 1"
-            type_label = "table, cell" if is_table else "text"
-            value_label = f" | {value}" if value else " |"
-            
-            # Format: "Page 1. table, cell | 149,990" (matching Landing.AI)
-            visual_ref = f"{page_label}. {type_label}{value_label}"
-            
+            value_label = f" | {value}" if value else ""
+            visual_ref = f"{page_label}.\n{type_label}{value_label}"
+
             citations.append({
                 "chunk_id": match,
                 "title": block.get("title") if block else chunk.get("type", "Reference"),
@@ -521,63 +920,106 @@ def extract_citations_with_visual_refs(
                 "text": (block.get("text") or chunk.get("text", "") or "")[:240] if block or chunk else "",
                 "type": chunk_type,
                 "visual_ref": visual_ref,
-                "value": value
+                "value": value,
             })
-    
-    # If no citations but we have an answer value, try to find matching chunks
-    # Landing.AI shows multiple references even if they're the same
+
+    # ── Pass 2: value-match fallback (when LLM did not embed markers) ────────
+    _MAX_CITATIONS = 8
+
     if not citations and answer_value:
-        # Search for ALL chunks containing the value (not just first one)
-        matching_chunks = []
-        for chunk in detected_chunks:
-            chunk_text = chunk.get("text", "") or chunk.get("markdown", "")
-            # Check if value appears in chunk (handle comma formatting)
-            value_str = str(answer_value).replace(",", "")
-            chunk_clean = chunk_text.replace(",", "")
-            if value_str in chunk_clean or answer_value in chunk_text:
-                matching_chunks.append(chunk)
-        
-        # Add all matching chunks (like Landing.AI shows multiple refs)
-        for chunk in matching_chunks[:5]:  # Limit to 5 to avoid too many
+        value_str = str(answer_value).replace(",", "").strip()
+        value_str_no_dec = _strip_trailing_zeros(value_str)
+
+        def _match_value(txt: str) -> bool:
+            plain = txt.replace(",", "")
+            return (value_str in plain
+                    or value_str_no_dec in plain
+                    or answer_value in txt)
+
+        def _cell_display_value(chunk: Dict[str, Any]) -> str:
+            """Use the cell's own text as the display value (avoids LLM formatting artefacts)."""
+            raw = (chunk.get("text", "") or chunk.get("markdown", "")).strip()
+            if raw and len(raw) < 60:
+                return raw
+            return answer_value
+
+        def _make_citation(chunk: Dict[str, Any], ctype: str) -> Dict[str, Any]:
             page = chunk.get("page", 0)
-            chunk_type = chunk.get("type", "text")
-            is_table = chunk_type == "table"
-            
+            if ctype == "table_cell":
+                tlabel = "table, cell"
+            elif ctype == "table":
+                tlabel = "table"
+            else:
+                tlabel = "text"
             page_label = f"Page {page + 1}" if isinstance(page, int) else "Page 1"
-            type_label = "table, cell" if is_table else "text"
-            visual_ref = f"{page_label}. {type_label} | {answer_value}"
-            
-            citations.append({
+            display_val = _cell_display_value(chunk)
+            return {
                 "chunk_id": chunk.get("id", ""),
                 "title": chunk.get("type", "Reference"),
                 "page": page,
                 "text": (chunk.get("text", "") or chunk.get("markdown", ""))[:240],
-                "type": chunk_type,
-                "visual_ref": visual_ref,
-                "value": answer_value
-            })
-    
-    clean_text = CITATION_PATTERN.sub('', answer_text or '').strip()
-    clean_text = re.sub(r'\s+', ' ', clean_text)
+                "type": ctype,
+                "visual_ref": f"{page_label}.\n{tlabel} | {display_val}",
+                "value": display_val,
+            }
+
+        # Priority 1: table_cell (exact cell bbox — best precision)
+        for cell in cell_chunks:
+            if _match_value(cell.get("text", "") or cell.get("markdown", "")):
+                citations.append(_make_citation(cell, "table_cell"))
+                if len(citations) >= _MAX_CITATIONS:
+                    break
+
+        # Priority 2: whole-table chunks
+        if not citations:
+            for chunk in detected_chunks:
+                if chunk.get("type") == "table":
+                    if _match_value(chunk.get("text", "") or chunk.get("markdown", "")):
+                        citations.append(_make_citation(chunk, "table"))
+                        if len(citations) >= _MAX_CITATIONS:
+                            break
+
+        # Priority 3: any other chunk type
+        if not citations:
+            for chunk in detected_chunks:
+                ctype = chunk.get("type", "text")
+                if ctype in ("table", "table_cell"):
+                    continue
+                if _match_value(chunk.get("text", "") or chunk.get("markdown", "")):
+                    citations.append(_make_citation(chunk, ctype))
+                    if len(citations) >= _MAX_CITATIONS:
+                        break
+
+    clean_text = CITATION_PATTERN.sub("", answer_text or "").strip()
+    clean_text = re.sub(r"\s+", " ", clean_text)
     return clean_text, citations
 
 
+def _strip_trailing_zeros(val: str) -> str:
+    """'143,990.00' → '143,990', '1,200.50' → '1,200.50' (keeps meaningful decimals)."""
+    if "." in val:
+        stripped = val.rstrip("0").rstrip(".")
+        if stripped:
+            return stripped
+    return val
+
+
 def extract_answer_value(answer_text: str, query: str) -> str:
-    """Extract numeric value from answer text (e.g., "149,990")."""
-    # Look for numbers with commas (formatted numbers)
+    """Extract numeric value from answer text (e.g., "149,990").
+
+    Strips meaningless trailing zeros so the value matches raw cell text
+    (LLM says "$143,990.00" but cell text is "143,990").
+    """
     number_pattern = r'\d{1,3}(?:,\d{3})*(?:\.\d+)?'
     matches = re.findall(number_pattern, answer_text)
-    
     if matches:
-        # Return the first/largest number found
-        return matches[0]
-    
-    # Look for currency amounts
+        return _strip_trailing_zeros(matches[0])
+
     currency_pattern = r'[\$€£¥]\s*(\d{1,3}(?:,\d{3})*(?:\.\d+)?)'
     currency_matches = re.findall(currency_pattern, answer_text)
     if currency_matches:
-        return currency_matches[0]
-    
+        return _strip_trailing_zeros(currency_matches[0])
+
     return None
 
 

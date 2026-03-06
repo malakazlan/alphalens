@@ -337,6 +337,23 @@ function updateNavLinks(activeLink) {
     });
 }
 
+// Delegated listener: workspace rail home button → back to analyzer initial state
+(function initWorkspaceRail() {
+    function onRailClick(e) {
+        const rail = document.getElementById('workspace-rail');
+        if (!rail || !rail.contains(e.target)) return;
+        const homeBtn = e.target.closest('#ws-home-btn, [data-rail-action="home"]');
+        if (homeBtn) {
+            e.preventDefault();
+            e.stopPropagation();
+            if (typeof showAnalyzerInitialState === 'function') {
+                showAnalyzerInitialState();
+            }
+        }
+    }
+    document.addEventListener('click', onRailClick, true);
+})();
+
 // Export functions
 window.showHomePage = showHomePage;
 window.showFeature = showFeature;
