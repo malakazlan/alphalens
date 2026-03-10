@@ -847,12 +847,28 @@ def parse_table_rows(raw_text: str, normalized_text: str) -> Tuple[List[str], Li
                 tbody = table.find("tbody")
                 tr_elements = tbody.find_all("tr") if tbody else table.find_all("tr")
                 
-                # Check if first row looks like a header (all cells are short, no numbers, etc.)
+                # Check if first row looks like a header.
+                # A row qualifies as a header if every cell is either:
+                #   - a bare 4-digit year (e.g. "2018", "2019"), OR
+                #   - a short text label with no digit characters
+                _YEAR_CELL_RE = re.compile(r'^(19|20)\d{2}$')
+
+                def _any_cell_is_year(cells):
+                    """True if at least one cell is a bare 4-digit year."""
+                    return any(_YEAR_CELL_RE.match(c.strip()) for c in cells)
+
                 def looks_like_header(cells):
                     if not cells or len(cells) < 2:
                         return False
-                    # Header cells are usually short, descriptive labels
-                    return all(len(cell.strip()) < 50 and not any(c.isdigit() for c in cell) for cell in cells)
+                    for cell in cells:
+                        c = cell.strip()
+                        if _YEAR_CELL_RE.match(c):
+                            continue  # bare year — valid header cell
+                        if len(c) > 60:
+                            return False
+                        if any(ch.isdigit() for ch in c):
+                            return False  # non-year digit content — not a header
+                    return True
                 
                 for tr_idx, tr in enumerate(tr_elements):
                     # Skip if this is a header row (has th elements and we already have header)
@@ -881,13 +897,12 @@ def parse_table_rows(raw_text: str, normalized_text: str) -> Tuple[List[str], Li
                     
                     # If we don't have a header yet, check if first row looks like a header
                     if not header:
-                        if tr_idx == 0 and looks_like_header(cells) and len(cells) >= 2:
-                            # First row looks like a header (e.g., "Description" | "Amount")
+                        if tr_idx == 0 and (looks_like_header(cells) or _any_cell_is_year(cells)) and len(cells) >= 2:
+                            # First row is the header (pure labels OR year-based like "Note | 2019 | 2018")
                             header = cells
                             continue
                         else:
-                            # First row is data - create generic header for key-value pairs
-                            # For 2-column tables, use "Field" and "Value"
+                            # First row is data - create generic header
                             if len(cells) == 2:
                                 header = ["Field", "Value"]
                             else:

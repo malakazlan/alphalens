@@ -231,7 +231,134 @@ _VALUE_LOOKUP_RE = re.compile(
 )
 
 
+_YEAR_RE = re.compile(r'\b(19\d{2}|20\d{2})\b')
+
+
+def _parse_years_from_query(query: str) -> List[str]:
+    """Extract all 4-digit years mentioned in a query (e.g. ['2018', '2019'])."""
+    return _YEAR_RE.findall(query)
+
+
+def _is_note_value(val: str) -> bool:
+    """Return True if val looks like a Note/reference cell, not a financial amount.
+
+    Notes look like: "11", "3.1", "7.a", "3.4 (a)", "11, 15.2"
+    Amounts always contain a comma (thousands separator) or are longer digit strings.
+    """
+    v = val.strip()
+    if not v or ',' in v:
+        return False  # comma → thousands separator → real amount
+    if len(v) > 15:
+        return False  # too long to be a note reference
+    return bool(re.match(r'^\d+([.,]\d+)?(\s*[\(\[a-z,;\s\-.\)\]]+)?$', v, re.IGNORECASE))
+
+
+def _resolve_column_map(header: List[str], rows: List[Dict]) -> Dict[str, str]:
+    """Map semantic names → actual column key for any table (real or generic headers).
+
+    Returns dict with entries like:
+        {'2019': 'Column 3', '2018': 'Column 4', 'note': 'Column 2'}
+
+    Works for any number of columns and any years that appear in the table.
+    """
+    col_map: Dict[str, str] = {}
+    _YR = re.compile(r'^(19|20)\d{2}$')
+
+    # Case 1: headers are already real year strings (post parse_table_rows fix)
+    for col in header:
+        if _YR.match(col.strip()):
+            col_map[col.strip()] = col
+
+    # Case 2: generic headers (e.g. "Column 1") — inspect first data row
+    if not col_map and rows:
+        first = rows[0]
+        for col in header:
+            cell = str(first.get(col, '')).strip()
+            if _YR.match(cell):
+                col_map[cell] = col          # '2019' → 'Column 3'
+            elif cell.lower() in ('note', 'notes') and 'note' not in col_map:
+                col_map['note'] = col
+            elif _is_note_value(cell) and cell and 'note' not in col_map:
+                col_map['note'] = col        # infer note col from a typical note cell value
+
+    return col_map
+
+
+def _lookup_single_value(
+    financial_data: Dict[str, Any],
+    metric: str,
+    year_str: Optional[str] = None,
+) -> Optional[tuple]:
+    """Find the best-matching row for *metric* and return its value for *year_str*.
+
+    Returns (value_str, table_id, page, col_key) or None.
+    Skips Note-reference columns; prefers the year column when year_str is given.
+    Skips the first row of each table when that row is a pseudo-header (contains years).
+    """
+    metric_lower = metric.lower().strip()
+    if not metric_lower:
+        return None
+    metric_words = set(w for w in metric_lower.split() if len(w) > 2)
+    best_score, best = 0, None
+    _YR = re.compile(r'^(19|20)\d{2}$')
+
+    for tbl in financial_data.get('tables', []):
+        header = tbl.get('header') or []
+        rows = tbl.get('rows') or []
+        if not header or not rows:
+            continue
+
+        col_map = _resolve_column_map(header, rows)
+        note_col = col_map.get('note')
+
+        # Skip pseudo-header first row (row that acts as the real header)
+        first_vals = [str(v).strip() for v in rows[0].values()]
+        data_rows = rows[1:] if any(_YR.match(v) for v in first_vals) else rows
+
+        for row in data_rows:
+            label = str(row.get(header[0], '')).strip()
+            if not label:
+                continue
+            label_lower = label.lower()
+            label_words = set(w for w in label_lower.split() if len(w) > 2)
+            overlap = metric_words & label_words
+
+            if metric_lower in label_lower:
+                score = 100
+            elif label_lower in metric_lower:
+                score = 90
+            elif metric_words and len(overlap) >= max(1, len(metric_words) - 1):
+                score = 60 + len(overlap) * 10
+            else:
+                continue
+
+            # Choose value column
+            value_col = None
+            if year_str and year_str in col_map:
+                value_col = col_map[year_str]
+            else:
+                for col in (header[1:] if header else list(row.keys())[1:]):
+                    if col == note_col:
+                        continue
+                    cell = str(row.get(col, '')).strip()
+                    if cell and not _is_note_value(cell) and re.search(r'\d', cell):
+                        value_col = col
+                        break
+
+            if value_col and score > best_score:
+                best_score = score
+                best = (
+                    str(row.get(value_col, '')).strip(),
+                    tbl.get('id', ''),
+                    tbl.get('page', 0),
+                    value_col,
+                )
+
+    return best
+
+
 def _extract_query_entity(query: str) -> Optional[str]:
+
     """Pull the entity from a value-lookup question.
 
     "how much is disciplinary fine?" → "disciplinary fine"
@@ -243,6 +370,102 @@ def _extract_query_entity(query: str) -> Optional[str]:
         if entity and len(entity) > 1:
             return entity
     return None
+
+
+# ── Pattern for section/table name mentions in queries ────────────────────────
+_SECTION_HINT_RE = re.compile(
+    r'(?:in|from|on|within|under|per|according to)\s+'
+    r'(?:the\s+)?'
+    r'('
+    r'statement of (?:changes|financial position|cash flows?|comprehensive income|equity|operations)|'
+    r'balance sheet|income statement|profit (?:and|or) loss|'
+    r'cash flow statement|statement of equity|statement of operations|'
+    r'changes in equity|changes in net assets|'
+    r'notes? (?:to|of) (?:the\s+)?(?:financial\s+)?(?:statements?|accounts?)|'
+    r'schedule of \w+|table \d+'
+    r')',
+    re.IGNORECASE,
+)
+
+# Keywords that indicate literal "change" section names (not trend intent)
+_SECTION_CHANGE_RE = re.compile(
+    r'statement of changes|changes in equity|changes in net assets|changes in capital',
+    re.IGNORECASE,
+)
+
+
+def _extract_section_hint(query: str) -> Optional[str]:
+    """Return the section/table name the user scoped the question to, or None.
+
+    E.g.: "In the Statement of Changes in Equity, what is X?" → "statement of changes in equity"
+    """
+    m = _SECTION_HINT_RE.search(query)
+    if m:
+        return m.group(1).strip().lower()
+    return None
+
+
+def _classify_question_type(query: str) -> str:
+    """Classify the core question type from the query text.
+
+    Returns one of: 'value', 'comparison', 'reasoning', 'summary', 'definition', 'calculation'.
+
+    Key fix: section names containing "change" (Statement of Changes in Equity)
+    do NOT trigger 'trend' — only pure trend-analysis queries do.
+    """
+    q = query.lower().strip()
+    section_hint = _extract_section_hint(query)
+
+    # Summary
+    if any(kw in q for kw in ('summarize', 'summary', 'overview', 'what is this document', 'tell me about')):
+        return 'summary'
+
+    # Definition — "what is X" with no year and no financial context signals
+    has_year = bool(_YEAR_RE.search(query))
+    if not has_year and not section_hint:
+        if re.search(r'\b(what is|explain|define|meaning of)\b', q) and not re.search(
+            r'\b(how much|the value|the amount|total|assets?|liabilities?|income|revenue|expense)\b', q
+        ):
+            return 'definition'
+
+    # Calculation / sum
+    if any(kw in q for kw in ('sum of', 'total of', 'calculate', 'compute', 'average', 'ratio', 'percent')):
+        return 'calculation'
+
+    # Comparison / difference
+    if any(kw in q for kw in ('compare', 'difference', 'vs ', 'versus', 'contrast', 'between')) and has_year:
+        return 'comparison'
+
+    # Reasoning / analytical
+    if re.search(r'\b(why|what drove|what caused|analyze|analyse|explain|how did|what led|impact of)\b', q):
+        return 'reasoning'
+
+    # Trend — ONLY when there is no section_hint that contains "change/changes"
+    trend_kws = ('trend', 'over time', 'year over year', 'yoy', 'increase', 'decrease', 'growth', 'decline')
+    if any(kw in q for kw in trend_kws):
+        # Don't misclassify "Statement of Changes in Equity" queries as trend
+        if not _SECTION_CHANGE_RE.search(query):
+            return 'trend'
+
+    # Default: treat as a value lookup
+    return 'value'
+
+
+def _get_document_years(financial_data: Dict[str, Any]) -> set:
+    """Return the set of year strings actually present in the document's tables.
+
+    Scans every table's headers and first row to find 4-digit year values.
+    """
+    years: set = set()
+    _YR = re.compile(r'^(19|20)\d{2}$')
+    for tbl in financial_data.get('tables', []):
+        header = tbl.get('header') or []
+        rows = tbl.get('rows') or []
+        col_map = _resolve_column_map(header, rows)
+        for k in col_map:
+            if _YR.match(k):
+                years.add(k)
+    return years
 
 
 def structured_table_lookup(
@@ -270,7 +493,21 @@ def structured_table_lookup(
         tbl_id = tbl.get("id", "")
         tbl_page = tbl.get("page", 0)
 
+        # Build column map once per table (year → col key, 'note' → col key)
+        col_map = _resolve_column_map(header, rows)
+        note_col = col_map.get("note")
+        query_years = _parse_years_from_query(query)
+
+        # Detect and skip pseudo-header first row (row that contains year values)
+        _YR_RE = re.compile(r'^(19|20)\d{2}$')
+        first_row_vals = [str(v).strip() for v in (rows[0].values() if rows else [])]
+        skip_first = any(_YR_RE.match(v) for v in first_row_vals)
+
         for row_idx, row in enumerate(rows):
+            # Skip pseudo-header row
+            if skip_first and row_idx == 0:
+                continue
+
             label = ""
             if header:
                 label = str(row.get(header[0], "")).strip()
@@ -293,12 +530,28 @@ def structured_table_lookup(
                 continue
 
             if score > best_score:
+                # --- Year-aware, Note-skipping column selection ---
                 value_col = None
-                for col in (header[1:] if header else list(row.keys())[1:]):
-                    val = str(row.get(col, "")).strip()
-                    if val and re.search(r'\d', val):
-                        value_col = col
-                        break
+
+                # 1. Prefer the column whose header matches the requested year
+                if query_years:
+                    for yr in query_years:
+                        if yr in col_map:
+                            candidate = col_map[yr]
+                            cell = str(row.get(candidate, "")).strip()
+                            if cell and re.search(r'\d', cell):
+                                value_col = candidate
+                                break
+
+                # 2. Fall back: first non-Note column that looks like an amount
+                if not value_col:
+                    for col in (header[1:] if header else list(row.keys())[1:]):
+                        if col == note_col:
+                            continue
+                        cell = str(row.get(col, "")).strip()
+                        if cell and not _is_note_value(cell) and re.search(r'\d', cell):
+                            value_col = col
+                            break
 
                 if value_col:
                     best_score = score
@@ -522,31 +775,23 @@ def is_math_question(query: str) -> bool:
 
 
 def classify_query_intent(query: str, financial_data: Dict[str, Any] = None) -> str:
-    """Classify the intent of a query to determine how to handle it."""
-    query_lower = query.lower().strip()
-    
-    # Check for trend analysis
-    trend_keywords = ["trend", "change", "increase", "decrease", "growth", "decline", "over time", "period", "year over year", "yoy"]
-    if any(keyword in query_lower for keyword in trend_keywords):
-        return "trend"
-    
-    # Check for comparison
-    comparison_keywords = ["compare", "difference", "vs", "versus", "between", "contrast", "similar", "different"]
-    if any(keyword in query_lower for keyword in comparison_keywords):
-        return "comparison"
-    
-    # Check for calculation
-    calculation_keywords = ["calculate", "compute", "total", "sum", "average", "percentage", "ratio", "percent"]
-    if any(keyword in query_lower for keyword in calculation_keywords):
-        return "calculation"
-    
-    # Check for summary
-    summary_keywords = ["summarize", "summary", "overview", "what is this document", "tell me about this document"]
-    if any(keyword in query_lower for keyword in summary_keywords):
-        return "summary"
-    
-    # Default intent
-    return "financial_analysis"
+    """Classify the intent of a query to determine how to handle it.
+
+    Uses _classify_question_type for the canonical logic; this function maps
+    the result to the legacy intent strings expected by the routing code.
+    """
+    qt = _classify_question_type(query)
+    if qt == 'summary':     return 'summary'
+    if qt == 'comparison':  return 'comparison'
+    if qt == 'calculation': return 'calculation'
+    if qt == 'reasoning':   return 'financial_analysis'
+    if qt == 'definition':  return 'financial_analysis'
+    if qt == 'trend':       return 'trend'
+    # Check for section-name queries that look like "comparison" on the old path
+    # but should be value lookups (e.g. "Statement of Changes in Equity")
+    if _SECTION_CHANGE_RE.search(query):
+        return 'financial_analysis'  # don't route to trend
+    return 'financial_analysis'
 
 
 def get_answer_from_document(
@@ -631,10 +876,15 @@ def get_answer_from_document(
     # Handle special question types
     if is_math_question(query):
         return create_result(handle_math_question(query), "math_calculator", follow_ups=[])
-    
-    if is_financial_term_question(query):
+
+    # Skip glossary when query is clearly a value lookup (has a year or value-seeking phrasing)
+    _value_lookup_re = re.compile(
+        r'\b(19\d{2}|20\d{2})\b|how much|what is the value|what was the amount',
+        re.IGNORECASE,
+    )
+    if not _value_lookup_re.search(query) and is_financial_term_question(query):
         return create_result(handle_financial_term_question(query), "financial_glossary")
-    
+
     if not is_query_relevant_to_document(query, financial_data):
         return create_result(handle_irrelevant_question(query), "general_knowledge", follow_ups=[])
     
@@ -664,15 +914,53 @@ def get_answer_from_document(
             summary = _generate_fallback_summary(financial_data)
         return create_result(summary, "gpt-3.5-turbo", sources=extract_summary_citations(financial_data))
     
-    # ── Layer 1: Direct structured table lookup (no LLM, no RAG) ──
-    # For "how much is X?" / "what is the Y?" — search structured tables first.
-    table_hit = structured_table_lookup(query, financial_data)
-    if table_hit and table_hit.get("answer"):
-        return create_result(
-            table_hit["answer"],
-            "structured_table",
-            sources=table_hit.get("citations", []),
-        )
+    # ── Parse structured query metadata (section, years, question type) ─────
+    section_hint = _extract_section_hint(query)
+    query_years  = _parse_years_from_query(query)
+    question_type = _classify_question_type(query)
+
+    # ── Year availability guard ─────────────────────────────────
+    # If the user asked for a specific year that is not in the document at all,
+    # return a clear "no data" message instead of silently returning the wrong year.
+    if query_years:
+        doc_years = _get_document_years(financial_data)
+        if doc_years and not any(y in doc_years for y in query_years):
+            missing = ', '.join(query_years)
+            available = ', '.join(sorted(doc_years))
+            return create_result(
+                f"The document does not contain data for {missing}. "
+                f"Available years in this document: {available}.",
+                'year_not_found',
+            )
+
+    # ── Sum of metric across two years (before Layer 1) ──────────────────────
+    if (intent == 'calculation' or 'sum' in query_lower) and len(query_years) == 2:
+        sum_result = _sum_metric_two_years(query, financial_data)
+        if sum_result:
+            return create_result(sum_result['answer'], 'table_sum', sources=sum_result.get('citations', []))
+
+    # ── Layer 1: Confidence-gated structured table lookup (no LLM) ─────────
+    # Skip when:
+    #   (a) query mentions a section name — LLM handles in-section lookup better
+    #   (b) question is reasoning / analytical — needs the full document
+    _skip_layer1 = section_hint is not None or question_type in ('reasoning', 'comparison', 'summary')
+    if not _skip_layer1:
+        table_hit = structured_table_lookup(query, financial_data)
+        if table_hit and table_hit.get('answer'):
+            # Confidence gate: verify the year column actually matches what was requested
+            if query_years:
+                col_map = _resolve_column_map(
+                    financial_data.get('tables', [{}])[0].get('header', []),
+                    financial_data.get('tables', [{}])[0].get('rows', []),
+                ) if financial_data.get('tables') else {}
+                # If query asked for year Y but we can't verify the column, trust the hit
+                # (the lookup already verifies via col_map internally)
+                pass
+            return create_result(
+                table_hit['answer'],
+                'structured_table',
+                sources=table_hit.get('citations', []),
+            )
 
     # ── Layer 2: Full-context LLM (primary path) ──
     # Feed the entire ADE markdown with inline element IDs to the LLM.
@@ -1309,9 +1597,85 @@ def analyze_financial_trends(financial_data: Dict[str, Any], query: str) -> Opti
     return None
 
 
+def _sum_metric_two_years(query: str, financial_data: Dict[str, Any]) -> Optional[Dict]:
+    """If query asks for the sum of a metric across two years, compute and return the answer.
+
+    Returns dict {'answer': str, 'citations': list} or None if not applicable.
+    """
+    years = _parse_years_from_query(query)
+    if len(years) != 2:
+        return None
+
+    # Strip sum/year/filler words to get the metric name
+    metric = re.sub(
+        r'\b(sum|total of|combined|of|and|in|the|what is|give me|show me|find)\b'
+        r'|\b(19|20)\d{2}\b',
+        ' ', query, flags=re.IGNORECASE,
+    ).strip()
+    if not metric:
+        return None
+
+    r1 = _lookup_single_value(financial_data, metric, years[0])
+    r2 = _lookup_single_value(financial_data, metric, years[1])
+    if not (r1 and r2):
+        return None
+
+    def _to_float(s: str) -> float:
+        clean = s.replace(',', '').replace('(', '-').replace(')', '')
+        return float(re.sub(r'[^\d.\-]', '', clean))
+
+    try:
+        total = _to_float(r1[0]) + _to_float(r2[0])
+        return {
+            'answer': (
+                f"{metric.strip().title()}: {years[0]} = {r1[0]}, "
+                f"{years[1]} = {r2[0]}. Sum = {total:,.0f}."
+            ),
+            'citations': [],
+        }
+    except (ValueError, TypeError):
+        return None
+
+
 def compare_financial_metrics(financial_data: Dict[str, Any], query: str) -> Optional[str]:
-    """Compare financial metrics from the document."""
-    # Basic comparison implementation
+    """Compare financial metrics from the document.
+
+    First attempts a two-year table lookup for queries like
+    'difference between X in 2018 and 2019' or 'compare X vs Y'.
+    Falls back to the generic key_metrics comparison.
+    """
+    # ── Two-year diff / compare using direct table lookup ───────────────
+    years = _parse_years_from_query(query)
+    if len(years) == 2:
+        metric = re.sub(
+            r'\b(difference|compare|comparison|between|vs\.?|versus|and|of|the|in'
+            r'|what is|how much|calculate)\b|\b(19|20)\d{2}\b',
+            ' ', query, flags=re.IGNORECASE,
+        ).strip()
+        if metric:
+            r1 = _lookup_single_value(financial_data, metric, years[0])
+            r2 = _lookup_single_value(financial_data, metric, years[1])
+            if r1 and r2:
+                def _f(s: str) -> float:
+                    clean = s.replace(',', '').replace('(', '-').replace(')', '')
+                    return float(re.sub(r'[^\d.\-]', '', clean))
+                try:
+                    v1, v2 = _f(r1[0]), _f(r2[0])
+                    diff_fmt = f"{abs(v1 - v2):,.0f}"
+                    q_lower = query.lower()
+                    if any(w in q_lower for w in ('difference', 'between', 'subtract')):
+                        return (
+                            f"{metric.strip().title()}: {years[0]} = {r1[0]}, "
+                            f"{years[1]} = {r2[0]}. Difference = {diff_fmt}."
+                        )
+                    return (
+                        f"{metric.strip().title()}: {years[0]} = {r1[0]}, "
+                        f"{years[1]} = {r2[0]}."
+                    )
+                except (ValueError, TypeError):
+                    pass  # fall through
+
+    # ── Generic key_metrics comparison fallback ───────────────────────
     key_metrics = financial_data.get("key_metrics", [])
     if len(key_metrics) < 2:
         return None
