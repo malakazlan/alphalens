@@ -5,14 +5,16 @@
 2. [Technology Stack](#technology-stack)
 3. [Architecture Diagram](#architecture-diagram)
 4. [Backend Architecture](#backend-architecture)
-5. [Frontend Architecture](#frontend-architecture)
-6. [Data Flow](#data-flow)
-7. [Module Breakdown](#module-breakdown)
-8. [API Endpoints](#api-endpoints)
-9. [Database Schema](#database-schema)
-10. [Storage Structure](#storage-structure)
-11. [Security & Authentication](#security--authentication)
-12. [Key Workflows](#key-workflows)
+5. [Chat & Citation Pipeline (Current Implementation)](#chat--citation-pipeline-current-implementation)
+6. [Frontend Architecture](#frontend-architecture)
+7. [Data Flow](#data-flow)
+8. [Module Breakdown](#module-breakdown)
+9. [API Endpoints](#api-endpoints)
+10. [Database Schema](#database-schema)
+11. [Storage Structure](#storage-structure)
+12. [Security & Authentication](#security--authentication)
+13. [Key Workflows](#key-workflows)
+14. [Known Limitations & Gaps](#known-limitations--gaps)
 
 ---
 
@@ -208,10 +210,13 @@
    - `tables` (structured table data)
    - `key_metrics` (extracted financial metrics)
    - `document_markdown` (full markdown representation)
+   - `ade_grounding` (element ID → bounding box), persisted for chat-time citations
 4. Create vector store (for semantic search)
 5. Save processed data to storage
 
-**Output**: `financial_data.json` with structured financial information
+**Table parsing**: `parse_table_rows()` uses `_any_cell_is_year(cells)` and `looks_like_header(cells)` so the first row can be treated as the header when it contains 4-digit years; column keys then become year labels (e.g. `"2019"`, `"2018"`) for year-aware lookup in the chat engine.
+
+**Output**: `financial_data.json` (and optionally markdown/grounding from `ade_parse_response.json`) with structured financial information and grounding for citations.
 
 #### 7. `vector_store.py` - Vector Store Management
 **Purpose**: Create and manage vector embeddings for semantic search
@@ -233,52 +238,73 @@
 **Search**: Simple text-based similarity (can be enhanced with embeddings)
 
 #### 8. `chat_engine.py` - Chat Engine
-**Purpose**: Intelligent chat with documents using LLM
+**Purpose**: Intelligent chat with documents using a three-layer pipeline (structured table → full-context LLM → RAG) with year-aware lookups, comparison/sum, and visual citations.
 
-**Key Functions**:
-- `get_answer_from_document(query, vector_store_path, financial_data, document_id, conversation_history_context)` - Main chat function
-- `classify_query_intent(query, financial_data)` - Classify query intent
-- `get_conversation_context(document_id, max_turns)` - Get conversation history
-- `save_conversation(document_id, query, answer)` - Save conversation
-- `generate_follow_up_suggestions(...)` - Generate follow-up questions
-- `analyze_financial_trends(...)` - Analyze trends
-- `compare_financial_metrics(...)` - Compare metrics
-- `build_context_blocks(relevant_chunks, financial_data)` - Build context
-- `extract_citations_with_visual_refs(...)` - Extract citations
+**Main Entry**:
+- `get_answer_from_document(query, vector_store_path, financial_data, document_id, conversation_history_context)` — Orchestrates greeting, math, glossary guard, intent, year guard, sum, Layer 1, Layer 2, Layer 3; returns answer, sources, source label, intent, follow_up_suggestions.
+
+**Query Parsing & Guards**:
+- `_parse_query(query, financial_data)` — Returns `years`, `section_hint`, `question_type`, `metric`. Uses `_parse_years_from_query`, `_extract_section_hint`, `_classify_question_type`, `_extract_query_entity`.
+- `_parse_years_from_query(query)` — List of 4-digit years in query (regex `19xx|20xx`).
+- `_extract_section_hint(query)` — Detects section/table names (e.g. "Statement of Financial Position", "balance sheet").
+- `_classify_question_type(query)` — Returns `definition` | `value` | `comparison` | `reasoning` | `summary`; avoids misclassifying "Statement of Changes in Equity" as trend.
+- `_get_document_years(financial_data)` — Set of years present in any table (from headers or first row).
+- Glossary bypass: value-lookup regex (year or "how much"/"what is the value") skips `is_financial_term_question` when matched.
+
+**Table Lookup Helpers**:
+- `_is_note_value(val)` — True if string looks like a Note reference (e.g. "11", "3.1"), not an amount.
+- `_resolve_column_map(header, rows)` — Maps year strings and `"note"` to column keys; supports generic headers by reading first row.
+- `_lookup_single_value(financial_data, metric, year_str)` — Best-matching row for metric, value for given year (or first non-Note column); skips pseudo-header row; returns `(value_str, table_id, page, col_key)` or `None`.
+- `structured_table_lookup(query, financial_data)` — Layer 1: entity + row match, year-aware and Note-skipping column selection, confidence-gated (discard if returned column does not match requested year). Returns answer + citations or `None`.
+
+**Comparison & Sum**:
+- `compare_financial_metrics(financial_data, query)` — Tries two-year table lookup (metric + two years) first; returns difference or both values; falls back to key_metrics comparison.
+- `_sum_metric_two_years(query, financial_data)` — Parses two years and metric, looks up both values, returns sum sentence or `None`.
+
+**Full-Context Path (Layer 2)**:
+- `_build_full_context(financial_data)` — Converts `financial_data["markdown"]` to LLM-readable text with inline element IDs; returns `None` if over `_FULL_CONTEXT_TOKEN_LIMIT` (30k).
+- `_parse_id_citations(answer_text, grounding, detected_chunks, financial_data)` — Extracts `[[id]]` from LLM response, maps IDs to grounding (page, box), builds sources list for frontend.
+
+**Other**:
+- `classify_query_intent(query, financial_data)` — Returns trend | comparison | calculation | summary | financial_analysis; includes guard so "Statement of Changes" / "changes in equity" does not force trend.
+- `get_conversation_context(document_id, max_turns)` — Conversation history for context.
+- `save_conversation(document_id, query, answer)` — Persist turn.
+- `generate_follow_up_suggestions(...)` — Follow-up questions.
+- `analyze_financial_trends(...)` — Trend data from financial_data.
+- `build_context_blocks(relevant_chunks, financial_data)` — Context for RAG path.
+- `extract_citations_with_visual_refs(...)` — Citations from RAG path.
 
 **Query Intent Classification**:
-- `trend` - Questions about trends/changes
-- `comparison` - Comparison requests
-- `calculation` - Calculation requests
-- `summary` - Summary requests
-- `financial_term` - Financial term definitions
-- `financial_analysis` - General financial analysis
-- `off_topic` - Non-document questions
+- `trend` — Trends/changes (but not when section name contains "change", e.g. Statement of Changes in Equity).
+- `comparison` — Compare/difference (two-year table path first).
+- `calculation` — Sum/total (two-year sum path when two years in query).
+- `summary` — Summarize/overview.
+- `financial_term` — Definitions (only when query has no year and no value-seeking phrasing).
+- `financial_analysis` — Default / value lookups.
 
 **Conversation Memory**:
-- In-memory storage: `conversation_history[document_id] = [{query, answer, timestamp}, ...]`
-- Last 20 turns per document
-- Used for context in follow-up questions
+- In-memory: `conversation_history[document_id] = [{query, answer, timestamp}, ...]`; last 20 turns per document.
 
 **Response Format**:
 ```python
 {
     "answer": str,
-    "sources": List[Dict],  # Citations with page references
-    "source": str,  # "gpt-3.5-turbo", "trend_analysis", etc.
+    "sources": List[Dict],  # Citations: chunk_id, page, box, type, visual_ref
+    "source": str,  # "structured_table", "full_context", "rag_fallback", "year_not_found", etc.
     "intent": str,
     "follow_up_suggestions": List[str]
 }
 ```
 
 #### 9. `llm_service.py` - LLM Service
-**Purpose**: OpenAI integration for chat and reports
+**Purpose**: OpenAI integration for chat, full-context answers with citations, and reports
 
 **Class**: `LLMService` (singleton)
 
 **Key Methods**:
 - `generate_response(query, context, financial_data)` - Basic response generation
-- `generate_finance_response(query, metadata, key_metrics, context_blocks, ...)` - Finance-specific response
+- `generate_finance_response(query, metadata, key_metrics, context_blocks, ...)` - Finance-specific response (RAG path)
+- `generate_full_context_response(full_context_text, query, financial_data)` - **Layer 2**: Sends full document text (with inline element IDs) and query to LLM; system prompt instructs analyst-style answers and `[[id]]` citations only for grounded content; no hallucination beyond document. Used when document is under token limit (~30k).
 - `generate_document_summary(financial_data)` - Generate document summary
 - `generate_professional_financial_report(financial_data)` - Generate comprehensive report
 - `enhance_trend_analysis(query, trend_data, financial_data)` - Enhance trend analysis
@@ -303,6 +329,66 @@
 - Processes all detected chunks
 
 **Integration**: Used by `llm_service.generate_professional_financial_report()`
+
+---
+
+## Chat & Citation Pipeline (Current Implementation)
+
+This section describes the **current production behavior** of the chat and citation system as implemented. It reflects all changes made for year-aware lookups, full-context LLM path, visual grounding, and guard logic.
+
+### Three-Layer Answer Pipeline
+
+The chat engine uses a **three-layer pipeline** to answer questions. Only one layer returns the final answer per query.
+
+| Layer | Name | When it runs | What it does |
+|-------|------|--------------|--------------|
+| **Layer 1** | Structured table lookup | Simple value questions (single metric, single year or no year, no section hint). Confidence-gated. | Searches `financial_data["tables"]` for a row matching the query entity; picks value by **year** (column header) and **skips Note columns**. Returns raw value + cell citations or `None`. No LLM. |
+| **Layer 2** | Full-context LLM | When Layer 1 returns nothing or low confidence, and document markdown is available and under token limit (~30k). | Builds full document text from ADE markdown with inline element IDs (`_build_full_context`). Sends to `llm_service.generate_full_context_response()`. LLM returns answer with `[[id]]` citations. Backend maps IDs to `ade_grounding` for bounding boxes. |
+| **Layer 3** | RAG fallback | When full-context is missing or document exceeds token limit, or when Layer 2 returns no answer. | `similarity_search()` on vector store → build context blocks → LLM with retrieved chunks. Citations from value-match or chunk metadata. |
+
+**Token limit:** `_FULL_CONTEXT_TOKEN_LIMIT = 30000`. If estimated markdown tokens exceed this, `_build_full_context()` returns `None` and Layer 2 is skipped (Layer 3 RAG is used for that document).
+
+### Query Parsing & Guards (Before Layers)
+
+- **Structured query metadata:** `_parse_query()` returns `years`, `section_hint`, `question_type`, `metric`. Used to gate Layer 1 and to detect value vs definition vs trend.
+- **Year availability check:** `_get_document_years(financial_data)` collects all years present in table headers/first rows. If the user asks for a year that does not exist in the document (e.g. 2010 when only 2018/2019 exist), the engine returns early: *"The document does not contain data for [year]. Available years: [list]."* Source: `year_not_found`. No LLM call.
+- **Glossary bypass:** If the query contains a 4-digit year or phrases like "how much", "what is the value", "what was the amount", the engine does **not** route to the financial glossary. Only pure definition questions (no year, no value-seeking phrasing) go to `handle_financial_term_question`.
+- **Intent guard:** Queries containing "Statement of Changes in Equity" (or similar section names with the word "change") do **not** trigger `trend` intent. They fall through to value lookup or full-context so that section-scoped value questions are answered correctly.
+
+### Document Processor: Table Headers & Grounding
+
+- **Year-row as header:** In `parse_table_rows()` (document_processor), the first row of a table can be treated as the header even when it contains digits. Helper `_any_cell_is_year(cells)` returns true if any cell is a 4-digit year (e.g. 2018, 2019). If `looks_like_header(cells)` or `_any_cell_is_year(cells)` is true for the first row, that row becomes the header. So tables get column names like `"2019"`, `"2018"` instead of generic `"Column 3"`, `"Column 4"` when the first row contains years.
+- **Grounding persistence:** The processor stores `ade_grounding` (element ID → bounding box) in the financial data so that at chat time the backend can map LLM citations (`[[id]]`) to page and box for the PDF viewer. Markdown and grounding can come from ADE parse/parse_response and are stored in `financial_data` or loaded from `ade_parse_response.json` at runtime where applicable.
+
+### Chat Engine: Helpers for Tables & Years
+
+- **`_parse_years_from_query(query)`** — Returns list of 4-digit years (regex `19xx|20xx`) mentioned in the query.
+- **`_is_note_value(val)`** — Returns true if the string looks like a Note/reference cell (e.g. "11", "3.1", "7.a"), not a financial amount. Used to skip Note columns when choosing the value column.
+- **`_resolve_column_map(header, rows)`** — Builds a map from semantic names to column keys: (1) if header cells are year strings, maps year → column; (2) if headers are generic ("Column 1", …), inspects the first data row for year or "Note" and builds the same map. Works for any number of columns (2, 3, 4, …).
+- **`_lookup_single_value(financial_data, metric, year_str)`** — Finds the best-matching row for a metric across all tables, skips pseudo-header first row (when it contains year values), and returns the cell value for the given year (or first non-Note column if no year). Returns `(value_str, table_id, page, col_key)` or `None`. Used by comparison and sum logic.
+
+### Structured Table Lookup (Layer 1) — Detailed Behavior
+
+- **Entity extraction:** `_extract_query_entity(query)` gets the metric/label from the query (e.g. "Loans to staff", "Total assets").
+- **Row matching:** Across all tables, each row is scored by label overlap (entity in label, label in entity, or word overlap). Best score wins.
+- **Pseudo-header skip:** If the first row of a table has cells that are 4-digit years, that row is skipped (treated as header row, not data).
+- **Column selection (year-aware, Note-skipping):** (1) Parse years from query. (2) If a table has a column header equal to that year (from `_resolve_column_map`), prefer that column for the value. (3) Otherwise, take the first non-Note column (using `_is_note_value`) that looks like an amount. (4) If the user asked for a specific year and the returned column is not that year’s column, the result is discarded (confidence gate) and the pipeline falls through to Layer 2.
+- **Output:** Returns a dict with `answer`, `label`, `column`, `citations` (cell-level), `table_id`, `table_title`, or `None` if no confident match.
+
+### Comparison & Sum (Before Layer 1)
+
+- **Comparison (two years):** For queries like "difference between X in 2018 and 2019" or "compare X 2018 vs 2019", `compare_financial_metrics()` first tries a two-year table lookup: parse two years and metric from the query, call `_lookup_single_value` for each year. If both values are found, it returns the difference (or both values for "compare"). If that fails, it falls back to the generic key_metrics comparison.
+- **Sum (two years):** If intent is `calculation` (or query contains "sum") and the query has exactly two years, `_sum_metric_two_years(query, financial_data)` runs: parse metric and both years, look up both values via `_lookup_single_value`, return the sum and optional sentence. If it returns a result, that is used; otherwise the pipeline continues to Layer 1 and beyond.
+
+### Full-Context LLM (Layer 2) — Citation Flow
+
+- **Input:** `_build_full_context(financial_data)` converts `financial_data["markdown"]` (ADE markdown) into a single text string with inline element IDs preserved (e.g. `[0-q]`, `[3-c]`). Tables are flattened to lines with cell text and cell ID. This string is sent to the LLM as the document content.
+- **Prompt:** `generate_full_context_response()` uses a **financial analyst** system prompt: answer only from the document, use the requested year’s column only, if the user specifies a section (e.g. "in the balance sheet") use only that section, never fabricate — if not in the document say so clearly, cite element IDs as `[[id]]` after each value.
+- **Output:** LLM returns plain text with `[[id]]` markers. `_parse_id_citations()` extracts those IDs, looks up each in `ade_grounding`, and builds the `sources` list with `page`, `box`, and optional `visual_ref` for the frontend. If the LLM response contains phrases like "I cannot find" or "does not contain", the current implementation may fall through to Layer 3 instead of returning that answer (known nuance).
+
+### Response Source Labels
+
+Answers are tagged with a `source` field for analytics and debugging: `greeting`, `math_calculator`, `financial_glossary`, `general_knowledge`, `trend_analysis`, `comparison_analysis`, `gpt-3.5-turbo` (summary), `table_sum`, `structured_table`, `full_context`, `year_not_found`, `rag_fallback`, `local_llm`.
 
 ---
 
@@ -481,7 +567,7 @@ Backend: upload_document()
         └─→ Cleanup temp files
 ```
 
-### 2. Chat Flow
+### 2. Chat Flow (Current Three-Layer Pipeline)
 
 ```
 User types query
@@ -493,22 +579,30 @@ POST /documents/chat
 Backend: chat_with_document()
     ├─→ Verify user authentication
     ├─→ Get document from DB
-    ├─→ Download processed_data.json from storage
+    ├─→ Download processed_data.json (and inject markdown/ade_grounding if from ade_parse_response)
     ├─→ Call chat_engine.get_answer_from_document()
-    │   ├─→ Classify query intent
-    │   ├─→ Get conversation context (if document_id provided)
-    │   ├─→ Handle special intents (trend, comparison, summary)
-    │   ├─→ Search vector store (similarity_search)
-    │   ├─→ Build context blocks
-    │   ├─→ Call LLM (llm_service.generate_finance_response())
-    │   ├─→ Extract citations
+    │   ├─→ Greeting / math / irrelevant → immediate return
+    │   ├─→ Value-lookup guard: if year or "how much" → skip financial glossary
+    │   ├─→ Classify intent (trend, comparison, calculation, summary, financial_analysis)
+    │   ├─→ Trend → analyze_financial_trends + enhance_trend_analysis → return
+    │   ├─→ Comparison → compare_financial_metrics (two-year table lookup first, else key_metrics) → return
+    │   ├─→ Summary → generate_document_summary or fallback → return
+    │   ├─→ _parse_query(): years, section_hint, question_type
+    │   ├─→ Year guard: if requested year not in document → return "year_not_found" message
+    │   ├─→ Sum (calculation + 2 years) → _sum_metric_two_years → return if result
+    │   ├─→ Layer 1: structured_table_lookup (confidence-gated: year column must match if year in query)
+    │   │   └─→ If hit: return answer + citations (source: structured_table)
+    │   ├─→ Layer 2: _build_full_context() → if under token limit, generate_full_context_response()
+    │   │   └─→ _parse_id_citations() → return answer + citations (source: full_context)
+    │   ├─→ Layer 3: similarity_search → build_context_blocks → LLM (generate_response / finance path)
+    │   │   └─→ Return answer + citations (source: rag_fallback or local_llm)
     │   ├─→ Generate follow-up suggestions
     │   └─→ Save conversation
     └─→ Return response
         ↓
 Frontend: displayChatMessage()
     ├─→ Display answer
-    ├─→ Display citations
+    ├─→ Display citations (with chunk_id / page / box for PDF highlight where supported)
     └─→ Display follow-up suggestions
 ```
 
@@ -926,6 +1020,18 @@ pip install -r requirements.txt
 
 ---
 
+## Known Limitations & Gaps
+
+- **No section metadata on tables/chunks**: Tables and chunks are not tagged with section type (e.g. "balance sheet", "income statement"). Queries like "balance sheet revenue" cannot be structurally scoped; Layer 1 uses first matching row/table.
+- **Full-context skipped for large documents**: When document markdown exceeds the token limit (~30k), Layer 2 is skipped. Large documents only get Layer 1 (table lookup) and Layer 3 (RAG); no full-document LLM answer with ID-based citations.
+- **Layer 1 table ambiguity**: With many similar tables, structured table lookup can pick the first matching row. No disambiguation by section or table title.
+- **Sum-of-two-years routing**: `_sum_metric_two_years` can in some cases return a single year's value due to routing or column resolution; edge cases exist for alternate column naming.
+- **"I cannot find" and RAG fallback**: When Layer 2 returns a refusal (e.g. "I cannot find"), some code paths may still fall through to Layer 3 (RAG) instead of returning that refusal as the final answer; behavior may vary by prompt and response parsing.
+- **Conversation memory**: Stored in-memory only; not persisted to DB. Restart or new process loses history.
+- **Vector store**: File-based JSON; no dedicated vector DB. Scale and concurrency are limited.
+
+---
+
 ## Conclusion
 
 ALPHA LENS is a comprehensive financial document analysis platform with:
@@ -940,7 +1046,7 @@ The system is designed for extensibility and can be enhanced with additional fea
 
 ---
 
-**Document Version**: 1.0  
-**Last Updated**: 2024  
+**Document Version**: 1.1  
+**Last Updated**: March 2025  
 **Maintained By**: ALPHA LENS Development Team
 
