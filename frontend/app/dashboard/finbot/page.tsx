@@ -609,8 +609,8 @@ export default function FinBotPage() {
                           }}>
                             <span style={{ width: 5, height: 5, borderRadius: "50%", background: "#059669", display: "inline-block" }} />
                             {TOOL_LABELS[tc.name] ?? tc.name}
-                            {tc.args.ticker   && <span style={{ opacity: 0.7 }}>· {String(tc.args.ticker)}</span>}
-                            {tc.args.tickers  && <span style={{ opacity: 0.7 }}>· {(tc.args.tickers as string[]).join(", ")}</span>}
+                            {typeof tc.args.ticker === 'string' && <span style={{ opacity: 0.7 }}>· {tc.args.ticker}</span>}
+                            {Array.isArray(tc.args.tickers) && <span style={{ opacity: 0.7 }}>· {(tc.args.tickers as string[]).join(", ")}</span>}
                           </span>
                         ))}
                       </div>
