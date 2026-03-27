@@ -36,6 +36,9 @@ data/final_outputs/
 *.json
 !package.json
 !package-lock.json
+!tsconfig.json
+!components.json
+!jsconfig.json
 
 # Build files
 dist/
@@ -75,4 +78,7 @@ processed_data/
 *.json
 !package.json
 !package-lock.json
+!tsconfig.json
+!components.json
+!jsconfig.json
 
