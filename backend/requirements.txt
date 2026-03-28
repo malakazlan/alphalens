@@ -39,6 +39,7 @@ arq>=0.25.0
 
 # PDF Report Generation
 xhtml2pdf==0.2.16
+python-bidi==0.4.2
 
 # Rate Limiting
 slowapi>=0.1.9
