@@ -99,6 +99,16 @@ def _run_ade_extract(markdown: str) -> Any:
 async def process_document(ctx: dict, doc_id: str, user_id: str, file_path: str) -> None:
     logger.info(f"Starting processing: doc_id={doc_id}")
 
+    # Idempotency guard — ARQ retries (timeout, transient error) re-deliver
+    # this job. ADE parse is the most expensive call in the system, so
+    # short-circuit if the document already finished. The /retry endpoint
+    # explicitly resets status to "queued" before re-enqueueing, so user
+    # retries are not blocked.
+    existing = await asyncio.to_thread(db.get_document, doc_id, user_id)
+    if existing and existing.get("status") == "complete":
+        logger.info(f"Document {doc_id} already complete — skipping re-parse.")
+        return
+
     def update(status: str, progress: int, message: str):
         db.update_document(doc_id, {
             "status": status, "progress": progress, "status_message": message
