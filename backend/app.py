@@ -14,7 +14,10 @@ from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 from config import settings
 from auth import sign_up, sign_in, sign_out, get_user, reset_password, verify_jwt_local
-from schemas import SignUpRequest, SignInRequest, AuthResponse, ForgotPasswordRequest
+from schemas import (
+    SignUpRequest, SignInRequest, AuthResponse, ForgotPasswordRequest,
+    HashCheckRequest, ChatRequest, ReportGenerateRequest, RegenerateSectionRequest,
+)
 import db
 import storage_client
 import qdrant_store
@@ -51,6 +54,20 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 # already calls ensure_collection() at the appropriate step. Removing the
 # startup hook means Qdrant downtime no longer takes the whole API offline
 # (auth, document listing, FinBot all keep working).
+
+_MAX_JSON_BODY = 1 * 1024 * 1024  # 1 MB cap on JSON bodies
+
+
+@app.middleware("http")
+async def limit_json_body_size(request: Request, call_next):
+    """Reject oversized JSON requests before reading them into memory.
+    Skips multipart (file uploads have their own 50 MB check)."""
+    cl = request.headers.get("content-length")
+    ct = request.headers.get("content-type", "")
+    if cl and ct.startswith("application/json") and int(cl) > _MAX_JSON_BODY:
+        return JSONResponse(status_code=413, content={"error": "Payload too large"})
+    return await call_next(request)
+
 
 # CORS
 app.add_middleware(
@@ -996,12 +1013,8 @@ async def list_documents(current_user: dict = Depends(get_current_user)):
 
 
 @app.post("/api/documents/check-hash")
-async def check_hash(request: Request, current_user: dict = Depends(get_current_user)):
-    body = await request.json()
-    sha256_hash = body.get("sha256_hash", "")
-    if not sha256_hash:
-        raise HTTPException(status_code=400, detail="sha256_hash required")
-    existing = await asyncio.to_thread(db.check_hash, current_user["id"], sha256_hash)
+async def check_hash(body: HashCheckRequest, current_user: dict = Depends(get_current_user)):
+    existing = await asyncio.to_thread(db.check_hash, current_user["id"], body.sha256_hash)
     if existing:
         return {"exists": True, "document_id": existing["id"], "filename": existing["filename"], "status": existing["status"]}
     return {"exists": False}
@@ -1178,16 +1191,18 @@ def _build_section_chunks(all_chunks: list, rag_query: str, top_k: int) -> str:
 
 @app.post("/api/documents/{doc_id}/report")
 @limiter.limit("5/hour")
-async def generate_report(doc_id: str, request: Request, current_user: dict = Depends(get_current_user)):
+async def generate_report(
+    doc_id: str,
+    request: Request,
+    body: ReportGenerateRequest,
+    current_user: dict = Depends(get_current_user),
+):
     """Generate a multi-section report. Streams SSE events per section."""
     doc = await asyncio.to_thread(db.get_document, doc_id, current_user["id"])
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
 
-    body = await request.json() if request.headers.get("content-type", "").startswith("application/json") else {}
-    template_id = body.get("template", "full_analysis")
-    if template_id not in TEMPLATES:
-        template_id = "full_analysis"
+    template_id = body.template if body.template in TEMPLATES else "full_analysis"
 
     user_id = current_user["id"]
     extract = doc.get("extract_data") or {}
@@ -1336,14 +1351,18 @@ async def delete_report(report_id: str, current_user: dict = Depends(get_current
 
 @app.post("/api/reports/{report_id}/regenerate-section")
 @limiter.limit("10/hour")
-async def regenerate_section(report_id: str, request: Request, current_user: dict = Depends(get_current_user)):
+async def regenerate_section(
+    report_id: str,
+    request: Request,
+    body: RegenerateSectionRequest,
+    current_user: dict = Depends(get_current_user),
+):
     """Regenerate a single section of an existing report."""
     report = await asyncio.to_thread(db.get_report, report_id, current_user["id"])
     if not report:
         raise HTTPException(status_code=404, detail="Report not found")
 
-    body = await request.json()
-    section_id = body.get("section", "")
+    section_id = body.section
     if section_id not in SECTION_CONFIGS:
         raise HTTPException(status_code=400, detail="Invalid section ID")
 
@@ -1438,15 +1457,14 @@ async def get_templates(current_user: dict = Depends(get_current_user)):
 
 @app.post("/api/documents/{doc_id}/chat")
 @limiter.limit("20/minute")
-async def chat_document(doc_id: str, request: Request, current_user: dict = Depends(get_current_user)):
-    body = await request.json()
-    message = body.get("message", "").strip()
-    history = body.get("history", [])
-
-    if not message:
-        raise HTTPException(status_code=400, detail="message required")
-    if len(message) > MAX_QUERY_LENGTH:
-        raise HTTPException(status_code=400, detail=f"Message too long (max {MAX_QUERY_LENGTH} characters)")
+async def chat_document(
+    doc_id: str,
+    request: Request,
+    body: ChatRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    message = body.message.strip()
+    history = [h.model_dump() for h in body.history]
 
     doc = await asyncio.to_thread(db.get_document, doc_id, current_user["id"])
     if not doc:
@@ -1699,17 +1717,15 @@ async def chat_document(doc_id: str, request: Request, current_user: dict = Depe
 
 @app.post("/api/finbot/chat")
 @limiter.limit("20/minute")
-async def finbot_chat(request: Request, current_user: dict = Depends(get_current_user)):
+async def finbot_chat(
+    request: Request,
+    body: ChatRequest,
+    current_user: dict = Depends(get_current_user),
+):
     import finbot as fb
 
-    body = await request.json()
-    message = body.get("message", "").strip()
-    history = body.get("history", [])
-
-    if not message:
-        raise HTTPException(status_code=400, detail="message required")
-    if len(message) > MAX_QUERY_LENGTH:
-        raise HTTPException(status_code=400, detail=f"Message too long (max {MAX_QUERY_LENGTH} characters)")
+    message = body.message.strip()
+    history = [h.model_dump() for h in body.history]
 
     async def generate():
         system_msg = (

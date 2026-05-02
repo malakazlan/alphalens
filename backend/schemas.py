@@ -27,16 +27,26 @@ class ForgotPasswordRequest(BaseModel):
 # ─── Documents ─────────────────────────────────────────────────────────────────
 
 class HashCheckRequest(BaseModel):
-    sha256_hash: str
+    sha256_hash: str = Field(..., min_length=64, max_length=64)
 
-class ChatQuery(BaseModel):
-    document_id: str
-    query: str
-    session_id: str = ""
 
-class FinBotMessage(BaseModel):
-    session_id: str
-    message: str
+class ChatHistoryItem(BaseModel):
+    role: str = Field(..., pattern=r"^(user|assistant)$")
+    content: str = Field(..., max_length=8000)
+
+
+class ChatRequest(BaseModel):
+    """Body for POST /api/documents/{doc_id}/chat and /api/finbot/chat."""
+    message: str = Field(..., min_length=1, max_length=2000)
+    history: list[ChatHistoryItem] = Field(default_factory=list, max_length=40)
+
+
+class ReportGenerateRequest(BaseModel):
+    template: str = Field("full_analysis", max_length=64)
+
+
+class RegenerateSectionRequest(BaseModel):
+    section: str = Field(..., min_length=1, max_length=64)
 
 
 # ─── Financial Schemas (for ADE extract()) ─────────────────────────────────────
