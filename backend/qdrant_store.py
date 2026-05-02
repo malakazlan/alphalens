@@ -12,6 +12,7 @@ COLLECTION = "alphalens_documents"
 VECTOR_SIZE = 1536  # text-embedding-3-small
 
 _client: Optional[QdrantClient] = None
+_collection_ready: bool = False
 
 
 def get_client() -> QdrantClient:
@@ -22,6 +23,16 @@ def get_client() -> QdrantClient:
 
 
 def ensure_collection() -> None:
+    """Create collection + payload indexes if missing. Idempotent.
+
+    Memoized via _collection_ready so repeated calls are free after the first
+    successful run. Called from the worker before each upsert, and lazily by
+    healthcheck — never from web app startup, so a Qdrant outage cannot
+    take the FastAPI process down.
+    """
+    global _collection_ready
+    if _collection_ready:
+        return
     client = get_client()
     existing = [c.name for c in client.get_collections().collections]
     if COLLECTION not in existing:
@@ -39,6 +50,7 @@ def ensure_collection() -> None:
                 field_name=field,
                 field_schema=PayloadSchemaType.KEYWORD,
             )
+    _collection_ready = True
 
 
 def upsert_chunks(points: list[PointStruct]) -> None:

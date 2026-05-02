@@ -46,9 +46,11 @@ app = FastAPI(title="Alpha Lens v2", version="2.0.0")
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
-@app.on_event("startup")
-async def startup():
-    await asyncio.to_thread(qdrant_store.ensure_collection)
+# Qdrant collection bootstrap is now lazy — see qdrant_store.py.
+# The web service does not WRITE to Qdrant; the worker does, and the worker
+# already calls ensure_collection() at the appropriate step. Removing the
+# startup hook means Qdrant downtime no longer takes the whole API offline
+# (auth, document listing, FinBot all keep working).
 
 # CORS
 app.add_middleware(
