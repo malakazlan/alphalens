@@ -1,8 +1,11 @@
 """Supabase authentication — email/password, JWT verification."""
+import logging
 from typing import Optional, Dict, Any
+import jwt as pyjwt
 from supabase import create_client, Client
 from config import settings
 
+logger = logging.getLogger(__name__)
 _client: Optional[Client] = None
 
 
@@ -51,9 +54,55 @@ def sign_out(access_token: str) -> Dict[str, Any]:
         return {"success": True}  # Client-side cleanup still succeeds
 
 
+def verify_jwt_local(access_token: str) -> Optional[Dict[str, Any]]:
+    """Verify a Supabase HS256 JWT locally using SUPABASE_JWT_SECRET.
+
+    Returns the decoded payload (with sub, email, exp, …) or None if:
+      - secret is not configured
+      - token is malformed, expired, or signature invalid
+
+    This is the fast path: pure CPU work, no network. ~microseconds per call
+    versus ~100-300ms for client.auth.get_user().
+    """
+    if not access_token or not settings.SUPABASE_JWT_SECRET:
+        return None
+    try:
+        return pyjwt.decode(
+            access_token,
+            settings.SUPABASE_JWT_SECRET,
+            algorithms=["HS256"],
+            audience="authenticated",
+        )
+    except pyjwt.PyJWTError:
+        return None
+
+
 def get_user(access_token: str) -> Optional[Dict[str, Any]]:
+    """Resolve {id, email} from an access token.
+
+    Strategy:
+      1. Local HS256 verify if SUPABASE_JWT_SECRET is configured (fast).
+      2. Fall back to client.auth.get_user() (network, slow but always works).
+
+    Fallback exists so the app keeps working before/after JWT secret is
+    deployed — no flag-day required. Once the secret is set everywhere,
+    the fallback is dead code on the hot path.
+    """
     if not access_token:
         return None
+
+    # Fast path — local verify
+    payload = verify_jwt_local(access_token)
+    if payload and payload.get("sub"):
+        return {
+            "id": payload["sub"],
+            "email": payload.get("email", ""),
+            "created_at": None,
+        }
+
+    # Fallback — remote verify
+    if not settings.SUPABASE_JWT_SECRET:
+        logger.info("SUPABASE_JWT_SECRET not set — using remote auth (slower)")
     client = get_supabase_client()
     try:
         res = client.auth.get_user(access_token)

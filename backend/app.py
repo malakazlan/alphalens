@@ -9,12 +9,11 @@ import logging
 import json
 import re
 import openai
-import jwt as pyjwt
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 from config import settings
-from auth import sign_up, sign_in, sign_out, get_user, reset_password
+from auth import sign_up, sign_in, sign_out, get_user, reset_password, verify_jwt_local
 from schemas import SignUpRequest, SignInRequest, AuthResponse, ForgotPasswordRequest
 import db
 import storage_client
@@ -26,17 +25,18 @@ logger = logging.getLogger(__name__)
 
 
 def _get_user_key(request: Request) -> str:
-    """Rate-limit key: user_id from JWT (falls back to IP for unauthenticated requests)."""
+    """Rate-limit key: user_id from VERIFIED JWT, else client IP.
+
+    Uses verify_jwt_local so an attacker cannot forge a `sub` claim to
+    impersonate another user's rate-limit bucket. If the JWT secret is not
+    yet configured, fall back to IP — never trust an unverified token.
+    """
     token = request.cookies.get("access_token") or \
             request.headers.get("Authorization", "").replace("Bearer ", "")
     if token:
-        try:
-            payload = pyjwt.decode(token, options={"verify_signature": False})
-            sub = payload.get("sub")
-            if sub:
-                return sub
-        except Exception:
-            pass
+        payload = verify_jwt_local(token)
+        if payload and payload.get("sub"):
+            return payload["sub"]
     return get_remote_address(request)
 
 

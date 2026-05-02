@@ -15,6 +15,11 @@ class Settings(BaseSettings):
     SUPABASE_URL: Optional[str] = None
     SUPABASE_ANON_KEY: Optional[str] = None
     SUPABASE_SERVICE_ROLE_KEY: Optional[str] = None
+    # HS256 secret used to sign JWTs. Found in Supabase Dashboard →
+    # Project Settings → API → JWT Secret. When set, the backend verifies
+    # JWTs locally instead of round-tripping to Supabase Auth on every
+    # authenticated request — saves ~100-300ms per request.
+    SUPABASE_JWT_SECRET: Optional[str] = None
 
     # Qdrant (Phase 3)
     QDRANT_URL: Optional[str] = None
