@@ -818,11 +818,91 @@ async def get_current_user(request: Request) -> dict:
 
 @app.get("/")
 async def root():
+    """Default health probe. Always 200 — process is alive."""
     return {"status": "ok", "version": "2.0.0"}
+
+
+@app.get("/livez")
+async def livez():
+    """Liveness — the process is up. Always 200. Use for orchestrator restarts."""
+    return {"status": "ok"}
+
+
+_HEALTH_TIMEOUT = 3.0  # seconds per dependency check
+
+
+async def _check_supabase() -> str:
+    """Cheap read against documents table."""
+    try:
+        await asyncio.wait_for(
+            asyncio.to_thread(
+                lambda: db.get_client().table("documents").select("id").limit(1).execute()
+            ),
+            timeout=_HEALTH_TIMEOUT,
+        )
+        return "ok"
+    except asyncio.TimeoutError:
+        return "timeout"
+    except Exception as e:
+        logger.warning(f"health: supabase failed: {e}")
+        return f"error: {type(e).__name__}"
+
+
+async def _check_qdrant() -> str:
+    try:
+        await asyncio.wait_for(
+            asyncio.to_thread(lambda: qdrant_store.get_client().get_collections()),
+            timeout=_HEALTH_TIMEOUT,
+        )
+        return "ok"
+    except asyncio.TimeoutError:
+        return "timeout"
+    except Exception as e:
+        logger.warning(f"health: qdrant failed: {e}")
+        return f"error: {type(e).__name__}"
+
+
+# Module-level Redis client — reused across health checks so we don't pay the
+# TLS handshake on every call. Upstash cold handshake can exceed 2s.
+_health_redis_client = None
+
+
+async def _check_redis() -> str:
+    global _health_redis_client
+    try:
+        if _health_redis_client is None:
+            import redis.asyncio as aioredis
+            _health_redis_client = aioredis.from_url(
+                settings.UPSTASH_REDIS_URL,
+                socket_connect_timeout=_HEALTH_TIMEOUT,
+                socket_timeout=_HEALTH_TIMEOUT,
+            )
+        await asyncio.wait_for(
+            _health_redis_client.ping(), timeout=_HEALTH_TIMEOUT,
+        )
+        return "ok"
+    except asyncio.TimeoutError:
+        return "timeout"
+    except Exception as e:
+        logger.warning(f"health: redis failed: {e}")
+        # Reset so next call gets a fresh connection
+        _health_redis_client = None
+        return f"error: {type(e).__name__}"
+
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "version": "2.0.0"}
+    """Readiness — pings Supabase, Qdrant, Redis with timeouts. 503 on any fail."""
+    checks = await asyncio.gather(
+        _check_supabase(), _check_qdrant(), _check_redis(),
+    )
+    body = {
+        "status":  "ok" if all(c == "ok" for c in checks) else "degraded",
+        "version": "2.0.0",
+        "checks":  {"supabase": checks[0], "qdrant": checks[1], "redis": checks[2]},
+    }
+    code = 200 if body["status"] == "ok" else 503
+    return JSONResponse(status_code=code, content=body)
 
 
 # ─── Auth endpoints ───────────────────────────────────────────────────────────────
