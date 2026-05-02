@@ -1056,14 +1056,26 @@ async def upload_document(
     }
     await asyncio.to_thread(db.insert_document, doc)
 
-    # Enqueue ARQ processing job
+    # Enqueue ARQ processing job. If Redis is unreachable, mark the doc
+    # as error rather than leaving it in "queued" forever — otherwise the
+    # user sees a permanent loading spinner with no way to recover.
     try:
         from worker import get_arq_pool
         pool = await get_arq_pool()
         await pool.enqueue_job("process_document", doc_id, user_id, storage_path)
         await pool.aclose()
     except Exception as e:
-        logger.warning(f"Could not enqueue job (worker may not be running): {e}")
+        logger.error(f"Failed to enqueue job for doc {doc_id}: {e}", exc_info=True)
+        await asyncio.to_thread(db.update_document, doc_id, {
+            "status": "error",
+            "progress": 0,
+            "status_message": "Could not queue for processing — please retry.",
+        })
+        return JSONResponse(status_code=503, content={
+            "success": False,
+            "error": "Processing queue unavailable. Please retry shortly.",
+            "document_id": doc_id,
+        })
 
     return JSONResponse(status_code=201, content={
         "success": True,
@@ -1235,11 +1247,27 @@ async def generate_report(doc_id: str, request: Request, current_user: dict = De
                     temperature=0.2,
                     max_tokens=cfg["max_tokens"],
                 )
+                client_gone = False
                 for chunk in stream:
+                    # Bail out if user closed the tab — saves OpenAI tokens
+                    # for sections the user will never see.
+                    if await request.is_disconnected():
+                        client_gone = True
+                        stream.close()
+                        break
                     delta = chunk.choices[0].delta.content if chunk.choices else None
                     if delta:
                         section_md += delta
                         yield f"data: {json.dumps({'type': 'delta', 'section': section_id, 'text': delta})}\n\n"
+
+                if client_gone:
+                    await asyncio.to_thread(db.update_report_section, report_id, section_id, {
+                        "markdown": section_md,
+                        "status": "error",
+                        "error": "client_disconnected",
+                    })
+                    logger.info(f"report {report_id}: client disconnected during {section_id}")
+                    return
 
                 word_count = len(section_md.split())
                 total_words += word_count
@@ -1361,6 +1389,10 @@ async def regenerate_section(report_id: str, request: Request, current_user: dic
                 max_tokens=cfg["max_tokens"],
             )
             for chunk in stream:
+                if await request.is_disconnected():
+                    stream.close()
+                    logger.info(f"regenerate-section {section_id}: client disconnected")
+                    return
                 delta = chunk.choices[0].delta.content if chunk.choices else None
                 if delta:
                     section_md += delta
@@ -1531,6 +1563,10 @@ async def chat_document(doc_id: str, request: Request, current_user: dict = Depe
                 max_tokens=1024,
             )
             for chunk in stream:
+                if await request.is_disconnected():
+                    stream.close()
+                    logger.info(f"chat {doc_id}: client disconnected mid-stream")
+                    return
                 delta = chunk.choices[0].delta.content if chunk.choices else None
                 if not delta:
                     continue
@@ -1695,6 +1731,9 @@ async def finbot_chat(request: Request, current_user: dict = Depends(get_current
         try:
             # Agentic loop: allow up to 4 tool call rounds
             for _ in range(4):
+                if await request.is_disconnected():
+                    logger.info("finbot: client disconnected before tool round")
+                    return
                 try:
                     response = await asyncio.to_thread(
                         lambda: oai.chat.completions.create(
@@ -1721,6 +1760,8 @@ async def finbot_chat(request: Request, current_user: dict = Depends(get_current
                     content = choice.message.content or ""
                     # Stream word-by-word for smooth UX
                     for word in content.split(" "):
+                        if await request.is_disconnected():
+                            return
                         yield f"data: {json.dumps({'type': 'delta', 'text': word + ' '})}\n\n"
                     yield f"data: {json.dumps({'type': 'done'})}\n\n"
                     return

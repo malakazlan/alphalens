@@ -118,9 +118,18 @@ def get_user(access_token: str) -> Optional[Dict[str, Any]]:
 
 
 def reset_password(email: str) -> Dict[str, Any]:
+    """Trigger password reset email.
+
+    Always returns success to the caller, regardless of whether the email
+    exists. Surfacing "user not found"-style errors enables email
+    enumeration. The actual error is logged server-side for debugging.
+    """
     client = get_supabase_client()
     try:
         client.auth.reset_password_for_email(email)
-        return {"success": True, "message": "Password reset email sent"}
     except Exception as e:
-        return {"success": False, "error": str(e)}
+        logger.warning(f"reset_password failed for {email}: {e}")
+    return {
+        "success": True,
+        "message": "If that email is registered, a reset link has been sent.",
+    }
