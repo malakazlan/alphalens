@@ -82,3 +82,39 @@ processed_data/
 !components.json
 !jsconfig.json
 
+
+# IDE
+.cursor/
+
+# ─── V1 legacy files (kept locally as backup, not tracked) ─────────────
+# V1 root Python backend (V2 lives in backend/)
+/app.py
+/auth.py
+/config.py
+/chat_engine.py
+/database_service.py
+/document_processor.py
+/finbot_service.py
+/llm_service.py
+/report_service.py
+/storage_service.py
+/vector_store.py
+/landing_ai_chat.py
+
+# V1 root frontend
+/index.html
+/landing.html
+/login.html
+/static/
+
+# V1 deploy + config
+/Procfile
+/requirements.txt
+/runtime.txt
+/migrations/
+
+# V1 docs
+/DEBUG_PRODUCTION_CHATBOT.md
+/SYSTEM_ARCHITECTURE_REPORT.md
+/DEPLOYMENT.md
+/resrearch-landing.ai.md
