@@ -26,6 +26,44 @@ import embeddings
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# ── OpenAI singleton ──────────────────────────────────────────────────────────
+_oai = openai.OpenAI(api_key=settings.OPENAI_API_KEY)
+
+# ── processed.json in-memory cache (keyed by doc_id, 10-min TTL) ─────────────
+import time as _time
+_DOC_CACHE: dict[str, tuple[float, str, dict]] = {}  # doc_id → (expires, markdown, grounding)
+_DOC_CACHE_TTL = 600  # seconds
+
+def _get_doc_cache(doc_id: str):
+    entry = _DOC_CACHE.get(doc_id)
+    if entry and _time.time() < entry[0]:
+        return entry[1], entry[2]
+    return None, None
+
+def _set_doc_cache(doc_id: str, markdown: str, grounding: dict):
+    _DOC_CACHE[doc_id] = (_time.time() + _DOC_CACHE_TTL, markdown, grounding)
+    now = _time.time()
+    stale = [k for k, v in _DOC_CACHE.items() if v[0] < now]
+    for k in stale:
+        del _DOC_CACHE[k]
+
+
+# ── Qdrant chunk cache (keyed by doc_id, same 10-min TTL) ────────────────────
+_CHUNK_CACHE: dict[str, tuple[float, list]] = {}
+
+def _get_chunk_cache(doc_id: str):
+    entry = _CHUNK_CACHE.get(doc_id)
+    if entry and _time.time() < entry[0]:
+        return entry[1]
+    return None
+
+def _set_chunk_cache(doc_id: str, chunks: list):
+    _CHUNK_CACHE[doc_id] = (_time.time() + _DOC_CACHE_TTL, chunks)
+    now = _time.time()
+    stale = [k for k, v in _CHUNK_CACHE.items() if v[0] < now]
+    for k in stale:
+        del _CHUNK_CACHE[k]
+
 
 def _get_user_key(request: Request) -> str:
     """Rate-limit key: user_id from VERIFIED JWT, else client IP.
@@ -91,7 +129,20 @@ _TD_WITH_ID_RE = re.compile(
 _TR_RE = re.compile(r"<tr>(.*?)</tr>", re.DOTALL | re.IGNORECASE)
 _HTML_TAG_RE = re.compile(r"<[^>]+>")
 _CITATION_RE = re.compile(r"\[\[([^\]]+)\]\]")
-_FULL_CONTEXT_TOKEN_LIMIT = 30000
+_FULL_CONTEXT_TOKEN_LIMIT = 28000
+
+# Section heading + year detection for table grid builder
+_HEADING_RE   = re.compile(r'(?:^|\n)#{1,3}\s+([^\n]+)', re.MULTILINE)
+_YEAR_RE_4    = re.compile(r'\b(19|20)\d{2}\b')
+_DASH_ONLY_RE = re.compile(r'^[\s\-–—]*$')
+
+# Extract section — unit detection + numeric parsing
+_UNIT_RE  = re.compile(r'in\s+(thousands?|000s|millions?|billions?)', re.IGNORECASE)
+_UNIT_MAP = {
+    "thousand": 1_000, "thousands": 1_000, "000s": 1_000,
+    "million":  1_000_000, "millions":  1_000_000,
+    "billion":  1_000_000_000, "billions": 1_000_000_000,
+}
 
 
 def _keyword_search_fallback(markdown: str, query: str, top_k: int = 5) -> str:
@@ -121,7 +172,7 @@ def _build_full_context(markdown_text: str, qdrant_chunks: list = None):
     if not raw_md:
         return None
 
-    est_tokens = len(raw_md) // 4
+    est_tokens = len(raw_md) // 2  # financial docs tokenise at ~2 chars/token (numbers, symbols)
     if est_tokens > _FULL_CONTEXT_TOKEN_LIMIT:
         return None
 
@@ -481,6 +532,369 @@ def _normalise_for_match(s: str) -> str:
     return re.sub(r"[\s,$%()₹£€¥]", "", s).lower().replace(",", "")
 
 
+def _build_table_grids(markdown_text: str) -> dict:
+    """Parse ADE HTML tables from full markdown → {table_id: grid_dict}.
+
+    Each grid_dict:
+      table_id         – ADE table element id
+      year_label       – 4-digit year in the header row's first cell (e.g. "2018", "2019")
+                         Handles the SOCE two-table pattern where each sub-table starts with
+                         a year cell instead of a column-header row.
+      rows             – list[list[str]]: rows[i][j] = cell_id at grid position (i, j)
+      header_row       – row index of the column-header row (usually 0)
+      label_col        – column index of the row-label column (usually 0)
+      group_header_rows – row indexes whose value columns are all empty/dash
+                          (sub-group headers like "Foreign currency financial assets")
+    """
+    if not markdown_text:
+        return {}
+
+    grids: dict = {}
+    pos = 0
+
+    # Pre-build heading list for O(N) lookup of nearest heading above each table
+    heading_positions: list[tuple[int, str]] = [
+        (m.start(), m.group(1).strip())
+        for m in _HEADING_RE.finditer(markdown_text)
+    ]
+
+    while pos < len(markdown_text):
+        table_m = _TABLE_OPEN_RE.search(markdown_text, pos)
+        if not table_m:
+            break
+
+        table_id = table_m.group(1)
+        table_close = markdown_text.find("</table>", table_m.end())
+        if table_close == -1:
+            table_close = len(markdown_text) - len("</table>")
+        table_html = markdown_text[table_m.start(): table_close + len("</table>")]
+
+        # Parse rows: list[list[str]] of cell IDs, plus a text map for analysis
+        rows: list[list[str]] = []
+        cell_texts: dict[str, str] = {}
+        for tr_m in _TR_RE.finditer(table_html):
+            row_cells = _TD_WITH_ID_RE.findall(tr_m.group(1))
+            if not row_cells:
+                continue
+            row_ids: list[str] = []
+            for cell_id, cell_html in row_cells:
+                text = re.sub(r"<[^>]+>", "", cell_html).strip()
+                cell_texts[cell_id] = text
+                row_ids.append(cell_id)
+            if row_ids:
+                rows.append(row_ids)
+
+        if not rows:
+            pos = table_close + len("</table>")
+            continue
+
+        header_row = 0
+        label_col  = 0
+
+        # year_label: first cell of header row contains a bare 4-digit year
+        # This is the ADE pattern for SOCE where "2018" / "2019" heads each sub-table.
+        year_label: str | None = None
+        if rows and rows[header_row]:
+            first_text = cell_texts.get(rows[header_row][0], "")
+            ym = _YEAR_RE_4.match(first_text.strip())
+            if ym and first_text.strip() == ym.group():
+                year_label = ym.group()
+
+        # group_header_rows: data rows where ALL value columns are empty or dash
+        # These are section sub-headers inside the table (e.g. "ASSETS", "Foreign currency …")
+        group_header_rows: list[int] = []
+        for ri, row in enumerate(rows):
+            if ri == header_row:
+                continue
+            value_ids = row[label_col + 1:] if len(row) > label_col + 1 else []
+            if not value_ids:
+                continue
+            label_text = cell_texts.get(row[label_col] if row else "", "")
+            all_empty = all(
+                _DASH_ONLY_RE.match(cell_texts.get(cid, "") or "") is not None
+                for cid in value_ids
+            )
+            if all_empty and label_text.strip():
+                group_header_rows.append(ri)
+
+        grids[table_id] = {
+            "table_id":          table_id,
+            "year_label":        year_label,
+            "rows":              rows,
+            "header_row":        header_row,
+            "label_col":         label_col,
+            "group_header_rows": group_header_rows,
+            "_cell_texts":       cell_texts,   # kept for internal use only
+        }
+
+        pos = table_close + len("</table>")
+
+    return grids
+
+
+def _find_grid_for_cell(cell_id: str, grids: dict):
+    """Return the grid dict that contains cell_id, or None."""
+    for grid in grids.values():
+        for row in grid["rows"]:
+            if cell_id in row:
+                return grid
+    return None
+
+
+def _get_cross_cells(grid: dict, value_cell_id: str) -> dict:
+    """Given a value cell, return context cell IDs.
+
+    Returns:
+      row_label_id   – cell at (same row, label_col)
+      group_label_id – cell at (nearest group-header row above, label_col)
+      col_header_id  – cell at (header_row, same col)
+    All values are None when not applicable (e.g. the value cell IS the label).
+    """
+    rows        = grid["rows"]
+    header_row  = grid["header_row"]
+    label_col   = grid["label_col"]
+    group_rows  = grid["group_header_rows"]
+
+    for ri, row in enumerate(rows):
+        for ci, cid in enumerate(row):
+            if cid != value_cell_id:
+                continue
+
+            row_label_id = row[label_col] if ci != label_col and label_col < len(row) else None
+
+            col_header_id = None
+            if ri != header_row and header_row < len(rows):
+                hrow = rows[header_row]
+                if ci < len(hrow):
+                    col_header_id = hrow[ci]
+
+            group_label_id = None
+            for prev_ri in range(ri - 1, -1, -1):
+                if prev_ri in group_rows:
+                    prev_row = rows[prev_ri]
+                    if label_col < len(prev_row):
+                        group_label_id = prev_row[label_col]
+                    break
+
+            return {
+                "row_label_id":   row_label_id,
+                "group_label_id": group_label_id,
+                "col_header_id":  col_header_id,
+            }
+
+    return {"row_label_id": None, "group_label_id": None, "col_header_id": None}
+
+
+def _parse_numeric(text: str):
+    """Parse a cell value string to float, or None if not numeric.
+    Handles: commas, parentheses for negatives, currency symbols, trailing dashes.
+    """
+    if not text:
+        return None
+    t = text.strip()
+    if _DASH_ONLY_RE.match(t):
+        return None
+    negative = t.startswith("(") and t.endswith(")")
+    t = re.sub(r"[^\d.\-]", "", t.replace("(", "-").replace(")", ""))
+    try:
+        val = float(t)
+        return -abs(val) if negative else val
+    except ValueError:
+        return None
+
+
+def _detect_unit_scale(texts: list[str]) -> tuple[int, str]:
+    """Scan a list of strings (title, section, first rows) for unit qualifiers.
+    Returns (scale_multiplier, label_string).
+    """
+    for text in texts:
+        m = _UNIT_RE.search(text or "")
+        if m:
+            key = m.group(1).lower()
+            scale = _UNIT_MAP.get(key, 1)
+            return scale, f"in {m.group(1)}"
+    return 1, ""
+
+
+def _compute_yoy(cells: list[dict], year_col_indices: list[int]):
+    """Compute YoY % change between the last two year columns.
+    Returns float or None.
+    """
+    if len(year_col_indices) < 2:
+        return None
+    prev_idx = year_col_indices[-2]
+    curr_idx = year_col_indices[-1]
+    prev_cell = cells[prev_idx] if prev_idx < len(cells) else None
+    curr_cell = cells[curr_idx] if curr_idx < len(cells) else None
+    if not prev_cell or not curr_cell:
+        return None
+    prev_val = _parse_numeric(prev_cell.get("value_text", ""))
+    curr_val = _parse_numeric(curr_cell.get("value_text", ""))
+    if prev_val is None or curr_val is None or prev_val == 0:
+        return None
+    return round((curr_val - prev_val) / abs(prev_val) * 100, 1)
+
+
+def _extract_doc_name(markdown_text: str) -> str:
+    """Return the first heading found in markdown, stripped of markup."""
+    for m in _HEADING_RE.finditer(markdown_text):
+        text = m.group(1).strip()
+        # Strip any inline HTML/anchor tags  e.g. <a id='...'></a>
+        text = re.sub(r'<[^>]+>', '', text).strip()
+        if text:
+            return text
+    return ""
+
+
+def _build_all_tables(markdown_text: str, grounding_dict: dict) -> list:
+    """Build a structured list of ExtractTable dicts from all <table> elements.
+
+    Reuses _build_table_grids() for HTML parsing, then enriches each grid
+    with: col headers, year columns, unit scale, per-cell grounding (bbox/page),
+    YoY delta, and nearest section heading.
+
+    Used exclusively by get_extract() — not by the chat pipeline.
+    """
+    if not markdown_text:
+        return []
+
+    grids = _build_table_grids(markdown_text)
+    if not grids:
+        return []
+
+    # Pre-build heading positions for section lookup
+    heading_positions: list[tuple[int, str]] = [
+        (m.start(), m.group(1).strip())
+        for m in _HEADING_RE.finditer(markdown_text)
+    ]
+
+    # Build a table-start position map for section lookup
+    table_positions: dict[str, int] = {}
+    for m in re.finditer(r'<table\s+id=["\']?(\w[\w-]*)["\']?', markdown_text, re.IGNORECASE):
+        table_positions[m.group(1)] = m.start()
+
+    result = []
+
+    for table_id, grid in grids.items():
+        rows_ids       = grid["rows"]            # list[list[cell_id]]
+        header_row_idx = grid["header_row"]      # int (always 0)
+        label_col      = grid["label_col"]       # int (always 0)
+        group_rows     = set(grid["group_header_rows"])
+        cell_texts     = grid["_cell_texts"]     # {cell_id: text}
+
+        if not rows_ids or header_row_idx >= len(rows_ids):
+            continue
+
+        header_ids = rows_ids[header_row_idx]
+
+        # ── Column headers ────────────────────────────────────────────────────
+        col_headers: list[str] = [cell_texts.get(cid, "") for cid in header_ids]
+
+        # ── Detect year columns (index into col_headers) ──────────────────────
+        year_col_indices: list[int] = [
+            i for i, h in enumerate(col_headers)
+            if i != label_col and _YEAR_RE_4.search(h)
+        ]
+
+        # ── Section heading for this table ───────────────────────────────────
+        tbl_pos = table_positions.get(table_id, 0)
+        section_name = ""
+        for hpos, htitle in reversed(heading_positions):
+            if hpos < tbl_pos:
+                section_name = htitle
+                break
+
+        # ── Unit detection: check section name + col headers + first data row ─
+        first_row_texts = []
+        if len(rows_ids) > header_row_idx + 1:
+            first_data_row = rows_ids[header_row_idx + 1]
+            first_row_texts = [cell_texts.get(cid, "") for cid in first_data_row]
+        unit_scale, unit_label = _detect_unit_scale(
+            [section_name] + col_headers + first_row_texts
+        )
+
+        # ── Page + bbox for the whole table (from first resolved cell) ────────
+        table_page = 0
+        table_bbox: dict = {}
+        for row_ids_row in rows_ids:
+            for cid in row_ids_row:
+                g = grounding_dict.get(cid)
+                if g:
+                    table_page = g.get("page", 0)
+                    b = g.get("bbox") or g.get("box") or {}
+                    if isinstance(b, dict) and b:
+                        table_bbox = b
+                    break
+            if table_bbox:
+                break
+
+        # ── Build rows ────────────────────────────────────────────────────────
+        extract_rows: list[dict] = []
+
+        for ri, row_ids in enumerate(rows_ids):
+            if ri == header_row_idx:
+                continue  # skip header row — it becomes col_headers
+
+            row_label_id  = row_ids[label_col] if label_col < len(row_ids) else ""
+            row_label_txt = cell_texts.get(row_label_id, "")
+            is_group      = ri in group_rows
+
+            # Build cells list (one per non-label column)
+            cells: list[dict] = []
+            for ci, cid in enumerate(row_ids):
+                if ci == label_col:
+                    continue
+                col_hdr   = col_headers[ci] if ci < len(col_headers) else ""
+                val_text  = cell_texts.get(cid, "")
+                g         = grounding_dict.get(cid) or {}
+                cell_page = g.get("page", table_page)
+                raw_bbox  = g.get("bbox") or g.get("box") or {}
+                cell_bbox = raw_bbox if isinstance(raw_bbox, dict) else {}
+                cells.append({
+                    "col_header": col_hdr,
+                    "value_text": val_text,
+                    "cell_id":    cid,
+                    "page":       cell_page,
+                    "bbox":       cell_bbox,
+                })
+
+            # YoY delta — adjust indices: cells[] has label col removed
+            # map year_col_indices (in original col space) → cells[] index
+            cells_year_indices = []
+            cells_ci = 0
+            for ci in range(len(row_ids)):
+                if ci == label_col:
+                    continue
+                if ci in year_col_indices:
+                    cells_year_indices.append(cells_ci)
+                cells_ci += 1
+
+            yoy = None if is_group else _compute_yoy(cells, cells_year_indices)
+
+            extract_rows.append({
+                "row_label":       row_label_txt,
+                "row_label_id":    row_label_id,
+                "is_group_header": is_group,
+                "cells":           cells,
+                "yoy_delta_pct":   yoy,
+            })
+
+        result.append({
+            "table_id":    table_id,
+            "title":       section_name,
+            "section":     section_name,
+            "page":        table_page,
+            "bbox":        table_bbox,
+            "col_headers": col_headers,
+            "year_cols":   year_col_indices,
+            "unit_scale":  unit_scale,
+            "unit_label":  unit_label,
+            "rows":        extract_rows,
+        })
+
+    return result
+
+
 def _extract_question_qualifiers(question: str) -> set:
     """Values in the question are filters, not answers. E.g., '2018' in 'assets in 2018?'"""
     norms = set()
@@ -658,7 +1072,11 @@ def _find_all_matching_cells(
     3. Value-match within scope, dedup by table instance, gate on confidence
     4. Fall back to LLM-cited IDs only if value matching found nothing
     """
-    answer_values = _extract_answer_values(answer_text)
+    # Strip [[cell-id]] citations before value extraction — digits inside
+    # citation markers (e.g. [[0-800]]) would otherwise be falsely extracted
+    # as answer values and produce spurious high-confidence cell matches.
+    clean_answer = _CITATION_RE.sub("", answer_text)
+    answer_values = _extract_answer_values(clean_answer)
 
     # Filter out question qualifiers — these are filters, not answer targets
     if question_qualifiers:
@@ -835,7 +1253,7 @@ async def get_current_user(request: Request) -> dict:
 
 @app.get("/")
 async def root():
-    """Default health probe. Always 200 — process is alive."""
+    """Render's default health probe. Always 200 — process is alive."""
     return {"status": "ok", "version": "2.0.0"}
 
 
@@ -909,7 +1327,13 @@ async def _check_redis() -> str:
 
 @app.get("/health")
 async def health():
-    """Readiness — pings Supabase, Qdrant, Redis with timeouts. 503 on any fail."""
+    """Readiness probe — pings Supabase, Qdrant, Redis with 2s timeouts.
+
+    Returns 200 only if all dependencies respond. Render's healthCheckPath
+    pulls the container out of rotation on 503, so a downstream outage
+    triggers a real failover instead of routing requests to a dead app.
+    Use /livez (always 200) if you only want process-alive semantics.
+    """
     checks = await asyncio.gather(
         _check_supabase(), _check_qdrant(), _check_redis(),
     )
@@ -1130,6 +1554,16 @@ async def get_file_url(doc_id: str, current_user: dict = Depends(get_current_use
     return {"success": True, "url": url}
 
 
+@app.get("/api/documents/{doc_id}/chunks/overlays")
+async def get_chunk_overlays(doc_id: str, current_user: dict = Depends(get_current_user)):
+    """Lightweight endpoint — returns only chunk_id, chunk_type, page, bbox. No markdown."""
+    doc = await asyncio.to_thread(db.get_document, doc_id, current_user["id"])
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+    chunks = await asyncio.to_thread(qdrant_store.get_chunk_overlays_by_doc, doc_id, current_user["id"])
+    return {"success": True, "chunks": chunks}
+
+
 @app.get("/api/documents/{doc_id}/chunks")
 async def get_chunks(doc_id: str, current_user: dict = Depends(get_current_user)):
     doc = await asyncio.to_thread(db.get_document, doc_id, current_user["id"])
@@ -1159,12 +1593,119 @@ async def get_grounding(doc_id: str, current_user: dict = Depends(get_current_us
     return {"success": True, "grounding": grounding}
 
 
+@app.delete("/api/documents/{doc_id}")
+async def delete_document(doc_id: str, current_user: dict = Depends(get_current_user)):
+    user_id = current_user["id"]
+
+    # Verify ownership first — 404 if not found or belongs to another user
+    doc = await asyncio.to_thread(db.get_document, doc_id, user_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    # Mark as deleting so in-flight worker jobs abort their final upsert
+    await asyncio.to_thread(db.update_document, doc_id, {"status": "deleting"})
+
+    # External systems — best-effort; failures must not block DB cleanup,
+    # but we log them so orphaned points / files are diagnosable.
+    try:
+        await asyncio.to_thread(qdrant_store.delete_doc_chunks, doc_id, user_id)
+    except Exception as e:
+        logger.warning(f"delete: qdrant cleanup failed for doc {doc_id}: {e}")
+    try:
+        await asyncio.to_thread(storage_client.delete_folder, user_id, doc_id)
+    except Exception as e:
+        logger.warning(f"delete: storage cleanup failed for doc {doc_id}: {e}")
+
+    # DB — children first, then parent (preserves referential integrity)
+    await asyncio.to_thread(db.delete_document, doc_id, user_id)
+    return {"success": True}
+
+
+@app.post("/api/documents/{doc_id}/retry")
+async def retry_document(doc_id: str, current_user: dict = Depends(get_current_user)):
+    user_id = current_user["id"]
+    doc = await asyncio.to_thread(db.get_document, doc_id, user_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+    if doc.get("status") != "error":
+        raise HTTPException(status_code=400, detail="Only failed documents can be retried")
+    file_path = doc.get("file_path")
+    if not file_path:
+        raise HTTPException(status_code=400, detail="Document has no stored file path — cannot retry")
+
+    await asyncio.to_thread(db.update_document, doc_id, {
+        "status": "queued",
+        "progress": 0,
+        "status_message": "Retrying...",
+    })
+    try:
+        from worker import get_arq_pool
+        pool = await get_arq_pool()
+        await pool.enqueue_job("process_document", doc_id, user_id, file_path)
+        await pool.aclose()
+    except Exception as e:
+        logger.error(f"Failed to enqueue retry for doc {doc_id}: {e}", exc_info=True)
+        await asyncio.to_thread(db.update_document, doc_id, {
+            "status": "error",
+            "status_message": "Could not queue for retry — try again shortly.",
+        })
+        raise HTTPException(status_code=503, detail="Processing queue unavailable.")
+
+    return {"success": True}
+
+
 @app.get("/api/documents/{doc_id}/extract")
 async def get_extract(doc_id: str, current_user: dict = Depends(get_current_user)):
     doc = await asyncio.to_thread(db.get_document, doc_id, current_user["id"])
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
-    return {"success": True, "extract": doc.get("extract_data") or {}}
+
+    # ── Existing structured fields (unchanged) ────────────────────────────────
+    extract = doc.get("extract_data") or {}
+
+    # ── Build table list from processed.json (cache → Storage) ───────────────
+    tables: list = []
+    try:
+        user_id = current_user["id"]
+        markdown, grounding = _get_doc_cache(doc_id)
+        if not markdown:
+            # Try the correct path first, then fall back to the legacy mis-named path
+            for try_path in [
+                f"{user_id}/{doc_id}/processed.json",
+                f"{user_id}/{doc_id}/original.json",
+            ]:
+                try:
+                    cache_bytes = await asyncio.to_thread(
+                        lambda p=try_path: storage_client.get_client().storage
+                            .from_(storage_client.BUCKET).download(p)
+                    )
+                    if cache_bytes:
+                        cached    = json.loads(cache_bytes)
+                        markdown  = cached.get("markdown", "")
+                        grounding = cached.get("grounding", {})
+                        _set_doc_cache(doc_id, markdown, grounding)
+                        break
+                except Exception:
+                    continue
+
+        if markdown:
+            tables = await asyncio.to_thread(_build_all_tables, markdown, grounding or {})
+            # Fill company_name from markdown if ADE extract left it blank
+            if not extract.get("company_name") and markdown:
+                doc_name = _extract_doc_name(markdown)
+                if doc_name:
+                    extract = {**extract, "company_name": doc_name}
+    except Exception as e:
+        logger.warning(f"extract tables build failed for {doc_id}: {e}")
+        # tables stays [] — UI handles empty state gracefully
+
+    # Last resort: use document filename
+    if not extract.get("company_name"):
+        raw_name = doc.get("filename") or doc.get("metadata", {}).get("filename") or ""
+        if raw_name:
+            extract = {**extract, "company_name": re.sub(r'\.[^.]+$', '', raw_name).replace("_", " ").replace("-", " ").strip()}
+
+    return {"success": True, "extract": extract, "tables": tables}
 
 
 # ── Report endpoints (section-by-section generation) ─────────────────────────
@@ -1231,7 +1772,7 @@ async def generate_report(
 
         yield f"data: {json.dumps({'type': 'report_start', 'report_id': report_id, 'template': template_id, 'sections': section_ids})}\n\n"
 
-        oai = openai.OpenAI(api_key=settings.OPENAI_API_KEY)
+
         total_words = 0
 
         for idx, section_id in enumerate(section_ids):
@@ -1252,7 +1793,7 @@ async def generate_report(
 
             section_md = ""
             try:
-                stream = oai.chat.completions.create(
+                stream = _oai.chat.completions.create(
                     model="gpt-4o",
                     messages=[
                         {"role": "system", "content": cfg["system"]},
@@ -1276,6 +1817,7 @@ async def generate_report(
                         yield f"data: {json.dumps({'type': 'delta', 'section': section_id, 'text': delta})}\n\n"
 
                 if client_gone:
+                    # Persist whatever we got, mark partial, stop the report
                     await asyncio.to_thread(db.update_report_section, report_id, section_id, {
                         "markdown": section_md,
                         "status": "error",
@@ -1396,8 +1938,7 @@ async def regenerate_section(
 
         section_md = ""
         try:
-            oai = openai.OpenAI(api_key=settings.OPENAI_API_KEY)
-            stream = oai.chat.completions.create(
+            stream = _oai.chat.completions.create(
                 model="gpt-4o",
                 messages=[
                     {"role": "system", "content": cfg["system"]},
@@ -1491,20 +2032,23 @@ async def chat_document(
                 },
             }
 
-        # 2. Try full-context mode: download processed.json from Supabase Storage
-        full_markdown = ""
-        grounding_from_cache = {}
-        cache_path = f"{user_id}/{doc_id}/processed.json"
-        try:
-            cache_bytes = await asyncio.to_thread(
-                lambda: storage_client.get_client().storage.from_(storage_client.BUCKET).download(cache_path)
-            )
-            cached = json.loads(cache_bytes)
-            full_markdown = cached.get("markdown", "")
-            grounding_from_cache = cached.get("grounding", {})
-        except Exception:
+        # 2. Try full-context mode: load processed.json (memory cache → Supabase Storage)
+        full_markdown, grounding_from_cache = _get_doc_cache(doc_id)
+        if full_markdown is None:
             full_markdown = ""
             grounding_from_cache = {}
+            cache_path = f"{user_id}/{doc_id}/processed.json"
+            try:
+                cache_bytes = await asyncio.to_thread(
+                    lambda: storage_client.get_client().storage.from_(storage_client.BUCKET).download(cache_path)
+                )
+                cached = json.loads(cache_bytes)
+                full_markdown = cached.get("markdown", "")
+                grounding_from_cache = cached.get("grounding", {})
+                _set_doc_cache(doc_id, full_markdown, grounding_from_cache)
+            except Exception:
+                full_markdown = ""
+                grounding_from_cache = {}
 
         # Merge cache grounding into grounding_dict (DB takes precedence)
         if grounding_from_cache:
@@ -1512,11 +2056,14 @@ async def chat_document(
                 if eid not in grounding_dict:
                     grounding_dict[eid] = g
 
-        # 2b. Fetch ALL chunks for section mapping and plain-text cell lookup
-        try:
-            all_chunks = await asyncio.to_thread(qdrant_store.get_chunks_by_doc, doc_id, user_id)
-        except Exception:
-            all_chunks = []
+        # 2b. Fetch ALL chunks — serve from cache on subsequent turns (zero Qdrant I/O)
+        all_chunks = _get_chunk_cache(doc_id)
+        if all_chunks is None:
+            try:
+                all_chunks = await asyncio.to_thread(qdrant_store.get_chunks_by_doc, doc_id, user_id)
+                _set_chunk_cache(doc_id, all_chunks)
+            except Exception:
+                all_chunks = []
 
         # 3. Decide: full-context or RAG
         context = None
@@ -1546,16 +2093,26 @@ async def chat_document(
 
         # 4. Build messages with citation instructions
         system_msg = (
-            "You are a financial document analyst. Answer questions based strictly on the document context provided. "
-            "Be precise and cite specific figures where relevant. "
-            "If the information is not in the context, say so clearly. Keep responses concise.\n\n"
-            "When citing information, reference the source element ID in double brackets like [[element_id]]. "
-            "For table cell values, cite the cell ID (e.g., [[0-5]]). "
-            "For text sections, cite the chunk ID (e.g., [[7d58c5cf-...]]). "
-            "Always cite the specific source.\n\n"
-            "Pay attention to section headers (e.g., 'Statement of Financial Position', "
-            "'Statement of Changes in Equity'). Cite elements from the section that matches "
-            "the user's question context."
+            "You are a financial document analyst reasoning with a structured financial document.\n"
+            "Give precise, evidence-grounded answers — not generic financial knowledge.\n\n"
+            "Rules:\n"
+            "1. Answer only from the document context provided. If absent, say 'not available in this document.'\n"
+            "2. Match response depth to the question:\n"
+            "   - Direct lookup ('what is X'): one value, one or two sentences.\n"
+            "   - Comparison ('compare X vs Y' / 'difference'): both values, absolute + % change.\n"
+            "   - Analytical ('why did X change'): decompose into contributing line items.\n"
+            "   - Section overview ('tell me about X'): key figures for ALL available periods.\n"
+            "3. Preserve exact values — do not round, abbreviate, or paraphrase numbers.\n"
+            "4. Parenthetical values like (880,843) are negative — label them as losses/expenses.\n"
+            "5. When a section has multiple year-tables (e.g. Statement of Changes in Equity has\n"
+            "   separate 2018 and 2019 tables), include figures from ALL year-tables unless the\n"
+            "   user specifies a single year. Label each figure with its year.\n"
+            "6. Never guess. If a value is not in the context, say so explicitly.\n\n"
+            "Citation: append the cell ID in double brackets immediately after every figure you cite.\n"
+            "  Table cell: 1,529,797 [[cell-id]]   Text chunk: noted in audit [[uuid]]\n"
+            "Do not cite the same ID twice. Cite every unique figure you mention.\n\n"
+            "Section awareness: always cite from the section that matches the question "
+            "(e.g. 'Statement of Financial Position', 'Statement of Changes in Equity', 'Cash Flows')."
         )
         messages = [{"role": "system", "content": system_msg}]
         for h in history[-6:]:
@@ -1572,13 +2129,12 @@ async def chat_document(
         pending = ""  # buffer for potential citation markers
 
         try:
-            oai = openai.OpenAI(api_key=settings.OPENAI_API_KEY)
-            stream = oai.chat.completions.create(
-                model="gpt-4o-mini",
+            stream = _oai.chat.completions.create(
+                model="gpt-4.1",
                 messages=messages,
                 stream=True,
-                temperature=0.3,
-                max_tokens=1024,
+                temperature=0.1,
+                max_tokens=2048,
             )
             for chunk in stream:
                 if await request.is_disconnected():
@@ -1635,11 +2191,9 @@ async def chat_document(
             yield f"data: {json.dumps({'type': 'delta', 'text': pending})}\n\n"
 
         # 6. Application-level value matching (Landing.AI approach)
-        # Build cell text lookup from full markdown for scanning ALL cells
         cell_lookup = _build_cell_text_lookup(full_markdown)
-        cell_section_map = {}
+        cell_section_map: dict = {}
 
-        # Detect plain-text doc and build lookup accordingly
         if not cell_lookup and full_markdown and '<td' not in full_markdown.lower():
             cell_lookup, cell_section_map = _build_plaintext_cell_lookup(
                 full_markdown, grounding_dict, all_chunks
@@ -1647,7 +2201,6 @@ async def chat_document(
         elif cell_lookup:
             cell_section_map = _build_cell_section_map(grounding_dict, all_chunks)
 
-        # If in RAG mode and no full markdown, build lookup from search result chunks
         if not cell_lookup and results:
             for r in results:
                 p = r.payload
@@ -1656,14 +2209,14 @@ async def chat_document(
                     for cid, chtml in _CELL_EXTRACT_RE.findall(md):
                         text = re.sub(r"<[^>]+>", "", chtml).strip()
                         cell_lookup[cid] = text
-            # Also build section map from RAG results
             if not cell_section_map:
                 cell_section_map = _build_cell_section_map(grounding_dict, [r.payload for r in results if r.payload])
 
-        # Extract qualifiers from question
+        # Build table grids for row/col/group cross-reference resolution
+        table_grids = _build_table_grids(full_markdown)
+
         question_qualifiers = _extract_question_qualifiers(message)
 
-        # Find ALL matching cells across the entire document
         matched = _find_all_matching_cells(
             full_answer, cell_lookup, grounding_dict, cited_ids,
             question_qualifiers=question_qualifiers,
@@ -1671,21 +2224,42 @@ async def chat_document(
             question_text=message,
         )
 
-        # Build source chunks from matches
+        # Build source chunks with full cross-cell context
         source_chunks = []
         for cell_id, cell_text, score in matched:
             g = grounding_dict.get(cell_id)
             if not g:
                 continue
             g_type = (g.get("type", "") or "").lower()
+
+            # Cross-cell resolution: row label, sub-group header, column header
+            cross = {"row_label_id": None, "group_label_id": None, "col_header_id": None}
+            year_label: str | None = None
+            grid = _find_grid_for_cell(cell_id, table_grids)
+            if grid:
+                cross     = _get_cross_cells(grid, cell_id)
+                year_label = grid["year_label"]
+
+            row_label_text   = cell_lookup.get(cross["row_label_id"]   or "", "")
+            group_label_text = cell_lookup.get(cross["group_label_id"] or "", "")
+            col_header_text  = cell_lookup.get(cross["col_header_id"]  or "", "")
+
             source_chunks.append({
-                "chunk_id": cell_id,
-                "chunk_type": "table_cell" if "cell" in g_type else g.get("type", "text"),
-                "page": g.get("page", 0),
-                "bbox": g.get("bbox") or {},
-                "section_header": cell_section_map.get(cell_id, ""),
-                "markdown": cell_text,  # cell text for frontend label display
-                "score": score / 100.0,
+                "chunk_id":        cell_id,
+                "chunk_type":      "table_cell" if ("cell" in g_type or re.match(r'^\d+-\d+$', cell_id)) else g.get("type", "text"),
+                "page":            g.get("page", 0),
+                "bbox":            g.get("bbox") or {},
+                "section_header":  cell_section_map.get(cell_id, ""),
+                "markdown":        cell_text,
+                "score":           score / 100.0,
+                # Cross-cell references (IDs for highlight, texts for chip label)
+                "row_label_id":    cross["row_label_id"],
+                "row_label_text":  row_label_text,
+                "group_label_id":  cross["group_label_id"],
+                "group_label_text": group_label_text,
+                "col_header_id":   cross["col_header_id"],
+                "col_header_text": col_header_text,
+                "year_label":      year_label,
             })
 
         # Fallback: if no matches found at all, use top 3 RAG results
@@ -1742,7 +2316,7 @@ async def finbot_chat(
                 messages.append({"role": h["role"], "content": h["content"]})
         messages.append({"role": "user", "content": message})
 
-        oai = openai.OpenAI(api_key=settings.OPENAI_API_KEY)
+
 
         try:
             # Agentic loop: allow up to 4 tool call rounds
@@ -1752,7 +2326,7 @@ async def finbot_chat(
                     return
                 try:
                     response = await asyncio.to_thread(
-                        lambda: oai.chat.completions.create(
+                        lambda: _oai.chat.completions.create(
                             model="gpt-4o-mini",
                             messages=messages,
                             tools=fb.TOOLS,

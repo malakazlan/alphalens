@@ -4,7 +4,7 @@ from qdrant_client import QdrantClient
 from qdrant_client.models import (
     Distance, VectorParams, PointStruct,
     Filter, FieldCondition, MatchValue,
-    PayloadSchemaType,
+    PayloadSchemaType, PayloadSelectorInclude,
 )
 from config import settings
 
@@ -91,8 +91,29 @@ def get_chunks_by_doc(doc_id: str, user_id: str, limit: int = 500) -> list:
     return chunks
 
 
-def delete_doc_chunks(doc_id: str) -> None:
+def get_chunk_overlays_by_doc(doc_id: str, user_id: str, limit: int = 500) -> list:
+    """Return lightweight overlay data only — no markdown. Used for PDF overlay rendering."""
+    must = [
+        FieldCondition(key="doc_id", match=MatchValue(value=doc_id)),
+        FieldCondition(key="user_id", match=MatchValue(value=user_id)),
+    ]
+    results, _ = get_client().scroll(
+        collection_name=COLLECTION,
+        scroll_filter=Filter(must=must),
+        limit=limit,
+        with_payload=PayloadSelectorInclude(include=["chunk_id", "chunk_type", "page", "bbox"]),
+        with_vectors=False,
+    )
+    chunks = [r.payload for r in results if r.payload]
+    chunks.sort(key=lambda c: (c.get("page", 0), c.get("chunk_type", "")))
+    return chunks
+
+
+def delete_doc_chunks(doc_id: str, user_id: str | None = None) -> None:
+    must = [FieldCondition(key="doc_id", match=MatchValue(value=doc_id))]
+    if user_id:
+        must.append(FieldCondition(key="user_id", match=MatchValue(value=user_id)))
     get_client().delete(
         collection_name=COLLECTION,
-        points_selector=Filter(must=[FieldCondition(key="doc_id", match=MatchValue(value=doc_id))]),
+        points_selector=Filter(must=must),
     )

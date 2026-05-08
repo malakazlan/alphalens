@@ -62,9 +62,15 @@ async def get_arq_pool():
 
 # ─── ADE helpers (sync — called via asyncio.to_thread) ───────────────────────
 
+# ADE key is read once at module import. Rotating keys requires a worker
+# restart — same constraint as every other secret in this codebase, and
+# Render env-var rotation triggers a redeploy anyway.
+_ADE_API_KEY = os.environ.get("VISION_AGENT_API_KEY") or settings.VISION_AGENT_API_KEY
+
+
 def _run_ade_parse(file_path: Path) -> Any:
     from landingai_ade import LandingAIADE
-    client = LandingAIADE(timeout=480.0, max_retries=2)
+    client = LandingAIADE(apikey=_ADE_API_KEY, timeout=480.0, max_retries=2)
     # Use parse_jobs for large-file async processing
     job = client.parse_jobs.create(document=file_path, model="dpt-2-latest")
     logger.info(f"ADE parse job created: {job.job_id}")
@@ -88,8 +94,7 @@ def _run_ade_extract(markdown: str) -> Any:
     from landingai_ade.lib import pydantic_to_json_schema
     from schemas import FinancialDocument
 
-    os.environ["VISION_AGENT_API_KEY"] = settings.VISION_AGENT_API_KEY
-    client = LandingAIADE(timeout=120.0, max_retries=2)
+    client = LandingAIADE(apikey=_ADE_API_KEY, timeout=120.0, max_retries=2)
     schema = pydantic_to_json_schema(FinancialDocument)
     return client.extract(schema=schema, markdown=markdown)
 
@@ -114,6 +119,7 @@ async def process_document(ctx: dict, doc_id: str, user_id: str, file_path: str)
             "status": status, "progress": progress, "status_message": message
         })
 
+    tmp_path = None  # initialised here so finally block never hits NameError
     try:
         # ── 1. Download file from Supabase Storage ────────────────────────────
         update("parsing", 5, "Downloading document...")
@@ -131,7 +137,13 @@ async def process_document(ctx: dict, doc_id: str, user_id: str, file_path: str)
         update("parsing", 10, "Parsing document with AI vision model...")
         parse_data = await asyncio.to_thread(_run_ade_parse, tmp_path)
 
+        if parse_data is None:
+            raise RuntimeError("ADE returned no data — document may be unsupported, empty, or corrupt")
+
         markdown = parse_data.markdown
+        if markdown is None:
+            raise RuntimeError("ADE returned a result with no markdown content")
+
         chunks = parse_data.chunks
         grounding = parse_data.grounding  # element_id → {page, box, type}
         page_count = getattr(parse_data, "metadata", None)
@@ -229,6 +241,12 @@ async def process_document(ctx: dict, doc_id: str, user_id: str, file_path: str)
             )
             for c, v in zip(enriched_chunks, vectors)
         ]
+        # Abort if document was deleted while we were processing
+        current = db.get_document(doc_id, user_id)
+        if not current or current.get("status") == "deleting":
+            logger.info(f"Document {doc_id} was deleted during processing — aborting.")
+            return
+
         await asyncio.to_thread(qdrant_store.upsert_chunks, points)
 
         # ── 7. Cache parse result to Storage ─────────────────────────────────
@@ -238,7 +256,7 @@ async def process_document(ctx: dict, doc_id: str, user_id: str, file_path: str)
             "markdown": markdown,
             "grounding": _to_dict(grounding),
         }).encode()
-        await asyncio.to_thread(storage.upload_file, user_id, doc_id, cache_data, "processed.json")
+        await asyncio.to_thread(storage.upload_bytes, cache_path, cache_data, "application/json")
 
         # ── 8. Mark complete ──────────────────────────────────────────────────
         metadata_update = {
@@ -265,10 +283,11 @@ async def process_document(ctx: dict, doc_id: str, user_id: str, file_path: str)
             "status_message": str(e)[:500],
         })
     finally:
-        try:
-            os.unlink(tmp_path)
-        except Exception:
-            pass
+        if tmp_path:
+            try:
+                os.unlink(tmp_path)
+            except Exception:
+                pass
 
 
 # ─── ARQ worker config ────────────────────────────────────────────────────────
