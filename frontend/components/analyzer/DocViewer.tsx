@@ -33,6 +33,11 @@ function typeToClass(type: string): string {
 
 const PDFJS_VERSION = "3.11.174";
 const PDFJS_CDN = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${PDFJS_VERSION}`;
+// Subresource Integrity hashes — computed from the real cdnjs assets at this
+// pinned version. The browser refuses to execute the script if the bytes
+// don't match, so a cdnjs compromise can't deliver attacker-controlled JS.
+const PDFJS_SRI        = "sha384-/1qUCSGwTur9vjf/z9lmu/eCUYbpOTgSjmpbMQZ1/CtX2v/WcAIKqRv+U1DUCG6e";
+const PDFJS_WORKER_SRI = "sha384-SnzOobpRMLXZ52iJvZm/C0fYw0OQemTXzTjIsdsfMcrCtCEe9qgzxTd3RSklO5x2";
 
 function loadPdfjsScript(): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -42,10 +47,30 @@ function loadPdfjsScript(): Promise<void> {
     const script = document.createElement("script");
     script.id = "pdfjs-script";
     script.src = `${PDFJS_CDN}/pdf.min.js`;
+    script.integrity = PDFJS_SRI;
+    script.crossOrigin = "anonymous";
     script.onload = () => resolve();
     script.onerror = () => reject(new Error("Failed to load PDF.js"));
     document.head.appendChild(script);
   });
+}
+
+// Fetch the PDF.js worker with SRI verification, returning a blob: URL.
+// PDF.js's `workerSrc` config doesn't support SRI directly, but if we fetch
+// the bytes ourselves with integrity-checked fetch, the browser refuses to
+// resolve the response on hash mismatch. We then hand a same-origin blob URL
+// to PDF.js, so the resulting Worker is provably the bytes we expected.
+let _workerBlobUrl: string | null = null;
+async function loadPdfjsWorkerUrl(): Promise<string> {
+  if (_workerBlobUrl) return _workerBlobUrl;
+  const res = await fetch(`${PDFJS_CDN}/pdf.worker.min.js`, {
+    integrity: PDFJS_WORKER_SRI,
+    credentials: "omit",
+  });
+  if (!res.ok) throw new Error(`PDF.js worker fetch failed: ${res.status}`);
+  const blob = await res.blob();
+  _workerBlobUrl = URL.createObjectURL(blob);
+  return _workerBlobUrl;
 }
 
 // ── Props ─────────────────────────────────────────────────────────────────────
@@ -53,6 +78,11 @@ interface DocViewerProps {
   signedUrl: string;
   chunks?: ChunkOverlay[];
   selectedChunkId?: string | null;
+  // Secondary highlight cells (e.g. row label / column header for a chip's
+  // primary value cell). Implementation lives in the in-progress WIP — this
+  // signature is here so the analyzer page can pass the prop without a build
+  // break. Safe to ignore at runtime if the WIP version isn't merged yet.
+  secondaryChunkIds?: string[];
   onChunkClick?: (chunkId: string | null) => void;
 }
 
@@ -91,7 +121,7 @@ export default function DocViewer({
         if (renderIdRef.current !== renderId) return;
 
         const pdfjsLib = (window as any).pdfjsLib;
-        pdfjsLib.GlobalWorkerOptions.workerSrc = `${PDFJS_CDN}/pdf.worker.min.js`;
+        pdfjsLib.GlobalWorkerOptions.workerSrc = await loadPdfjsWorkerUrl();
 
         const pdf = await pdfjsLib.getDocument({ url: signedUrl }).promise;
         if (renderIdRef.current !== renderId) return;
