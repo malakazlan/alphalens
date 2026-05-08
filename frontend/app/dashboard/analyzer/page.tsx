@@ -53,8 +53,9 @@ export default function AnalyzerPage() {
   const [signedUrl,          setSignedUrl]          = useState<string>("");
 
   // Chunk overlay state — fetched once per doc, shared between DocViewer & ParsePanel
-  const [parseChunks,    setParseChunks]    = useState<ChunkOverlay[]>([]);
-  const [selectedChunkId, setSelectedChunkId] = useState<string | null>(null);
+  const [parseChunks,       setParseChunks]       = useState<ChunkOverlay[]>([]);
+  const [selectedChunkId,   setSelectedChunkId]   = useState<string | null>(null);
+  const [secondaryChunkIds, setSecondaryChunkIds] = useState<string[]>([]);
   // Label map: chunk_id → "N - TypeName" — built once in openDoc, shared with ParsePanel
   const [chunkLabelMap, setChunkLabelMap] = useState<Map<string, string>>(new Map());
 
@@ -68,13 +69,19 @@ export default function AnalyzerPage() {
   const setFilesOpen   = store.setFilesOpen;
 
   // ── Resizable panel divider ─────────────────────────────────────────────────
-  const [isDragging,     setIsDragging]     = useState(false);
+  const [isDragging,  setIsDragging]  = useState(false);
+  const [localWidth,  setLocalWidth]  = useState<number | null>(null);
   const isDraggingRef = useRef(false);
   const dragStartRef  = useRef({ x: 0, width: 0 });
+
+  // During drag: localWidth (plain state, no storage writes per frame)
+  // At rest: docViewerWidth (persisted in Zustand/sessionStorage)
+  const displayWidth = localWidth ?? docViewerWidth;
 
   function handleDividerMouseDown(e: React.MouseEvent) {
     isDraggingRef.current = true;
     setIsDragging(true);
+    setLocalWidth(docViewerWidth);
     dragStartRef.current = { x: e.clientX, width: docViewerWidth };
     e.preventDefault();
   }
@@ -82,14 +89,14 @@ export default function AnalyzerPage() {
   useEffect(() => {
     function onMouseMove(e: MouseEvent) {
       if (!isDraggingRef.current) return;
-      const delta = e.clientX - dragStartRef.current.x;
-      const next  = Math.max(280, Math.min(900, dragStartRef.current.width + delta));
-      setDocViewerWidth(next);
+      const next = Math.max(280, Math.min(900, dragStartRef.current.width + (e.clientX - dragStartRef.current.x)));
+      setLocalWidth(next);
     }
     function onMouseUp() {
       if (!isDraggingRef.current) return;
       isDraggingRef.current = false;
       setIsDragging(false);
+      setLocalWidth(w => { if (w !== null) setDocViewerWidth(w); return null; });
     }
     window.addEventListener("mousemove", onMouseMove);
     window.addEventListener("mouseup",   onMouseUp);
@@ -114,8 +121,18 @@ export default function AnalyzerPage() {
   useEffect(() => {
     const inProgress = docs.some(d => !["complete", "error"].includes(d.status));
     if (!inProgress) return;
-    const t = setInterval(fetchDocs, 4000);
-    return () => clearInterval(t);
+    // Exponential backoff: 4s → 8s → 16s → 32s → 60s cap
+    let delay = 4000;
+    let t: ReturnType<typeof setTimeout>;
+    function schedule() {
+      t = setTimeout(async () => {
+        await fetchDocs();
+        delay = Math.min(delay * 2, 60000);
+        schedule();
+      }, delay);
+    }
+    schedule();
+    return () => clearTimeout(t);
   }, [docs, fetchDocs]);
 
   // ── Session restore — reopen doc from store if available ──────────────────
@@ -154,8 +171,8 @@ export default function AnalyzerPage() {
 
       const [urlRes, chunksRes, groundingRes] = await Promise.all([
         cachedUrl ? Promise.resolve(null) : fetch(`/api/documents/${doc.id}/file-url`, { credentials: "include" }),
-        fetch(`/api/documents/${doc.id}/chunks`,    { credentials: "include" }),
-        fetch(`/api/documents/${doc.id}/grounding`, { credentials: "include" }),
+        fetch(`/api/documents/${doc.id}/chunks/overlays`, { credentials: "include" }),
+        fetch(`/api/documents/${doc.id}/grounding`,       { credentials: "include" }),
       ]);
 
       const [urlData, chunksData, groundingData] = await Promise.all([
@@ -183,16 +200,11 @@ export default function AnalyzerPage() {
         });
 
         const NOISE_SET = new Set(["page_number", "page_header", "page_footer"]);
-        const seenContent = new Set<string>();
         const labelMap = new Map<string, string>();
         let labelIdx = 1;
         for (const c of allChunks) {
           if (NOISE_SET.has(c.chunk_type) || c.chunk_type === "table_cell") continue;
-          const stripped = String(c.markdown || "").replace(/<[^>]+>/g, "").trim();
-          if (stripped.length < 4) continue;
-          const key = `${c.page}|${stripped.slice(0, 200)}`;
-          if (seenContent.has(key)) continue;
-          seenContent.add(key);
+          if (!c.bbox || Object.keys(c.bbox).length === 0) continue;
           const typeCapitalized = c.chunk_type
             .split("_").map((w: string) => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
           labelMap.set(c.chunk_id, `${labelIdx} - ${typeCapitalized}`);
@@ -202,7 +214,6 @@ export default function AnalyzerPage() {
         for (const c of allChunks) {
           const label = labelMap.get(c.chunk_id);
           if (!label) continue;
-          if (!c.bbox || Object.keys(c.bbox).length === 0) continue;
           overlays.push({
             chunk_id:   c.chunk_id,
             chunk_type: c.chunk_type,
@@ -282,6 +293,28 @@ export default function AnalyzerPage() {
     setProcessingId(null);
   }
 
+  // ── Delete document ──────────────────────────────────────────────────────────
+  async function handleDeleteDoc(docId: string) {
+    try {
+      const res = await fetch(`/api/documents/${docId}`, { method: "DELETE", credentials: "include" });
+      const data = await res.json();
+      if (data.success) {
+        // Clear signed URL cache for this doc
+        try { sessionStorage.removeItem(`su_${docId}`); } catch {}
+        if (selectedDoc?.id === docId) handleGoHome();
+        setDocs(prev => prev.filter(d => d.id !== docId));
+      }
+    } catch {}
+  }
+
+  // ── Retry failed document ────────────────────────────────────────────────────
+  async function handleRetryDoc(docId: string) {
+    try {
+      await fetch(`/api/documents/${docId}/retry`, { method: "POST", credentials: "include" });
+      await fetchDocs();
+    } catch {}
+  }
+
   // ── Go home — clears workspace state ────────────────────────────────────────
   function handleGoHome() {
     setView("home");
@@ -292,8 +325,9 @@ export default function AnalyzerPage() {
     store.setSelectedDoc(null);
   }
 
-  // ── Chat chunk select — forces re-selection even when same ID clicked again ──
-  function handleChatChunkSelect(id: string | null) {
+  // ── Chat chunk select — primary + secondary highlights ─────────────────────
+  function handleChatChunkSelect(id: string | null, secondary?: string[]) {
+    setSecondaryChunkIds(secondary ?? []);
     if (!id) { setSelectedChunkId(null); return; }
     if (id === selectedChunkId) {
       setSelectedChunkId(null);
@@ -323,7 +357,6 @@ export default function AnalyzerPage() {
         style={{
           overflow:   "clip",
           userSelect: isDragging ? "none" : undefined,
-          cursor:     isDragging ? "col-resize" : undefined,
         }}
       >
         {/* Icon Rail */}
@@ -353,6 +386,8 @@ export default function AnalyzerPage() {
                   documents={docs}
                   selectedId={selectedDoc.id}
                   onSelect={openDoc}
+                  onDelete={handleDeleteDoc}
+                  onRetry={handleRetryDoc}
                   loading={loadingDocs}
                 />
               </div>
@@ -362,7 +397,7 @@ export default function AnalyzerPage() {
           {/* PDF Viewer */}
           <div
             className="flex flex-col shrink-0 min-h-0"
-            style={{ width: docViewerWidth, minWidth: 280, maxWidth: 900 }}
+            style={{ width: displayWidth, minWidth: 280, maxWidth: 900 }}
           >
             {/* Header — filename only */}
             <div
@@ -378,25 +413,32 @@ export default function AnalyzerPage() {
               signedUrl={signedUrl}
               chunks={parseChunks}
               selectedChunkId={selectedChunkId}
-              onChunkClick={id => setSelectedChunkId(id)}
+              secondaryChunkIds={secondaryChunkIds}
+              onChunkClick={id => { setSecondaryChunkIds([]); setSelectedChunkId(id); }}
             />
           </div>
 
-          {/* Draggable divider — thin green line, same drag logic */}
+          {/* Draggable divider */}
           <div
             onMouseDown={handleDividerMouseDown}
             className="shrink-0 self-stretch relative"
             style={{
-              width:      2,
+              width:      14,
               cursor:     "col-resize",
-              background: "var(--al-accent)",
-              opacity:    isDragging ? 1 : 0.6,
-              transition: isDragging ? "none" : "opacity 0.15s",
+              background: "transparent",
               zIndex:     10,
             }}
           >
-            {/* Expanded hit target */}
-            <div className="absolute inset-y-0 -left-3 -right-3" />
+            {/* Visual line centered in the hit area */}
+            <div
+              className="absolute inset-y-0 pointer-events-none"
+              style={{
+                left: 6, width: 2,
+                background: "var(--al-accent)",
+                opacity: isDragging ? 1 : 0.6,
+                transition: isDragging ? "none" : "opacity 0.15s",
+              }}
+            />
             {/* Center drag handle pill */}
             <div
               className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 flex flex-col items-center gap-[3px] pointer-events-none"
@@ -480,7 +522,7 @@ export default function AnalyzerPage() {
   // ── Home / uploading / processing — original layout unchanged ───────────────
   return (
     <div className="flex flex-1 min-h-0">
-      <DocumentRail documents={docs} selectedId={selectedDoc?.id} onSelect={openDoc} loading={loadingDocs} />
+      <DocumentRail documents={docs} selectedId={selectedDoc?.id} onSelect={openDoc} onDelete={handleDeleteDoc} onRetry={handleRetryDoc} loading={loadingDocs} />
 
       <main className="flex-1 overflow-y-auto px-8 py-10">
         {error && (
@@ -517,15 +559,113 @@ export default function AnalyzerPage() {
         )}
 
         {view === "home" && (
-          <>
-            <div className="mb-8">
-              <h1 className="text-2xl font-extrabold mb-1" style={{ color: "var(--al-text)" }}>Document Analyzer</h1>
-              <p className="text-sm" style={{ color: "var(--al-text-secondary)" }}>
-                Upload a financial document to parse, extract data, or chat with it.
+          <div className="max-w-6xl mx-auto w-full">
+            {/* ── Header block (eyebrow + title + lede + stats) ─────────────── */}
+            <div className="mb-10">
+              {/* Eyebrow pill */}
+              <div style={{
+                display: "inline-flex", alignItems: "center", gap: 8,
+                padding: "5px 12px", borderRadius: 100,
+                background: "rgba(5,150,105,0.07)",
+                border: "1px solid rgba(5,150,105,0.2)",
+                marginBottom: 14,
+              }}>
+                <span style={{ width: 5, height: 5, borderRadius: "50%", background: "#059669" }} />
+                <span style={{ fontSize: 11.5, fontWeight: 600, color: "#059669", letterSpacing: "0.06em", textTransform: "uppercase" }}>
+                  Document Intelligence
+                </span>
+              </div>
+
+              <h1 style={{
+                fontSize: "clamp(30px,3.4vw,46px)",
+                fontWeight: 800,
+                lineHeight: 1.05,
+                letterSpacing: "-0.032em",
+                marginBottom: 12,
+              }}>
+                <span style={{ color: "var(--al-text)" }}>Document </span>
+                <span className="landing-gradient-text">Analyzer</span>
+              </h1>
+              <p style={{
+                fontSize: 15.5, color: "var(--al-text-secondary)",
+                lineHeight: 1.65, maxWidth: 580,
+              }}>
+                Drop a financial PDF — annual report, 10-K, prospectus, audit. AlphaLens parses, extracts structured fields, and indexes it for chat-grade interrogation with <span style={{ color: "var(--al-text)", fontWeight: 500 }}>cell-level citations</span>.
               </p>
+
+              {/* Stats row */}
+              <div style={{
+                display: "flex", gap: 28, flexWrap: "wrap",
+                marginTop: 22,
+                paddingTop: 18,
+                borderTop: "1px dashed rgba(0,0,0,0.09)",
+              }}>
+                {[
+                  { v: String(docs.length), l: "documents filed" },
+                  { v: "≤ 50 MB", l: "per document" },
+                  { v: "~30s", l: "avg. processing" },
+                  { v: "JSON · CSV · Excel", l: "export formats" },
+                ].map(s => (
+                  <div key={s.l} style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                    <div style={{
+                      fontSize: 15, fontWeight: 700, color: "var(--al-text)",
+                      letterSpacing: "-0.01em", fontVariantNumeric: "tabular-nums",
+                    }}>{s.v}</div>
+                    <div style={{
+                      fontSize: 11, color: "var(--al-subtle)",
+                      letterSpacing: "0.02em",
+                    }}>{s.l}</div>
+                  </div>
+                ))}
+              </div>
             </div>
+
+            {/* ── Cards (unchanged) ────────────────────────────────────────── */}
             <ActionCards onFileSelect={handleFileSelect} />
-          </>
+
+            {/* ── Tips / best practices (matches design mock marginalia) ──── */}
+            <div style={{
+              marginTop: 56,
+              display: "grid", gridTemplateColumns: "1fr 1fr",
+              gap: 16,
+            }} className="tips-grid">
+              {[
+                {
+                  t: "Cite, don't paraphrase",
+                  d: <>Every figure AlphaLens returns is tagged with its source cell ID — like <code style={{
+                    fontFamily: "JetBrains Mono, ui-monospace, monospace", fontSize: 12,
+                    background: "var(--al-card)", padding: "1px 6px",
+                    border: "1px solid var(--al-border)", color: "#2563eb",
+                    borderRadius: 3,
+                  }}>[0-13]</code> — pointing back to the exact location on the parsed PDF.</>,
+                },
+                {
+                  t: "On document hygiene",
+                  d: "Best results: text-based PDFs with selectable copy. Scanned documents work via OCR but with reduced cell-level grounding accuracy. Multi-year tables produce side-by-side comparisons automatically.",
+                },
+              ].map(tip => (
+                <div key={tip.t} style={{
+                  padding: "18px 22px",
+                  background: "rgba(5,150,105,0.03)",
+                  borderLeft: "3px solid #059669",
+                  borderRadius: "0 14px 14px 0",
+                  border: "1px solid rgba(5,150,105,0.12)",
+                  borderLeftWidth: 3,
+                }}>
+                  <div style={{
+                    fontSize: 13.5, fontWeight: 600,
+                    color: "var(--al-text)",
+                    letterSpacing: "-0.01em",
+                    marginBottom: 6,
+                  }}>{tip.t}</div>
+                  <div style={{
+                    fontSize: 13, color: "var(--al-text-secondary)",
+                    lineHeight: 1.6,
+                  }}>{tip.d}</div>
+                </div>
+              ))}
+            </div>
+          </div>
         )}
       </main>
     </div>
