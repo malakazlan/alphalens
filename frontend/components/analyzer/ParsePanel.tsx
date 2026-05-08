@@ -4,34 +4,54 @@ import { useEffect, useRef, useState, useCallback } from "react";
 // ── Type colours (exact spec from ANALYZER_REDESIGN_PLAN) ─────────────────────
 const TYPE_COLOR: Record<string, string> = {
   text: "#32D583", title: "#32D583", key_value: "#32D583",
-  page_header: "#32D583", page_footer: "#32D583", page_number: "#32D583",
-  attestation: "#32D583", form: "#32D583",
+  page_header: "#32D583", page_footer: "#32D583", page_number: "#32D583", form: "#32D583",
   table: "#2193FD", table_cell: "#2193FD",
-  figure: "#FF5CFF", card: "#FF5CFF", scan_code: "#FF5CFF", logo: "#FF5CFF",
+  figure: "#FF5CFF", card: "#FF5CFF", scan_code: "#FF5CFF",
+  logo: "#F63D68",
+  attestation: "#05DEDE",
   error: "#64748b",
 };
 
 function typeColor(t: string) { return TYPE_COLOR[t] ?? "#64748b"; }
 
-function typeCategory(t: string): "text" | "table" | "figure" | "other" {
-  if (["text","title","key_value","page_header","page_footer","page_number","attestation","form"].includes(t)) return "text";
+function typeCategory(t: string): "text" | "table" | "figure" | "logo" | "attestation" | "other" {
+  if (["text","title","key_value","page_header","page_footer","page_number","form"].includes(t)) return "text";
   if (["table","table_cell"].includes(t)) return "table";
-  if (["figure","card","scan_code","logo"].includes(t)) return "figure";
+  if (["figure","card","scan_code"].includes(t)) return "figure";
+  if (t === "logo") return "logo";
+  if (t === "attestation") return "attestation";
   return "other";
 }
 
 function typeHighlightClass(t: string) {
   const cat = typeCategory(t);
-  if (cat === "text")   return "markdown-section--text";
-  if (cat === "table")  return "markdown-section--table";
-  if (cat === "figure") return "markdown-section--figure";
+  if (cat === "text")        return "markdown-section--text";
+  if (cat === "table")       return "markdown-section--table";
+  if (cat === "figure")      return "markdown-section--figure";
+  if (cat === "logo")        return "markdown-section--logo";
+  if (cat === "attestation") return "markdown-section--attestation";
   return "markdown-section--text";
 }
+
 
 // ── Markdown renderer ─────────────────────────────────────────────────────────
 // Converts ADE chunk markdown to rendered HTML string.
 // Handles: HTML tables (pass-through), headings, bold/italic, code, page breaks, anchors
 function renderChunkMarkdown(md: string): string {
+  // Unwrap ADE annotation blocks — <::description::> → plain description text.
+  // ADE uses this for figure/logo/attestation content, e.g.:
+  //   <::logo: Not a logo: [BALANCE SHEET]::>
+  //   <::attestation: Signature\nAftab Mahmood Butt\n::>
+  //   <::A composite image...:: image::>
+  md = md.replace(/<::([\s\S]*?)::>/g, (_, inner) => {
+    let text = inner.trim();
+    // Strip leading type prefix e.g. "logo: ", "attestation: "
+    text = text.replace(/^(?:logo|attestation|figure|card|scan_code):\s*/i, "");
+    // Strip trailing single-word media hint on its own line e.g. "\n: image"
+    text = text.replace(/\n?\s*:\s*\w+\s*$/, "").trim();
+    return text;
+  });
+
   // Split on HTML tags vs text to preserve tables
   const segments = md
     .replace(/<!-- PAGE BREAK -->/g, "\n__PAGEBREAK__\n")
@@ -85,16 +105,6 @@ function syntaxHighlightJSON(obj: unknown): string {
   );
 }
 
-// ── Chunk interface ───────────────────────────────────────────────────────────
-interface Chunk {
-  chunk_id: string;
-  chunk_type: string;
-  section_header: string;
-  page: number;
-  markdown: string;
-  bbox: { left: number; top: number; right: number; bottom: number };
-}
-
 // ── Sanitizer ─────────────────────────────────────────────────────────────────
 // Aggressive HTML sanitizer for content destined for dangerouslySetInnerHTML.
 // ADE-parsed markdown can contain HTML pulled verbatim from the source PDF,
@@ -112,9 +122,19 @@ function sanitizeHtml(html: string): string {
     .replace(/\s+on[a-z]+\s*=\s*"[^"]*"/gi, "")
     .replace(/\s+on[a-z]+\s*=\s*'[^']*'/gi, "")
     .replace(/\s+on[a-z]+\s*=\s*[^\s>]+/gi, "")
-    // javascript: / vbscript: / data: protocols in any attribute value
+    // javascript: / vbscript: / data: protocols in any href/src-style attribute
     .replace(/(href|src|action|formaction|xlink:href)\s*=\s*"\s*(?:javascript|vbscript|data)\s*:[^"]*"/gi, "$1=\"#\"")
     .replace(/(href|src|action|formaction|xlink:href)\s*=\s*'\s*(?:javascript|vbscript|data)\s*:[^']*'/gi, "$1='#'");
+}
+
+// ── Chunk interface ───────────────────────────────────────────────────────────
+interface Chunk {
+  chunk_id: string;
+  chunk_type: string;
+  section_header: string;
+  page: number;
+  markdown: string;
+  bbox: { left: number; top: number; right: number; bottom: number };
 }
 
 // ── Props ─────────────────────────────────────────────────────────────────────
@@ -171,7 +191,7 @@ export default function ParsePanel({ docId, selectedChunkId, onChunkSelect, labe
           const seenContent = new Set<string>();
           const deduped = sorted.filter(c => {
             if (c.chunk_type === "table_cell") return false;
-            const stripped = c.markdown.replace(/<[^>]+>/g, "").trim().slice(0, 200);
+            const stripped = c.markdown.replace(/<::([\s\S]*?)::>/g, "$1").replace(/<[^>]+>/g, "").trim().slice(0, 200);
             const key = `${c.page}|${stripped}`;
             if (seenContent.has(key)) return false;
             seenContent.add(key);
@@ -253,7 +273,7 @@ export default function ParsePanel({ docId, selectedChunkId, onChunkSelect, labe
   // mdChunks: noise-filtered, short-content filtered (chunks state is already deduped)
   const mdChunks = chunks.filter(c => {
     if (MARKDOWN_NOISE.has(c.chunk_type)) return false;
-    const stripped = c.markdown.replace(/<[^>]+>/g, "").trim();
+    const stripped = c.markdown.replace(/<::([\s\S]*?)::>/g, "$1").replace(/<[^>]+>/g, "").trim();
     if (stripped.length < 4) return false;
     if (isNoiseText(stripped)) return false;
     return true;
@@ -338,22 +358,21 @@ export default function ParsePanel({ docId, selectedChunkId, onChunkSelect, labe
               )}
             </div>
 
-            {/* Chunk section cards */}
+            {/* Chunk sections — flat reading layout, no card boxes */}
             <div
               ref={markdownRef}
-              className="flex-1 overflow-y-auto px-3 pt-2 pb-4"
-              style={{ display: "flex", flexDirection: "column", gap: 20 }}
+              className="flex-1 overflow-y-auto pb-4"
+              style={{ display: "flex", flexDirection: "column" }}
               onClick={handleMarkdownClick}
             >
               {mdChunks.map((chunk, idx) => {
-                const isSelected = selectedChunkId === chunk.chunk_id;
-                const color      = typeColor(chunk.chunk_type);
-                const typeLabel  = chunk.chunk_type
+                const isSelected  = selectedChunkId === chunk.chunk_id;
+                const color       = typeColor(chunk.chunk_type);
+                const typeLabel   = chunk.chunk_type
                   .split("_").map((w: string) => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
-                // Use the label from page.tsx's labelMap (guaranteed same number as PDF overlay).
-                // Fall back to idx+1 only if the map isn't loaded yet.
-                const badgeLabel = labelMap?.get(chunk.chunk_id) ?? `${idx + 1} - ${typeLabel}`;
-                const rendered   = renderChunkMarkdown(chunk.markdown);
+                const badgeLabel  = labelMap?.get(chunk.chunk_id) ?? `${idx + 1} - ${typeLabel}`;
+                const rendered    = renderChunkMarkdown(chunk.markdown);
+                const isMediaChunk = ["figure", "card", "scan_code", "logo", "attestation"].includes(chunk.chunk_type);
 
                 const displayHtml = search.trim()
                   ? rendered.replace(
@@ -363,34 +382,52 @@ export default function ParsePanel({ docId, selectedChunkId, onChunkSelect, labe
                   : rendered;
 
                 return (
-                  // Outer wrapper: adds top margin for the floating badge
-                  <div key={chunk.chunk_id} style={{ marginTop: 10 }}>
-                    <div
-                      className={`markdown-section cursor-pointer ${isSelected ? typeHighlightClass(chunk.chunk_type) : ""}`}
-                      data-chunk-id={chunk.chunk_id}
-                      style={{ padding: "12px 14px 12px" }}
-                    >
-                      {/* Floating label badge on top-left border */}
-                      <span
-                        style={{
-                          position: "absolute",
-                          top: -11, left: 10,
+                  <div
+                    key={chunk.chunk_id}
+                    className="markdown-section cursor-pointer"
+                    data-chunk-id={chunk.chunk_id}
+                    style={{
+                      borderLeft: `3px solid ${isSelected ? color : "transparent"}`,
+                      background: isSelected ? `${color}0d` : "transparent",
+                    }}
+                  >
+                    {/* Label: plain grey at rest → colored pill when selected */}
+                    <div style={{ marginBottom: 6 }}>
+                      {isSelected ? (
+                        <span style={{
+                          display: "inline-block",
                           fontSize: 10, fontWeight: 700,
                           padding: "2px 8px",
                           borderRadius: 4,
-                          lineHeight: 1.5,
+                          lineHeight: 1.6,
                           letterSpacing: "0.02em",
-                          pointerEvents: "none",
-                          background: isSelected ? color : "var(--al-bg-soft)",
-                          color: isSelected ? (color === "#32D583" ? "#000" : "#fff") : color,
-                          border: `1.5px solid ${color}`,
-                        }}
-                      >
-                        {badgeLabel}
-                      </span>
-
-                      <div className="md-content" dangerouslySetInnerHTML={{ __html: sanitizeHtml(displayHtml) }} />
+                          background: color,
+                          color: color === "#32D583" ? "#000" : "#fff",
+                        }}>
+                          {badgeLabel}
+                        </span>
+                      ) : (
+                        <span style={{
+                          fontSize: 11, fontWeight: 500,
+                          color: "var(--al-subtle)",
+                          letterSpacing: "0.01em",
+                        }}>
+                          {badgeLabel}
+                        </span>
+                      )}
                     </div>
+                    <div
+                      className="md-content"
+                      style={isMediaChunk ? {
+                        fontStyle: "italic",
+                        fontSize: "0.82em",
+                        color: "var(--al-text-secondary)",
+                        borderLeft: `2px solid ${color}40`,
+                        paddingLeft: 8,
+                        marginTop: 2,
+                      } : undefined}
+                      dangerouslySetInnerHTML={{ __html: sanitizeHtml(displayHtml) }}
+                    />
                   </div>
                 );
               })}

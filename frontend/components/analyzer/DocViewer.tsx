@@ -21,21 +21,22 @@ export interface BboxHighlight {
 function typeToClass(type: string): string {
   switch (type) {
     case "text": case "title": case "key_value": case "page_header":
-    case "page_footer": case "page_number": case "attestation": case "form":
+    case "page_footer": case "page_number": case "form":
       return "overlay-box--text";
-    case "table":      return "overlay-box--table";
-    case "table_cell": return "overlay-box--table-cell";
-    case "figure": case "card": case "scan_code": case "logo":
+    case "table":       return "overlay-box--table";
+    case "table_cell":  return "overlay-box--table-cell";
+    case "figure": case "card": case "scan_code":
       return "overlay-box--figure";
+    case "logo":        return "overlay-box--logo";
+    case "attestation": return "overlay-box--attestation";
     default:           return "overlay-box--error";
   }
 }
 
 const PDFJS_VERSION = "3.11.174";
 const PDFJS_CDN = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${PDFJS_VERSION}`;
-// Subresource Integrity hashes — computed from the real cdnjs assets at this
-// pinned version. The browser refuses to execute the script if the bytes
-// don't match, so a cdnjs compromise can't deliver attacker-controlled JS.
+// Subresource Integrity — bytes are verified before execution. cdnjs
+// compromise can't deliver attacker-controlled JS.
 const PDFJS_SRI        = "sha384-/1qUCSGwTur9vjf/z9lmu/eCUYbpOTgSjmpbMQZ1/CtX2v/WcAIKqRv+U1DUCG6e";
 const PDFJS_WORKER_SRI = "sha384-SnzOobpRMLXZ52iJvZm/C0fYw0OQemTXzTjIsdsfMcrCtCEe9qgzxTd3RSklO5x2";
 
@@ -55,11 +56,8 @@ function loadPdfjsScript(): Promise<void> {
   });
 }
 
-// Fetch the PDF.js worker with SRI verification, returning a blob: URL.
-// PDF.js's `workerSrc` config doesn't support SRI directly, but if we fetch
-// the bytes ourselves with integrity-checked fetch, the browser refuses to
-// resolve the response on hash mismatch. We then hand a same-origin blob URL
-// to PDF.js, so the resulting Worker is provably the bytes we expected.
+// Worker SRI — fetched with integrity check, served via blob URL so PDF.js
+// can use it. Browser refuses the response on hash mismatch.
 let _workerBlobUrl: string | null = null;
 async function loadPdfjsWorkerUrl(): Promise<string> {
   if (_workerBlobUrl) return _workerBlobUrl;
@@ -78,10 +76,6 @@ interface DocViewerProps {
   signedUrl: string;
   chunks?: ChunkOverlay[];
   selectedChunkId?: string | null;
-  // Secondary highlight cells (e.g. row label / column header for a chip's
-  // primary value cell). Implementation lives in the in-progress WIP — this
-  // signature is here so the analyzer page can pass the prop without a build
-  // break. Safe to ignore at runtime if the WIP version isn't merged yet.
   secondaryChunkIds?: string[];
   onChunkClick?: (chunkId: string | null) => void;
 }
@@ -91,6 +85,7 @@ export default function DocViewer({
   signedUrl,
   chunks = [],
   selectedChunkId,
+  secondaryChunkIds = [],
   onChunkClick,
 }: DocViewerProps) {
   const containerRef  = useRef<HTMLDivElement>(null);
@@ -150,7 +145,8 @@ export default function DocViewer({
             "margin-bottom:12px",
             "box-shadow:0 2px 8px rgba(0,0,0,0.13)",
             "background:#d0d0d0",
-            `width:${viewport.width}px`,
+            "width:100%",
+            `max-width:${viewport.width}px`,
             `height:${viewport.height}px`,
           ].join(";");
           wrap.setAttribute("data-page-num", String(i - 1));
@@ -240,9 +236,10 @@ export default function DocViewer({
     return () => observer.disconnect();
   }, [numPages]);
 
-  // ── 3. Build DOM overlays whenever chunks / selection change ──────────────
+  // ── 3. Build DOM overlays whenever chunks / selection / secondary change ──
   useEffect(() => {
     const hasSelection = !!selectedChunkId;
+    const secondarySet = new Set(secondaryChunkIds);
 
     pageWrapsRef.current.forEach(wrap => {
       const pageIdx = parseInt(wrap.getAttribute("data-page-num") ?? "0", 10);
@@ -263,10 +260,10 @@ export default function DocViewer({
         box.style.width  = `${(right - left) * 100}%`;
         box.style.height = `${(bottom - top) * 100}%`;
 
-        // Active state: only the exact selected chunk gets highlighted.
-        // No parent-table co-activation — we highlight only the specific cell.
         if (hasSelection && chunk.chunk_id === selectedChunkId) {
           box.classList.add("overlay-box--active");
+        } else if (secondarySet.has(chunk.chunk_id)) {
+          box.classList.add("overlay-box--secondary");
         }
 
         // Label
@@ -284,7 +281,7 @@ export default function DocViewer({
         layer.appendChild(box);
       }
     });
-  }, [chunks, selectedChunkId, onChunkClick]);
+  }, [chunks, selectedChunkId, secondaryChunkIds, onChunkClick]);
 
   // ── 4. Scroll PDF to selected chunk's page ────────────────────────────────
   useEffect(() => {
