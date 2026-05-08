@@ -1,0 +1,16 @@
+[Unit]
+Description=AlphaLens stack (web + worker + cloudflared)
+Documentation=https://github.com/malakazlan/alphalens
+Requires=docker.service
+After=docker.service network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/opt/alphalens/src/deploy
+ExecStart=/usr/bin/docker compose -f /opt/alphalens/src/deploy/docker-compose.yml --env-file /opt/alphalens/.env up -d
+ExecStop=/usr/bin/docker compose -f /opt/alphalens/src/deploy/docker-compose.yml --env-file /opt/alphalens/.env down
+TimeoutStartSec=300
+
+[Install]
+WantedBy=multi-user.target

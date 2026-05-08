@@ -1,0 +1,53 @@
+# Keep image small + fast to build. Frontend/docs/local artifacts have no
+# place inside the backend image.
+
+.git
+.gitignore
+.dockerignore
+.cursor
+.vscode
+.idea
+
+# Frontend (deployed separately on Netlify)
+frontend
+landing.aiuxui-images
+Specific-SS
+
+# Docs / planning / mocks
+docs
+design
+context
+chatsection.md
+*.md
+!README.md
+
+# Local data and uploads
+files
+backend/files
+backend/uploads
+backend/.env
+backend/.env.*
+backend/processed
+backend/local_data
+
+# Python build artifacts
+**/__pycache__
+**/*.pyc
+**/*.pyo
+**/*.pyd
+.venv
+venv
+env
+.python-version
+.pytest_cache
+.mypy_cache
+.ruff_cache
+htmlcov
+.coverage
+
+# Node (in case anything leaks in)
+**/node_modules
+
+# OS
+.DS_Store
+Thumbs.db
