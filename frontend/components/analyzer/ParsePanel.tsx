@@ -95,6 +95,28 @@ interface Chunk {
   bbox: { left: number; top: number; right: number; bottom: number };
 }
 
+// ── Sanitizer ─────────────────────────────────────────────────────────────────
+// Aggressive HTML sanitizer for content destined for dangerouslySetInnerHTML.
+// ADE-parsed markdown can contain HTML pulled verbatim from the source PDF,
+// and a weaponised document could embed <script>, <iframe>, or inline event
+// handlers. This strips them before injection. Dependency-free — for stronger
+// guarantees we'd swap in DOMPurify, but this closes the standard XSS vectors.
+function sanitizeHtml(html: string): string {
+  if (!html) return "";
+  return html
+    // Dangerous container tags with their inner content
+    .replace(/<(script|iframe|object|embed|style|link|meta|form)\b[^<]*(?:(?!<\/\1>)<[^<]*)*<\/\1>/gi, "")
+    // Self-closing or unterminated variants
+    .replace(/<(script|iframe|object|embed|style|link|meta|form)\b[^>]*\/?>/gi, "")
+    // Inline event handlers — onclick="...", onerror='...', onload=foo
+    .replace(/\s+on[a-z]+\s*=\s*"[^"]*"/gi, "")
+    .replace(/\s+on[a-z]+\s*=\s*'[^']*'/gi, "")
+    .replace(/\s+on[a-z]+\s*=\s*[^\s>]+/gi, "")
+    // javascript: / vbscript: / data: protocols in any attribute value
+    .replace(/(href|src|action|formaction|xlink:href)\s*=\s*"\s*(?:javascript|vbscript|data)\s*:[^"]*"/gi, "$1=\"#\"")
+    .replace(/(href|src|action|formaction|xlink:href)\s*=\s*'\s*(?:javascript|vbscript|data)\s*:[^']*'/gi, "$1='#'");
+}
+
 // ── Props ─────────────────────────────────────────────────────────────────────
 interface ParsePanelProps {
   docId: string;
@@ -367,7 +389,7 @@ export default function ParsePanel({ docId, selectedChunkId, onChunkSelect, labe
                         {badgeLabel}
                       </span>
 
-                      <div className="md-content" dangerouslySetInnerHTML={{ __html: displayHtml }} />
+                      <div className="md-content" dangerouslySetInnerHTML={{ __html: sanitizeHtml(displayHtml) }} />
                     </div>
                   </div>
                 );
@@ -403,7 +425,7 @@ export default function ParsePanel({ docId, selectedChunkId, onChunkSelect, labe
               <pre
                 className="text-xs leading-relaxed"
                 style={{ fontFamily: "ui-monospace, monospace", color: "var(--al-text)" }}
-                dangerouslySetInnerHTML={{ __html: syntaxHighlightJSON(chunks) }}
+                dangerouslySetInnerHTML={{ __html: sanitizeHtml(syntaxHighlightJSON(chunks)) }}
               />
             </div>
           </div>
