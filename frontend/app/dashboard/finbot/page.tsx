@@ -1,5 +1,6 @@
 "use client";
 import { useState, useRef, useEffect, useCallback } from "react";
+import Markdown from "@/components/ui/Markdown";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -45,74 +46,9 @@ const TOOL_LABELS: Record<string, string> = {
   compare_stocks:    "Comparing stocks",
 };
 
-// ── Markdown renderer ─────────────────────────────────────────────────────────
-// Converts AI response markdown to HTML. Used with dangerouslySetInnerHTML.
-// Content is AI-generated (trusted), not user input.
-
-function renderMarkdown(md: string): string {
-  // Preserve code blocks
-  const codeBlocks: string[] = [];
-  let html = md.replace(/```([\w]*)\n?([\s\S]*?)```/g, (_, _lang, code) => {
-    codeBlocks.push(code.trim());
-    return `%%CODE${codeBlocks.length - 1}%%`;
-  });
-
-  // Inline code
-  html = html.replace(/`([^`]+)`/g, "<code>$1</code>");
-
-  // Headers
-  html = html.replace(/^#### (.+)$/gm, "<h4>$1</h4>");
-  html = html.replace(/^### (.+)$/gm, "<h3>$1</h3>");
-  html = html.replace(/^## (.+)$/gm,  "<h2>$1</h2>");
-  html = html.replace(/^# (.+)$/gm,   "<h1>$1</h1>");
-
-  // Bold / italic
-  html = html.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
-  html = html.replace(/(?<!\*)\*([^*\n]+)\*(?!\*)/g, "<em>$1</em>");
-
-  // Horizontal rule
-  html = html.replace(/^---$/gm, "<hr>");
-
-  // Markdown pipe tables → HTML tables
-  html = html.replace(/(?:^\|.+\|$\n?)+/gm, block => {
-    const rows = block.trim().split("\n");
-    const dataRows = rows.filter(r => !/^\|[\s\-:|]+\|$/.test(r.trim()));
-    if (!dataRows.length) return "";
-    const parse = (row: string) => row.split("|").slice(1, -1).map(c => c.trim());
-    let t = '<table class="finbot-md-table"><thead><tr>';
-    parse(dataRows[0]).forEach(h => { t += `<th>${h}</th>`; });
-    t += "</tr></thead><tbody>";
-    dataRows.slice(1).forEach(row => {
-      t += "<tr>";
-      parse(row).forEach(c => { t += `<td>${c}</td>`; });
-      t += "</tr>";
-    });
-    t += "</tbody></table>";
-    return t;
-  });
-
-  // Unordered lists
-  html = html.replace(/^[*\-] (.+)$/gm, "<li>$1</li>");
-  html = html.replace(/((?:<li>.*\n?)+)/g, "<ul>$1</ul>");
-
-  // Ordered lists
-  html = html.replace(/^\d+\. (.+)$/gm, "<li>$1</li>");
-
-  // Paragraphs
-  html = html.split(/\n\n+/).map(p => {
-    p = p.trim();
-    if (!p) return "";
-    if (/^<(h[1-6]|ul|ol|table|hr|pre|blockquote)/.test(p)) return p;
-    return `<p>${p.replace(/\n/g, "<br>")}</p>`;
-  }).join("\n");
-
-  // Restore code blocks
-  codeBlocks.forEach((code, i) => {
-    html = html.replace(`%%CODE${i}%%`, `<pre><code>${code}</code></pre>`);
-  });
-
-  return html;
-}
+// Markdown rendering moved to <Markdown /> from @/components/ui/Markdown.
+// React-rendered (no dangerouslySetInnerHTML) — safe against XSS even if a
+// crafted news headline or prompt-injected response tries to embed <script>.
 
 // ── News Sidebar ──────────────────────────────────────────────────────────────
 
@@ -650,7 +586,7 @@ export default function FinBotPage() {
                       }}>
                         {msg.role === "assistant"
                           ? (msg.content
-                              ? <div className="finbot-bubble-md" dangerouslySetInnerHTML={{ __html: renderMarkdown(msg.content) }} />
+                              ? <div className="finbot-bubble-md"><Markdown text={msg.content} /></div>
                               : <TypingDots />)
                           : msg.content
                         }
