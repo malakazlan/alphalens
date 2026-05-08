@@ -9,7 +9,12 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
 RUN apt-get update \
- && apt-get install -y --no-install-recommends curl \
+ && apt-get install -y --no-install-recommends \
+      curl \
+      build-essential \
+      pkg-config \
+      libcairo2-dev \
+      libgirepository1.0-dev \
  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
