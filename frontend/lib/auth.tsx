@@ -8,15 +8,20 @@ interface User {
 
 interface AuthContextType {
   user: User | null;
-  token: string | null;
   isLoading: boolean;
+  /**
+   * Token param is accepted for backwards compatibility with existing call
+   * sites (LoginForm, SignupForm). It is intentionally NOT stored anywhere —
+   * the backend issues an httpOnly cookie that authenticates subsequent
+   * requests. Keeping the JWT in localStorage would defeat that protection
+   * (any XSS could exfiltrate it).
+   */
   login: (token: string, user: User) => void;
   logout: () => void;
 }
 
 const AuthContext = createContext<AuthContextType>({
   user: null,
-  token: null,
   isLoading: true,
   login: () => {},
   logout: () => {},
@@ -24,58 +29,35 @@ const AuthContext = createContext<AuthContextType>({
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
-  const [token, setToken] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
+  // Cookie-only session check — relies on the httpOnly access_token cookie
+  // set by the backend on login.
   useEffect(() => {
-    const stored = localStorage.getItem("access_token");
-    if (stored) {
-      setToken(stored);
-      fetch("/api/auth/session", {
-        credentials: "include",
-        headers: { Authorization: `Bearer ${stored}` },
+    fetch("/api/auth/session", { credentials: "include" })
+      .then((r) => r.json())
+      .then((data) => {
+        if (data.success) setUser(data.user);
       })
-        .then((r) => r.json())
-        .then((data) => {
-          if (data.success) setUser(data.user);
-          else {
-            setToken(null);
-            localStorage.removeItem("access_token");
-          }
-        })
-        .catch(() => {
-          setToken(null);
-          localStorage.removeItem("access_token");
-        })
-        .finally(() => setIsLoading(false));
-    } else {
-      setIsLoading(false);
-    }
+      .catch(() => { /* unauthenticated — leave user null */ })
+      .finally(() => setIsLoading(false));
   }, []);
 
-  const login = (tok: string, usr: User) => {
-    setToken(tok);
+  // Token argument is ignored; backend has already set the httpOnly cookie.
+  const login = (_token: string, usr: User) => {
     setUser(usr);
-    localStorage.setItem("access_token", tok);
   };
 
   const logout = async () => {
-    const tok = token || localStorage.getItem("access_token") || "";
     try {
-      await fetch("/api/auth/logout", {
-        method: "POST",
-        credentials: "include",
-        headers: { Authorization: `Bearer ${tok}` },
-      });
+      await fetch("/api/auth/logout", { method: "POST", credentials: "include" });
     } catch {}
-    setToken(null);
     setUser(null);
-    localStorage.removeItem("access_token");
     window.location.href = "/login";
   };
 
   return (
-    <AuthContext.Provider value={{ user, token, isLoading, login, logout }}>
+    <AuthContext.Provider value={{ user, isLoading, login, logout }}>
       {children}
     </AuthContext.Provider>
   );

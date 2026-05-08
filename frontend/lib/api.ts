@@ -1,22 +1,18 @@
-// Requests go through Next.js rewrites → proxied to backend (no CORS)
+// Requests go through Next.js rewrites → proxied to backend (no CORS).
+// Auth is via httpOnly cookie (`access_token`); we never read the token in JS,
+// so XSS cannot exfiltrate the session. credentials: "include" sends the cookie
+// on every request automatically.
 const API = "";
-
-function getToken(): string {
-  if (typeof window === "undefined") return "";
-  return localStorage.getItem("access_token") ?? "";
-}
 
 export async function apiFetch(
   path: string,
   options: RequestInit = {}
 ): Promise<Response> {
-  const token = getToken();
   return fetch(`${API}${path}`, {
     ...options,
     credentials: "include",
     headers: {
       "Content-Type": "application/json",
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...(options.headers ?? {}),
     },
   });
@@ -41,15 +37,11 @@ export function streamSSE(
   onError?: (err: string) => void
 ): () => void {
   const controller = new AbortController();
-  const token = getToken();
 
   fetch(`${API}${path}`, {
     method: "POST",
     credentials: "include",
-    headers: {
-      "Content-Type": "application/json",
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
     signal: controller.signal,
   })
