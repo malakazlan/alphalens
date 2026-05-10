@@ -1,5 +1,7 @@
 /** @type {import('next').NextConfig} */
 
+import { withSentryConfig } from "@sentry/nextjs";
+
 // Content-Security-Policy — defense-in-depth against XSS.
 //
 // Notes:
@@ -58,4 +60,23 @@ const nextConfig = {
   },
 };
 
-export default nextConfig;
+// Wrap with Sentry's plugin so errors get reported and source maps get
+// uploaded at build time. The wrapper is a no-op if SENTRY_AUTH_TOKEN
+// isn't set (local dev / contributors without org access).
+export default withSentryConfig(nextConfig, {
+  org: process.env.SENTRY_ORG,
+  project: process.env.SENTRY_PROJECT,
+  authToken: process.env.SENTRY_AUTH_TOKEN,
+
+  // Suppress build-time logs locally; Netlify shows them via CI=true.
+  silent: !process.env.CI,
+
+  // Bundle analyzer's client chunks too (some imports come via dynamic()).
+  widenClientFileUpload: true,
+
+  // Ship source maps to Sentry but don't expose them to the public.
+  hideSourceMaps: true,
+
+  // Drop the Sentry SDK's own console.logs from the prod bundle.
+  disableLogger: true,
+});
