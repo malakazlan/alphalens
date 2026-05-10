@@ -1,10 +1,13 @@
-// Sentry init for the browser bundle.
-// Auto-discovered + bundled by @sentry/nextjs's webpack plugin (configured
-// via `withSentryConfig` in next.config.mjs).
+// Sentry init for the browser bundle (Next.js 14+ convention: this exact
+// filename is auto-loaded by @sentry/nextjs).
 //
 // Silent no-op when NEXT_PUBLIC_SENTRY_DSN is unset (local dev).
 
 import * as Sentry from "@sentry/nextjs";
+
+// Capture client-side navigation transitions in the App Router.
+// Required export per @sentry/nextjs build-time check.
+export const onRouterTransitionStart = Sentry.captureRouterTransitionStart;
 
 const dsn = process.env.NEXT_PUBLIC_SENTRY_DSN;
 
