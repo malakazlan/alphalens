@@ -1,4 +1,6 @@
 """Qdrant vector store operations."""
+import logging
+import time
 from typing import Optional
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
@@ -8,8 +10,23 @@ from qdrant_client.models import (
 )
 from config import settings
 
+logger = logging.getLogger(__name__)
+
 COLLECTION = "alphalens_documents"
 VECTOR_SIZE = 1536  # text-embedding-3-small
+
+# Long timeout because we batch many points per upsert and the writer
+# may be on a residential connection. The default httpx 5s ReadTimeout
+# is too short — we already saw it fire in production after a 44-page
+# parse, killing a job that had already paid for ADE + embeddings.
+_QDRANT_TIMEOUT_SECS = 120
+# Don't push more than this many points in a single upsert. A 1500-point
+# upsert over a residential link can stall on the write side; smaller
+# batches recover fast on retry and cap the blast radius of a single
+# transient failure.
+_QDRANT_UPSERT_BATCH = 64
+# Retry policy for transient Qdrant writes (timeouts, 5xx).
+_QDRANT_MAX_RETRIES = 3
 
 _client: Optional[QdrantClient] = None
 _collection_ready: bool = False
@@ -18,7 +35,11 @@ _collection_ready: bool = False
 def get_client() -> QdrantClient:
     global _client
     if _client is None:
-        _client = QdrantClient(url=settings.QDRANT_URL, api_key=settings.QDRANT_API_KEY)
+        _client = QdrantClient(
+            url=settings.QDRANT_URL,
+            api_key=settings.QDRANT_API_KEY,
+            timeout=_QDRANT_TIMEOUT_SECS,
+        )
     return _client
 
 
@@ -54,9 +75,46 @@ def ensure_collection() -> None:
 
 
 def upsert_chunks(points: list[PointStruct]) -> None:
+    """Upsert points with batching + retry.
+
+    Splits the input into `_QDRANT_UPSERT_BATCH`-sized chunks and retries
+    each batch up to `_QDRANT_MAX_RETRIES` times on transient errors
+    (httpx timeouts, qdrant ResponseHandlingException, 5xx). A timeout on
+    a single batch no longer kills a parse that's already paid for ADE +
+    embeddings — the retry will succeed on the next pass.
+    """
     if not points:
         return
-    get_client().upsert(collection_name=COLLECTION, points=points, wait=True)
+    client = get_client()
+    total   = len(points)
+    written = 0
+    for start in range(0, total, _QDRANT_UPSERT_BATCH):
+        batch = points[start:start + _QDRANT_UPSERT_BATCH]
+        last_err: Exception | None = None
+        for attempt in range(1, _QDRANT_MAX_RETRIES + 1):
+            try:
+                client.upsert(collection_name=COLLECTION, points=batch, wait=True)
+                written += len(batch)
+                break
+            except Exception as e:
+                last_err = e
+                # Exponential backoff: 2s, 4s, 8s.
+                backoff = 2 ** attempt
+                logger.warning(
+                    "qdrant upsert batch %d-%d failed (attempt %d/%d): %s — retrying in %ds",
+                    start, start + len(batch), attempt, _QDRANT_MAX_RETRIES, e, backoff,
+                )
+                if attempt < _QDRANT_MAX_RETRIES:
+                    time.sleep(backoff)
+        else:
+            # All retries exhausted — surface the original error so the
+            # worker's outer except writes a useful status_message.
+            raise RuntimeError(
+                f"Qdrant upsert failed after {_QDRANT_MAX_RETRIES} attempts "
+                f"(wrote {written}/{total} points): {last_err}"
+            ) from last_err
+    logger.info("qdrant upsert OK: %d points in %d batches", written,
+                (total + _QDRANT_UPSERT_BATCH - 1) // _QDRANT_UPSERT_BATCH)
 
 
 def search(query_vector: list[float], user_id: str, doc_id: Optional[str] = None, top_k: int = 8) -> list:

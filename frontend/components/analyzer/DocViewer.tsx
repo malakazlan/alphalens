@@ -18,6 +18,15 @@ export interface BboxHighlight {
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+// CSS.escape exists in every modern browser; the fallback handles SSR /
+// unit-test environments where `CSS` isn't defined.
+function cssEscape(s: string): string {
+  if (typeof CSS !== "undefined" && typeof CSS.escape === "function") {
+    return CSS.escape(s);
+  }
+  return s.replace(/[^a-zA-Z0-9_-]/g, ch => `\\${ch}`);
+}
+
 function typeToClass(type: string): string {
   switch (type) {
     case "text": case "title": case "key_value": case "page_header":
@@ -92,11 +101,21 @@ export default function DocViewer({
   const renderIdRef   = useRef(0);
   const pageWrapsRef  = useRef<HTMLDivElement[]>([]);
   const lazyIoRef     = useRef<IntersectionObserver | null>(null);
+  // Stable ref to onChunkClick so the overlay-build effect doesn't re-run
+  // when the parent passes a fresh callback identity each render.
+  const onChunkClickRef = useRef(onChunkClick);
+  onChunkClickRef.current = onChunkClick;
 
   const [loading,     setLoading]     = useState(true);
   const [error,       setError]       = useState("");
   const [numPages,    setNumPages]    = useState(0);
   const [currentPage, setCurrentPage] = useState(1);
+  // Set true once Effect 1 has finished pushing every page wrapper into
+  // pageWrapsRef. Without this, Effect 3a (build overlays) can fire when
+  // numPages updates but BEFORE the wrappers are in place — the overlay
+  // layer iteration finds an empty ref and never re-runs, so the PDF
+  // shows zero clickable chunk boxes. This flag forces 3a to wait.
+  const [pagesReady, setPagesReady] = useState(false);
 
   // ── 1. Render PDF pages (lazy — only renders pages near the viewport) ────────
   useEffect(() => {
@@ -108,6 +127,7 @@ export default function DocViewer({
     const renderId = ++renderIdRef.current;
     setLoading(true);
     setError("");
+    setPagesReady(false);
     pageWrapsRef.current = [];
 
     const render = async () => {
@@ -165,6 +185,9 @@ export default function DocViewer({
           pageWrapsRef.current.push(wrap);
         }
 
+        // Wrappers are all in place — Effect 3a is now safe to run and
+        // build overlay boxes against pageWrapsRef.current.
+        setPagesReady(true);
         setLoading(false);
 
         // ── Pass 2: lazy render via IntersectionObserver ──────────────────────
@@ -236,10 +259,12 @@ export default function DocViewer({
     return () => observer.disconnect();
   }, [numPages]);
 
-  // ── 3. Build DOM overlays whenever chunks / selection / secondary change ──
+  // ── 3a. BUILD overlay DOM — only when chunks / numPages change ───────────
+  // This is the expensive path: tear down old DOM, create one box per chunk,
+  // attach click handlers. We isolate it from selection-state changes so a
+  // single click doesn't rebuild thousands of nodes on a long document.
   useEffect(() => {
-    const hasSelection = !!selectedChunkId;
-    const secondarySet = new Set(secondaryChunkIds);
+    if (!pagesReady || numPages === 0) return;
 
     pageWrapsRef.current.forEach(wrap => {
       const pageIdx = parseInt(wrap.getAttribute("data-page-num") ?? "0", 10);
@@ -247,8 +272,8 @@ export default function DocViewer({
       if (!layer) return;
 
       layer.innerHTML = "";
-
       const pageChunks = chunks.filter(c => c.page === pageIdx);
+
       for (const chunk of pageChunks) {
         const box = document.createElement("div");
         box.className = `overlay-box ${typeToClass(chunk.chunk_type)}`;
@@ -260,28 +285,47 @@ export default function DocViewer({
         box.style.width  = `${(right - left) * 100}%`;
         box.style.height = `${(bottom - top) * 100}%`;
 
-        if (hasSelection && chunk.chunk_id === selectedChunkId) {
-          box.classList.add("overlay-box--active");
-        } else if (secondarySet.has(chunk.chunk_id)) {
-          box.classList.add("overlay-box--secondary");
-        }
-
         // Label
         const label = document.createElement("span");
         label.className = "overlay-label";
         label.textContent = chunk.label ?? chunk.chunk_type.replace(/_/g, " ");
         box.appendChild(label);
 
-        // Click
+        // Click — read latest callback from a ref so this effect doesn't
+        // re-run when the parent passes a new function identity per render.
         box.addEventListener("click", e => {
           e.stopPropagation();
-          onChunkClick?.(chunk.chunk_id);
+          onChunkClickRef.current?.(chunk.chunk_id);
         });
 
         layer.appendChild(box);
       }
     });
-  }, [chunks, selectedChunkId, secondaryChunkIds, onChunkClick]);
+    // 3b runs after this to set initial active/secondary classes.
+  }, [chunks, numPages, pagesReady]);
+
+  // ── 3b. TOGGLE selection classes — runs on every click, no DOM rebuild ───
+  // This is the cheap path. Walk only the previously-active node to remove
+  // its class, the new node to add it. Selection updates stay 60fps even
+  // on a 200-page document with thousands of overlay boxes.
+  useEffect(() => {
+    const root = containerRef.current;
+    if (!root) return;
+    const secondarySet = new Set(secondaryChunkIds);
+
+    // Drop stale classes wherever they're set.
+    root.querySelectorAll(".overlay-box--active, .overlay-box--secondary")
+      .forEach(el => el.classList.remove("overlay-box--active", "overlay-box--secondary"));
+
+    if (selectedChunkId) {
+      root.querySelector(`[data-chunk-id="${cssEscape(selectedChunkId)}"]`)
+        ?.classList.add("overlay-box--active");
+    }
+    secondarySet.forEach(id => {
+      root.querySelector(`[data-chunk-id="${cssEscape(id)}"]`)
+        ?.classList.add("overlay-box--secondary");
+    });
+  }, [selectedChunkId, secondaryChunkIds, chunks, numPages]);
 
   // ── 4. Scroll PDF to selected chunk's page ────────────────────────────────
   useEffect(() => {

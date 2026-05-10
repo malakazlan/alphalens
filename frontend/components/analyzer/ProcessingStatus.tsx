@@ -28,7 +28,7 @@ export default function ProcessingStatus({ documentId, filename, onComplete, onC
             setProgress(data.progress ?? 0);
             setMessage(data.status_message || stageLabel(data.status));
             if (data.status === "complete") { onComplete(); return; }
-            if (data.status === "error") return;
+            if (data.status === "error" || data.status === "rejected") return;
           }
         } catch {}
         await new Promise(r => setTimeout(r, 3000));
@@ -48,7 +48,11 @@ export default function ProcessingStatus({ documentId, filename, onComplete, onC
     >
       {/* Spinner */}
       <div className="flex items-center justify-center mb-6">
-        {status === "error" ? (
+        {status === "rejected" ? (
+          <div className="w-16 h-16 rounded-full grid place-items-center" style={{ background: "rgba(245,158,11,0.10)" }}>
+            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#d97706" strokeWidth="2"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+          </div>
+        ) : status === "error" ? (
           <div className="w-16 h-16 rounded-full grid place-items-center" style={{ background: "rgba(220,38,38,0.08)" }}>
             <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#dc2626" strokeWidth="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
           </div>
@@ -66,7 +70,10 @@ export default function ProcessingStatus({ documentId, filename, onComplete, onC
       {/* Filename */}
       <p className="text-center text-xs font-medium mb-1 truncate" style={{ color: "var(--al-subtle)" }}>{filename}</p>
       <h3 className="text-center font-bold text-lg mb-1" style={{ color: "var(--al-text)" }}>
-        {status === "error" ? "Processing Failed" : status === "complete" ? "Complete!" : "Processing Document"}
+        {status === "rejected" ? "Not a Financial Document"
+          : status === "error" ? "Processing Failed"
+          : status === "complete" ? "Complete!"
+          : "Processing Document"}
       </h3>
       <p className="text-center text-sm mb-6" style={{ color: "var(--al-text-secondary)" }}>{message}</p>
 
@@ -97,7 +104,7 @@ export default function ProcessingStatus({ documentId, filename, onComplete, onC
       </div>
 
       {/* Progress bar */}
-      {status !== "complete" && status !== "error" && (
+      {status !== "complete" && status !== "error" && status !== "rejected" && (
         <div className="h-1.5 rounded-full mb-6" style={{ background: "var(--al-border)" }}>
           <div
             className="h-1.5 rounded-full transition-all duration-500"
@@ -111,7 +118,7 @@ export default function ProcessingStatus({ documentId, filename, onComplete, onC
         className="w-full py-2.5 rounded-xl text-sm font-medium transition-all"
         style={{ color: "var(--al-subtle)", background: "var(--al-bg-secondary)" }}
       >
-        {status === "complete" || status === "error" ? "Back" : "Cancel"}
+        {status === "complete" || status === "error" || status === "rejected" ? "Back" : "Cancel"}
       </button>
     </div>
   );

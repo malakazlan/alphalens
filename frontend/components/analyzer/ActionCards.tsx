@@ -67,8 +67,10 @@ const FEATURES = [
   },
 ];
 
+export type ParseScope = "core" | "full";
+
 interface ActionCardsProps {
-  onFileSelect: (file: File, action: string) => void;
+  onFileSelect: (file: File, action: string, parseScope: ParseScope) => void;
   disabled?: boolean;
 }
 
@@ -77,9 +79,14 @@ export default function ActionCards({ onFileSelect, disabled }: ActionCardsProps
   const featureInputRef = useRef<Record<string, HTMLInputElement | null>>({});
   const [dragOver,   setDragOver]   = useState(false);
   const [hoveredId,  setHoveredId]  = useState<string | null>(null);
+  // Cost Lever 4: Core (default, ~50% cheaper) trims TOC/exhibits/blanks
+  // and runs Extract on a financial-section-only subset. Full parses
+  // everything. Sticky in component state so the user's last choice
+  // persists across re-renders within the same session.
+  const [parseScope, setParseScope] = useState<ParseScope>("core");
 
   function pick(file: File, action: string) {
-    if (!disabled) onFileSelect(file, action);
+    if (!disabled) onFileSelect(file, action, parseScope);
   }
   function handleDrop(e: React.DragEvent) {
     e.preventDefault();
@@ -99,6 +106,59 @@ export default function ActionCards({ onFileSelect, disabled }: ActionCardsProps
 
   return (
     <div>
+      {/* ═══ PARSE-MODE TOGGLE (Cost Lever 4) ════════════════════════════ */}
+      <div style={{
+        display: "flex", alignItems: "center", justifyContent: "flex-end",
+        gap: 8, marginBottom: 12,
+      }}>
+        <span style={{ fontSize: 11.5, color: "var(--al-subtle)", letterSpacing: "0.02em" }}>
+          Parse mode
+        </span>
+        <div
+          role="tablist"
+          aria-label="Parse scope"
+          style={{
+            display: "inline-flex",
+            background: "rgba(0,0,0,0.04)",
+            border: "1px solid rgba(0,0,0,0.06)",
+            borderRadius: 8,
+            padding: 2,
+          }}
+        >
+          {([
+            { val: "core", label: "Core",  hint: "Skips TOC, exhibits, blanks. ~50% cheaper. Default." },
+            { val: "full", label: "Full",  hint: "Parses every page. Higher cost." },
+          ] as const).map(opt => {
+            const active = parseScope === opt.val;
+            return (
+              <button
+                key={opt.val}
+                type="button"
+                role="tab"
+                aria-selected={active}
+                title={opt.hint}
+                onClick={() => setParseScope(opt.val)}
+                disabled={disabled}
+                style={{
+                  padding: "4px 12px",
+                  fontSize: 11.5,
+                  fontWeight: active ? 600 : 500,
+                  color: active ? "#fff" : "var(--al-text-secondary)",
+                  background: active ? "var(--al-accent)" : "transparent",
+                  border: "none",
+                  borderRadius: 6,
+                  cursor: disabled ? "not-allowed" : "pointer",
+                  transition: "all 180ms ease",
+                  letterSpacing: "0.01em",
+                }}
+              >
+                {opt.label}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
       {/* ═══ DROP ZONE ═══════════════════════════════════════════════════ */}
       <label
         onDragOver={e => { e.preventDefault(); if (!disabled) setDragOver(true); }}

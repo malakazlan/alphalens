@@ -49,6 +49,88 @@ class RegenerateSectionRequest(BaseModel):
     section: str = Field(..., min_length=1, max_length=64)
 
 
+# ─── FinBot — Holdings (Phase 2 / Slice 1) ───────────────────────────────────
+
+# `account_type` is enforced by a CHECK constraint at the DB layer; we mirror
+# it here for early-fail validation + autocompletion in clients.
+_ACCOUNT_TYPES = ("taxable", "retirement", "isa", "other")
+
+
+class HoldingCreate(BaseModel):
+    """Body for POST /api/finbot/holdings."""
+    ticker:       str   = Field(..., min_length=1, max_length=10)
+    quantity:     float = Field(..., gt=0)
+    cost_basis:   float = Field(..., ge=0,
+                                description="Total dollars invested in this lot (price × qty + fees).")
+    currency:     str   = Field("USD", min_length=3, max_length=3)
+    account_type: str   = Field(..., pattern=f"^({'|'.join(_ACCOUNT_TYPES)})$")
+    opened_at:    str   = Field(..., min_length=10, max_length=10,
+                                description="ISO date YYYY-MM-DD.")
+    note:         Optional[str] = Field(None, max_length=500)
+
+
+class HoldingUpdate(BaseModel):
+    """Body for PATCH /api/finbot/holdings/{id}. All fields optional."""
+    ticker:       Optional[str]   = Field(None, min_length=1, max_length=10)
+    quantity:     Optional[float] = Field(None, gt=0)
+    cost_basis:   Optional[float] = Field(None, ge=0)
+    currency:     Optional[str]   = Field(None, min_length=3, max_length=3)
+    account_type: Optional[str]   = Field(None, pattern=f"^({'|'.join(_ACCOUNT_TYPES)})$")
+    opened_at:    Optional[str]   = Field(None, min_length=10, max_length=10)
+    closed_at:    Optional[str]   = Field(None, min_length=10, max_length=10)
+    note:         Optional[str]   = Field(None, max_length=500)
+
+
+# ─── FinBot — Profile + Watchlist (Phase 2 / Slice 2) ────────────────────────
+
+_RISK_TOLERANCE = ("conservative", "moderate", "aggressive")
+_TIME_HORIZON   = ("short", "medium", "long")
+_GOAL_VALUES    = ("retirement", "income", "growth", "preservation")
+
+
+class ProfileUpsert(BaseModel):
+    """Body for PUT /api/finbot/profile. All fields required at upsert time."""
+    risk_tolerance:      str = Field(..., pattern=f"^({'|'.join(_RISK_TOLERANCE)})$")
+    time_horizon:        str = Field(..., pattern=f"^({'|'.join(_TIME_HORIZON)})$")
+    goals:               list[str] = Field(default_factory=list, max_length=4)
+    liquidity_needs:     Optional[str] = Field(None, max_length=500)
+    tax_country:         Optional[str] = Field(None, min_length=2, max_length=2)
+    currency_preference: str = Field("USD", min_length=3, max_length=3)
+
+
+class WatchlistCreate(BaseModel):
+    ticker:      str = Field(..., min_length=1, max_length=10)
+    alert_above: Optional[float] = Field(None, ge=0)
+    alert_below: Optional[float] = Field(None, ge=0)
+    note:        Optional[str]   = Field(None, max_length=500)
+
+
+class WatchlistUpdate(BaseModel):
+    ticker:      Optional[str]   = Field(None, min_length=1, max_length=10)
+    alert_above: Optional[float] = Field(None, ge=0)
+    alert_below: Optional[float] = Field(None, ge=0)
+    note:        Optional[str]   = Field(None, max_length=500)
+
+
+# ─── FinBot — Conversations + Messages (Phase 2 / Slice 4) ───────────────────
+
+class ConversationCreate(BaseModel):
+    """Body for POST /api/finbot/conversations."""
+    title: Optional[str] = Field(None, min_length=1, max_length=120)
+
+
+class ConversationUpdate(BaseModel):
+    """Body for PATCH /api/finbot/conversations/{id}."""
+    title:    Optional[str]  = Field(None, min_length=1, max_length=120)
+    pinned:   Optional[bool] = None
+    archived: Optional[bool] = None  # True → archive, False → unarchive
+
+
+class FinBotMessageSend(BaseModel):
+    """Body for POST /api/finbot/conversations/{id}/messages."""
+    message: str = Field(..., min_length=1, max_length=2000)
+
+
 # ─── Financial Schemas (for ADE extract()) ─────────────────────────────────────
 
 class IncomeStatement(BaseModel):

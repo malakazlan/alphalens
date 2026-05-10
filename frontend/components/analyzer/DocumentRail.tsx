@@ -6,6 +6,7 @@ import Link from "next/link";
 const STATUS_COLORS: Record<string, string> = {
   complete:   "var(--al-success)",
   error:      "var(--al-error)",
+  rejected:   "var(--al-subtle)",
   queued:     "var(--al-warning)",
   parsing:    "var(--al-accent)",
   extracting: "var(--al-accent)",
@@ -18,6 +19,7 @@ interface Doc {
   id: string;
   filename: string;
   status: string;
+  status_message?: string | null;
   upload_time: string;
   metadata?: Record<string, unknown>;
 }
@@ -312,16 +314,27 @@ export default function DocumentRail({
               const active     = selectedId === doc.id;
               const inProgress = IN_PROGRESS.has(doc.status);
               const errored    = doc.status === "error";
+              const rejected   = doc.status === "rejected";
+              // Rejected docs have no parsed content — opening the workspace
+              // would just show empty panels. Keep them visible in the rail
+              // for context but block the click.
+              const clickable  = !rejected;
+              // Show the rejection reason / error message on hover.
+              const tooltip    = (rejected || errored)
+                ? (doc.status_message ?? null)
+                : null;
 
               return (
                 <div
                   key={doc.id}
+                  title={tooltip ?? undefined}
                   style={{
                     display: "flex", alignItems: "stretch",
                     position: "relative",
                     background: active ? "rgba(5,150,105,0.06)" : "transparent",
                     borderLeft: `2px solid ${active ? "var(--al-accent)" : "transparent"}`,
                     transition: "background 150ms ease",
+                    opacity: rejected ? 0.55 : 1,
                   }}
                   onMouseEnter={e => { if (!active) (e.currentTarget as HTMLElement).style.background = "rgba(0,0,0,0.025)"; }}
                   onMouseLeave={e => { if (!active) (e.currentTarget as HTMLElement).style.background = "transparent"; }}
@@ -329,12 +342,13 @@ export default function DocumentRail({
                 >
                   <div
                     role="button"
-                    tabIndex={0}
-                    onClick={() => onSelect(doc)}
-                    onKeyDown={e => e.key === "Enter" && onSelect(doc)}
+                    tabIndex={clickable ? 0 : -1}
+                    aria-disabled={!clickable}
+                    onClick={() => { if (clickable) onSelect(doc); }}
+                    onKeyDown={e => { if (clickable && e.key === "Enter") onSelect(doc); }}
                     style={{
                       flex: 1, minWidth: 0,
-                      cursor: "pointer",
+                      cursor: clickable ? "pointer" : "default",
                       padding: "11px 8px 11px 14px",
                       display: "flex", alignItems: "flex-start", gap: 10,
                     }}
@@ -348,6 +362,7 @@ export default function DocumentRail({
                         letterSpacing: "-0.005em",
                         whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
                         marginBottom: 4,
+                        textDecoration: rejected ? "line-through" : "none",
                       }}>
                         {doc.filename}
                       </div>
@@ -379,8 +394,9 @@ export default function DocumentRail({
                           textTransform: "capitalize",
                           letterSpacing: "0.01em",
                           fontWeight: errored ? 500 : 400,
+                          fontStyle: rejected ? "italic" : "normal",
                         }}>
-                          {doc.status}
+                          {rejected ? "rejected · not financial" : doc.status}
                         </span>
                       </div>
                     </div>

@@ -281,7 +281,7 @@ export default function AnalyzerView({ docIdFromUrl }: { docIdFromUrl: string | 
   }
 
   // ── Upload ───────────────────────────────────────────────────────────────────
-  async function handleFileSelect(file: File, action: string) {
+  async function handleFileSelect(file: File, action: string, parseScope: "core" | "full" = "core") {
     setError(null);
     setIsUploading(true);
     try {
@@ -305,6 +305,7 @@ export default function AnalyzerView({ docIdFromUrl }: { docIdFromUrl: string | 
       form.append("file", file);
       form.append("sha256_hash", hash);
       form.append("action", action);
+      form.append("parse_scope", parseScope);
 
       const uploadRes  = await fetch("/api/documents/upload", { method: "POST", credentials: "include", body: form });
       const uploadData = await uploadRes.json();

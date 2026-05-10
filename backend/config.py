@@ -30,6 +30,7 @@ class Settings(BaseSettings):
 
     # FinBot
     FINNHUB_API_KEY: Optional[str] = None
+    FRED_API_KEY:    Optional[str] = None  # https://fred.stlouisfed.org/docs/api/
 
     # Server
     HOST: str = "0.0.0.0"

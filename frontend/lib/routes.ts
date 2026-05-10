@@ -13,7 +13,12 @@ export const ROUTES = {
   report:    "/dashboard/report",
   finbot:    "/dashboard/finbot",
 
+  // FinBot sub-surfaces.
+  finbotPortfolio: "/dashboard/finbot/portfolio",
+  finbotWatchlist: "/dashboard/finbot/watchlist",
+
   // Helpers for resource-addressable URLs.
-  analyzerDoc: (docId: string) => `/dashboard/analyzer/${docId}`,
-  reportDoc:   (reportId: string) => `/dashboard/report/${reportId}`,
+  analyzerDoc:         (docId: string) => `/dashboard/analyzer/${docId}`,
+  reportDoc:           (reportId: string) => `/dashboard/report/${reportId}`,
+  finbotConversation:  (conversationId: string) => `/dashboard/finbot/${conversationId}`,
 } as const;

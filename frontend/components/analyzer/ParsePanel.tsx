@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useEffect, useMemo, useRef, useState, useCallback, memo } from "react";
 
 // ── Type colours (exact spec from ANALYZER_REDESIGN_PLAN) ─────────────────────
 const TYPE_COLOR: Record<string, string> = {
@@ -160,15 +160,110 @@ function isNoiseText(stripped: string): boolean {
 }
 
 // ── Component ─────────────────────────────────────────────────────────────────
+// ── Memoised chunk row ──────────────────────────────────────────────────────
+// Each chunk owns its expensive render: markdown→html, search highlight,
+// HTML sanitization. Wrapped in React.memo so the list-level re-renders
+// (selection toggling, search keystrokes) skip rows whose props are
+// shallow-equal. Keystrokes only re-render rows that contain a match.
+interface ChunkRowProps {
+  chunk:      Chunk;
+  badgeLabel: string;
+  isSelected: boolean;
+  search:     string;
+}
+
+const ChunkRow = memo(function ChunkRow({
+  chunk, badgeLabel, isSelected, search,
+}: ChunkRowProps) {
+  // Base markdown→html runs once per chunk.markdown change. It does NOT
+  // depend on search, so typing in the search box doesn't re-render it.
+  const rendered = useMemo(
+    () => renderChunkMarkdown(chunk.markdown),
+    [chunk.markdown],
+  );
+
+  // Search highlight + sanitize. Recomputed only when `search` or the base
+  // `rendered` changes — and React.memo means rows without `search` matches
+  // can skip even this pass on subsequent searches.
+  const sanitizedHtml = useMemo(() => {
+    const trimmed = search.trim();
+    const html = trimmed
+      ? rendered.replace(
+          new RegExp(`(${trimmed.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")})`, "gi"),
+          '<mark class="search-hit">$1</mark>',
+        )
+      : rendered;
+    return sanitizeHtml(html);
+  }, [rendered, search]);
+
+  const color = typeColor(chunk.chunk_type);
+  const isMediaChunk = ["figure", "card", "scan_code", "logo", "attestation"]
+    .includes(chunk.chunk_type);
+
+  return (
+    <div
+      className="markdown-section cursor-pointer"
+      data-chunk-id={chunk.chunk_id}
+      style={{
+        borderLeft: `3px solid ${isSelected ? color : "transparent"}`,
+        background: isSelected ? `${color}0d` : "transparent",
+      }}
+    >
+      <div style={{ marginBottom: 6 }}>
+        {isSelected ? (
+          <span style={{
+            display: "inline-block",
+            fontSize: 10, fontWeight: 700,
+            padding: "2px 8px",
+            borderRadius: 4,
+            lineHeight: 1.6,
+            letterSpacing: "0.02em",
+            background: color,
+            color: color === "#32D583" ? "#000" : "#fff",
+          }}>{badgeLabel}</span>
+        ) : (
+          <span style={{
+            fontSize: 11, fontWeight: 500,
+            color: "var(--al-subtle)",
+            letterSpacing: "0.01em",
+          }}>{badgeLabel}</span>
+        )}
+      </div>
+      <div
+        className="md-content"
+        style={isMediaChunk ? {
+          fontStyle: "italic",
+          fontSize: "0.82em",
+          color: "var(--al-text-secondary)",
+          borderLeft: `2px solid ${color}40`,
+          paddingLeft: 8,
+          marginTop: 2,
+        } : undefined}
+        dangerouslySetInnerHTML={{ __html: sanitizedHtml }}
+      />
+    </div>
+  );
+});
+
+
 export default function ParsePanel({ docId, selectedChunkId, onChunkSelect, labelMap }: ParsePanelProps) {
   const [chunks,   setChunks]   = useState<Chunk[]>([]);
   const [loading,  setLoading]  = useState(true);
   const [error,    setError]    = useState("");
   const [subTab,   setSubTab]   = useState<SubTab>("markdown");
   const [search,   setSearch]   = useState("");
+  // Debounced copy of `search` — drives chunk re-renders. The input updates
+  // `search` immediately (no typing lag), the chunk list reads `searchDebounced`
+  // (re-renders only after the user stops typing).
+  const [searchDebounced, setSearchDebounced] = useState("");
   const [copied,   setCopied]   = useState(false);
 
   const markdownRef   = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const t = setTimeout(() => setSearchDebounced(search), 150);
+    return () => clearTimeout(t);
+  }, [search]);
 
   // ── Fetch ──────────────────────────────────────────────────────────────────
   const load = useCallback(() => {
@@ -366,69 +461,17 @@ export default function ParsePanel({ docId, selectedChunkId, onChunkSelect, labe
               onClick={handleMarkdownClick}
             >
               {mdChunks.map((chunk, idx) => {
-                const isSelected  = selectedChunkId === chunk.chunk_id;
-                const color       = typeColor(chunk.chunk_type);
-                const typeLabel   = chunk.chunk_type
+                const typeLabel  = chunk.chunk_type
                   .split("_").map((w: string) => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
-                const badgeLabel  = labelMap?.get(chunk.chunk_id) ?? `${idx + 1} - ${typeLabel}`;
-                const rendered    = renderChunkMarkdown(chunk.markdown);
-                const isMediaChunk = ["figure", "card", "scan_code", "logo", "attestation"].includes(chunk.chunk_type);
-
-                const displayHtml = search.trim()
-                  ? rendered.replace(
-                      new RegExp(`(${search.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")})`, "gi"),
-                      '<mark class="search-hit">$1</mark>'
-                    )
-                  : rendered;
-
+                const badgeLabel = labelMap?.get(chunk.chunk_id) ?? `${idx + 1} - ${typeLabel}`;
                 return (
-                  <div
+                  <ChunkRow
                     key={chunk.chunk_id}
-                    className="markdown-section cursor-pointer"
-                    data-chunk-id={chunk.chunk_id}
-                    style={{
-                      borderLeft: `3px solid ${isSelected ? color : "transparent"}`,
-                      background: isSelected ? `${color}0d` : "transparent",
-                    }}
-                  >
-                    {/* Label: plain grey at rest → colored pill when selected */}
-                    <div style={{ marginBottom: 6 }}>
-                      {isSelected ? (
-                        <span style={{
-                          display: "inline-block",
-                          fontSize: 10, fontWeight: 700,
-                          padding: "2px 8px",
-                          borderRadius: 4,
-                          lineHeight: 1.6,
-                          letterSpacing: "0.02em",
-                          background: color,
-                          color: color === "#32D583" ? "#000" : "#fff",
-                        }}>
-                          {badgeLabel}
-                        </span>
-                      ) : (
-                        <span style={{
-                          fontSize: 11, fontWeight: 500,
-                          color: "var(--al-subtle)",
-                          letterSpacing: "0.01em",
-                        }}>
-                          {badgeLabel}
-                        </span>
-                      )}
-                    </div>
-                    <div
-                      className="md-content"
-                      style={isMediaChunk ? {
-                        fontStyle: "italic",
-                        fontSize: "0.82em",
-                        color: "var(--al-text-secondary)",
-                        borderLeft: `2px solid ${color}40`,
-                        paddingLeft: 8,
-                        marginTop: 2,
-                      } : undefined}
-                      dangerouslySetInnerHTML={{ __html: sanitizeHtml(displayHtml) }}
-                    />
-                  </div>
+                    chunk={chunk}
+                    badgeLabel={badgeLabel}
+                    isSelected={selectedChunkId === chunk.chunk_id}
+                    search={searchDebounced}
+                  />
                 );
               })}
 
