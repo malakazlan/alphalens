@@ -22,6 +22,11 @@ import db
 import storage_client
 import qdrant_store
 import embeddings
+from observability import init_sentry
+
+# Initialize Sentry before any FastAPI / external client code so its
+# integrations can hook in. No-op when SENTRY_DSN_BACKEND is unset.
+init_sentry()
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)

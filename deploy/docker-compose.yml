@@ -23,6 +23,11 @@ services:
     restart: unless-stopped
     env_file:
       - /opt/alphalens/.env
+    environment:
+      # Set by deploy.sh from `git rev-parse --short HEAD`. Overrides any
+      # SENTRY_RELEASE in .env so the running container always reflects the
+      # commit it was built from.
+      - SENTRY_RELEASE=${SENTRY_RELEASE:-}
     networks:
       - alphalens_net
     expose:
@@ -50,6 +55,8 @@ services:
         condition: service_healthy
     env_file:
       - /opt/alphalens/.env
+    environment:
+      - SENTRY_RELEASE=${SENTRY_RELEASE:-}
     command: ["arq", "worker.WorkerSettings"]
     networks:
       - alphalens_net

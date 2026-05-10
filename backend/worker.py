@@ -12,6 +12,11 @@ from typing import Any
 from dotenv import load_dotenv
 load_dotenv(dotenv_path=Path(__file__).parent / ".env", override=True)
 
+# Init Sentry as early as possible after env is loaded so unhandled
+# exceptions during imports / startup are captured. No-op when DSN unset.
+from observability import init_sentry
+init_sentry()
+
 from arq import create_pool
 from arq.connections import RedisSettings
 

@@ -39,6 +39,12 @@ class Settings(BaseSettings):
     # CORS — frontend origin
     FRONTEND_URL: str = "http://localhost:3000"
 
+    # Sentry — error tracking + traces. Optional (silent no-op when DSN is unset).
+    SENTRY_DSN_BACKEND: Optional[str] = None
+    SENTRY_ENVIRONMENT: str = "development"
+    SENTRY_TRACES_SAMPLE_RATE: float = 0.1
+    SENTRY_RELEASE: Optional[str] = None
+
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 
 

@@ -25,6 +25,11 @@ cd "$ROOT/src"
 git fetch origin main --quiet
 git reset --hard origin/main
 
+# Tag this deploy so Sentry can attribute errors to a specific commit.
+# Exported into the environment so docker-compose substitutes ${SENTRY_RELEASE}.
+export SENTRY_RELEASE="$(git rev-parse --short HEAD)"
+echo "→ release tag: $SENTRY_RELEASE"
+
 echo "→ rebuilding image"
 docker compose -f "$COMPOSE" --env-file "$ENV_FILE" build --pull
 

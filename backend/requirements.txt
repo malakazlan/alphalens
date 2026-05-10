@@ -47,3 +47,6 @@ slowapi>=0.1.9
 # FinBot - Market Data
 yfinance>=0.2.36
 finnhub-python>=2.4.19
+
+# Observability
+sentry-sdk[fastapi]>=2.18.0,<3.0.0
