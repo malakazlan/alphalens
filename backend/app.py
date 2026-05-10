@@ -17,7 +17,11 @@ from auth import sign_up, sign_in, sign_out, get_user, reset_password, verify_jw
 from schemas import (
     SignUpRequest, SignInRequest, AuthResponse, ForgotPasswordRequest,
     HashCheckRequest, ChatRequest, ReportGenerateRequest, RegenerateSectionRequest,
+    HoldingCreate, HoldingUpdate,
+    ProfileUpsert, WatchlistCreate, WatchlistUpdate,
+    ConversationCreate, ConversationUpdate, FinBotMessageSend,
 )
+import finbot_repo
 import db
 import storage_client
 import qdrant_store
@@ -37,7 +41,27 @@ _oai = openai.OpenAI(api_key=settings.OPENAI_API_KEY)
 # ── processed.json in-memory cache (keyed by doc_id, 10-min TTL) ─────────────
 import time as _time
 _DOC_CACHE: dict[str, tuple[float, str, dict]] = {}  # doc_id → (expires, markdown, grounding)
-_DOC_CACHE_TTL = 600  # seconds
+_DOC_CACHE_TTL  = 600   # seconds — same value for all per-doc caches below
+_DOC_CACHE_MAX  = 64    # hard ceiling on per-process per-cache entries.
+                        # Without this, a worker that touches many docs in a
+                        # window shorter than TTL grows RAM unbounded. With it,
+                        # we evict the oldest TTL-stale entry plus the LRU
+                        # entry when over capacity.
+
+
+def _evict(cache: dict) -> None:
+    """Drop expired entries; if still over capacity, drop the oldest."""
+    now = _time.time()
+    stale = [k for k, v in cache.items() if v[0] < now]
+    for k in stale:
+        del cache[k]
+    if len(cache) > _DOC_CACHE_MAX:
+        # Evict by oldest expiry — approximates LRU since every read/write
+        # bumps the entry's expiry forward.
+        oldest = sorted(cache.items(), key=lambda kv: kv[1][0])
+        for k, _v in oldest[: len(cache) - _DOC_CACHE_MAX]:
+            del cache[k]
+
 
 def _get_doc_cache(doc_id: str):
     entry = _DOC_CACHE.get(doc_id)
@@ -47,10 +71,7 @@ def _get_doc_cache(doc_id: str):
 
 def _set_doc_cache(doc_id: str, markdown: str, grounding: dict):
     _DOC_CACHE[doc_id] = (_time.time() + _DOC_CACHE_TTL, markdown, grounding)
-    now = _time.time()
-    stale = [k for k, v in _DOC_CACHE.items() if v[0] < now]
-    for k in stale:
-        del _DOC_CACHE[k]
+    _evict(_DOC_CACHE)
 
 
 # ── Qdrant chunk cache (keyed by doc_id, same 10-min TTL) ────────────────────
@@ -64,10 +85,66 @@ def _get_chunk_cache(doc_id: str):
 
 def _set_chunk_cache(doc_id: str, chunks: list):
     _CHUNK_CACHE[doc_id] = (_time.time() + _DOC_CACHE_TTL, chunks)
-    now = _time.time()
-    stale = [k for k, v in _CHUNK_CACHE.items() if v[0] < now]
-    for k in stale:
-        del _CHUNK_CACHE[k]
+    _evict(_CHUNK_CACHE)
+
+
+# ── Derived-structure caches (Step B of the multi-turn cost work) ────────────
+# `full_context`, `cell_lookup`, `cell_section_map`, and `table_grids` are pure
+# functions of the immutable parsed-doc artefacts. Re-running them on every
+# chat turn was ~50ms of wasted CPU per turn AND ~30 lines of duplicate code
+# at every call site. Cache them per doc — same TTL/capacity policy as above.
+_DERIVED_CACHE: dict[str, tuple[float, dict]] = {}  # doc_id → (expires, derived-dict)
+
+
+def _get_derived(doc_id: str) -> dict | None:
+    entry = _DERIVED_CACHE.get(doc_id)
+    if entry and _time.time() < entry[0]:
+        return entry[1]
+    return None
+
+
+def _set_derived(doc_id: str, derived: dict) -> None:
+    _DERIVED_CACHE[doc_id] = (_time.time() + _DOC_CACHE_TTL, derived)
+    _evict(_DERIVED_CACHE)
+
+
+def _build_derived(
+    doc_id: str,
+    full_markdown: str,
+    grounding_dict: dict,
+    all_chunks: list,
+) -> dict:
+    """One-shot computation of every per-doc structure the chat path needs.
+
+    Cached per doc_id. Re-uses results across turns, across users, across
+    questions — the inputs are immutable post-parse, the outputs are too.
+    Returns a dict with: full_context, cell_lookup, cell_section_map,
+    table_grids. Caller decides which it needs."""
+    cached = _get_derived(doc_id)
+    if cached is not None:
+        return cached
+
+    full_context = _build_full_context(full_markdown, qdrant_chunks=all_chunks)
+
+    cell_lookup     = _build_cell_text_lookup(full_markdown)
+    cell_section_map: dict = {}
+    if not cell_lookup and full_markdown and "<td" not in full_markdown.lower():
+        cell_lookup, cell_section_map = _build_plaintext_cell_lookup(
+            full_markdown, grounding_dict, all_chunks,
+        )
+    elif cell_lookup:
+        cell_section_map = _build_cell_section_map(grounding_dict, all_chunks)
+
+    table_grids = _build_table_grids(full_markdown)
+
+    derived = {
+        "full_context":     full_context,
+        "cell_lookup":      cell_lookup,
+        "cell_section_map": cell_section_map,
+        "table_grids":      table_grids,
+    }
+    _set_derived(doc_id, derived)
+    return derived
 
 
 def _get_user_key(request: Request) -> str:
@@ -149,6 +226,134 @@ _UNIT_MAP = {
     "billion":  1_000_000_000, "billions": 1_000_000_000,
 }
 
+# ─── Citation contract helpers ───────────────────────────────────────────────
+# These constants and helpers enforce the citation invariants that the chat
+# pipeline relies on: a citation chip should never disagree with the answer's
+# claimed provenance. Header cells, year cells, and rows whose label is
+# unrelated to the question are STRUCTURALLY INVALID as citation targets —
+# we reject them rather than penalise them via score arithmetic. This keeps
+# the matcher's behaviour predictable across phrasing changes in the LLM.
+
+# Bare 4-digit year (1900-2099). When this matches a NORMALISED candidate,
+# we treat it as a qualifier (period filter) not as an answer value. Real
+# financial figures coincide with this range only as a very rare accident,
+# and even then they appear with a thousands separator in source documents.
+_BARE_YEAR_RE = re.compile(r"^(19|20)\d{2}$")
+
+# Stopwords pulled from question and row-label tokens before intersection.
+# Kept tight on purpose — financial-domain words like "net", "operating",
+# "ordinary", "comprehensive" are signal, not noise.
+_QUESTION_STOPWORDS = {
+    "a", "an", "the", "of", "in", "on", "at", "for", "to", "by", "with",
+    "from", "as", "is", "are", "was", "were", "be", "been", "being",
+    "and", "or", "but", "if", "then", "than", "that", "this", "these",
+    "those", "it", "its", "what", "who", "when", "where", "which", "why",
+    "how", "do", "does", "did", "can", "could", "would", "should", "may",
+    "might", "shall", "will", "give", "show", "tell", "me", "you", "us",
+    "we", "i", "summary", "summarize", "summarise", "please", "kindly",
+    "year", "years", "ended", "ending", "june", "december", "january",
+    "february", "march", "april", "may", "july", "august", "september",
+    "october", "november", "30", "31",
+}
+
+# Section synonym map — maps user-phrasing to a canonical section bucket.
+# Both directions: question-side phrasing and section_header text are run
+# through the same map so a question about "operating cash" routes to a
+# header that says "CASH FLOW STATEMENT" and vice-versa. Order matters:
+# the longer / more specific aliases come first so we don't shadow them
+# with a shorter alias from a different bucket.
+_SECTION_ALIASES: dict[str, tuple[str, ...]] = {
+    "cash flow": (
+        "statement of cash flows", "statement of cash flow",
+        "cash flow statement", "cash flow",
+        "cash flows", "cash from operations",
+        "cash generated from operations", "cash generated from operation",
+        "operating cash", "investing activities", "financing activities",
+    ),
+    "income statement": (
+        "statement of operations", "statements of operations",
+        "income statement", "profit and loss", "profit & loss",
+        "earnings per share", "diluted earnings per share",
+        "basic earnings per share",
+        "revenue", "net revenue", "operating income", "operating profit",
+        "gross profit", "gross margin", "net income", "net loss",
+    ),
+    "balance sheet": (
+        "balance sheet", "balance sheets",
+        "statement of financial position",
+        "total assets", "total liabilities", "current assets",
+        "current liabilities", "long-term debt",
+        "shareholders' equity", "shareholders equity",
+        "stockholders' equity", "stockholders equity",
+        "share capital", "ordinary shares", "preferred stock",
+    ),
+    "changes in equity": (
+        "statement of changes in equity", "changes in equity",
+        "retained earnings", "soce",
+    ),
+    "comprehensive income": (
+        "comprehensive income", "other comprehensive income", "oci",
+    ),
+    "notes": (
+        "notes to consolidated financial statements",
+        "notes to the consolidated financial statements",
+        "notes to financial statements", "notes to the financial statements",
+        "accounting policies", "summary of significant accounting policies",
+    ),
+}
+
+
+def _tokenise(text: str) -> set[str]:
+    """Lowercase, strip non-alpha, drop stopwords, return content tokens.
+    Used for question vs row-label intersection."""
+    if not text:
+        return set()
+    raw = re.findall(r"[a-zA-Z]{2,}", text.lower())
+    return {w for w in raw if w not in _QUESTION_STOPWORDS}
+
+
+def _section_buckets(text: str) -> set[str]:
+    """Return the canonical-section keys whose aliases appear in `text`.
+    Same lookup is used on the question (to choose scope) and on each
+    section_header (to test membership). Symmetric on both sides."""
+    if not text:
+        return set()
+    t = text.lower()
+    out: set[str] = set()
+    for canonical, aliases in _SECTION_ALIASES.items():
+        for alias in aliases:
+            if alias in t:
+                out.add(canonical)
+                break
+    return out
+
+
+def _build_header_cell_set(table_grids: dict) -> set[str]:
+    """Cell IDs that are structurally column headers — never valid citation
+    targets. Includes:
+      - every cell in the table's header_row
+      - the year-cell that heads SOCE-style sub-tables (rows[0][0] when
+        the grid carries a `year_label`)"""
+    header_set: set[str] = set()
+    for grid in (table_grids or {}).values():
+        rows = grid.get("rows") or []
+        hr   = grid.get("header_row", 0)
+        if 0 <= hr < len(rows):
+            for cid in rows[hr]:
+                if cid:
+                    header_set.add(cid)
+        # SOCE: year_label cell at [0][0] is also structurally a header
+        if grid.get("year_label") and rows and rows[0]:
+            header_set.add(rows[0][0])
+    return header_set
+
+
+def _is_year_only_cell_text(text: str) -> bool:
+    """A cell whose visible text is JUST a year — header-equivalent."""
+    if not text:
+        return False
+    return bool(_BARE_YEAR_RE.match(text.strip()))
+
 
 def _keyword_search_fallback(markdown: str, query: str, top_k: int = 5) -> str:
     """Keyword search on raw markdown — used when Qdrant is unreachable."""
@@ -183,6 +388,14 @@ def _build_full_context(markdown_text: str, qdrant_chunks: list = None):
 
     parts = []
     pos = 0
+    # Structural counters for Decision B — surfaced via logger so a regression
+    # in ADE's output (e.g. tables that stop emitting `<td id=>`) is visible
+    # the first time it happens, not after a user reports "not available."
+    stats = {
+        "tables_total":              0,
+        "tables_with_ids":           0,
+        "tables_fallback_plaintext": 0,
+    }
 
     while pos < len(raw_md):
         anchor_m = _ANCHOR_RE.search(raw_md, pos)
@@ -232,7 +445,9 @@ def _build_full_context(markdown_text: str, qdrant_chunks: list = None):
                 table_close_idx = len(raw_md)
             table_html = raw_md[table_m.start():table_close_idx + len("</table>")]
 
+            stats["tables_total"] += 1
             table_lines = [f"[Table {table_id}]"]
+            id_rows_emitted = 0
             for tr_m in _TR_RE.finditer(table_html):
                 cells = _TD_WITH_ID_RE.findall(tr_m.group(1))
                 if not cells:
@@ -245,6 +460,24 @@ def _build_full_context(markdown_text: str, qdrant_chunks: list = None):
                     else:
                         row_parts.append(f"[{cell_id}]")
                 table_lines.append("| " + " | ".join(row_parts) + " |")
+                id_rows_emitted += 1
+
+            # Fix 5: plain-text fallback for tables that ADE emitted without
+            # `<td id=>` markup. Without this branch the LLM would see only
+            # the `[Table N]` placeholder and respond "not available" for
+            # values that are clearly in the document. Citations on these
+            # rows fall back to chunk-level matching downstream — acceptable
+            # trade-off vs. silently muting the table content.
+            if id_rows_emitted == 0:
+                stats["tables_fallback_plaintext"] += 1
+                for tr_m in _TR_RE.finditer(table_html):
+                    row_text = _HTML_TAG_RE.sub("", tr_m.group(1)).strip()
+                    row_text = re.sub(r"\s+", " ", row_text)
+                    if row_text:
+                        table_lines.append(f"| {row_text} |")
+            else:
+                stats["tables_with_ids"] += 1
+
             parts.append("\n".join(table_lines))
             pos = table_close_idx + len("</table>")
 
@@ -275,6 +508,17 @@ def _build_full_context(markdown_text: str, qdrant_chunks: list = None):
                 section_parts.append(plain)
         if section_parts:
             result = "\n".join(section_parts)
+
+    # Decision B — emit a structural canary every time we build context.
+    # If `tables_fallback_plaintext > 0` it means at least one table reached
+    # the LLM without cell-precision citation IDs (Fix 5 path). That's a
+    # working state, not a failure — but we want it visible in logs so a
+    # rise in this counter tells us ADE's output format has shifted.
+    logger.info(
+        "full_context: tables_total=%d with_ids=%d fallback_plaintext=%d chars=%d",
+        stats["tables_total"], stats["tables_with_ids"],
+        stats["tables_fallback_plaintext"], len(result),
+    )
 
     return result
 
@@ -944,14 +1188,23 @@ def _extract_answer_values(answer_text: str) -> list:
 
     # 2. Plain numbers (no commas) — at least 3 digits to avoid noise
     # Skip matches that overlap with already-extracted comma-separated numbers
+    # AND skip bare 4-digit years (Fix 1): the answer text routinely names
+    # the period the figure relates to (e.g. "for the year ended June 30,
+    # 2016, ..."), and treating that 2016 as an answer value matches header
+    # cells like "2016 (Rupees in" with high confidence — citation drift.
+    # Real financial figures ≥ 1000 carry a thousands separator in source
+    # documents, so the rule "with comma → value, without → year" holds.
     for m in re.finditer(r'\b\d{3,}(?:\.\d+)?\b', answer_text):
         if _overlaps_existing(m.start(), m.end()):
             continue
         v = m.group()
         n = _normalise_for_match(v)
-        if n not in seen_norm:
-            seen_norm.add(n)
-            values.append((v, n))
+        if n in seen_norm:
+            continue
+        if _BARE_YEAR_RE.match(n):
+            continue
+        seen_norm.add(n)
+        values.append((v, n))
 
     # 3. Full date patterns — "Friday, October 10, 2025" etc.
     for m in re.finditer(
@@ -979,25 +1232,16 @@ def _extract_answer_values(answer_text: str) -> list:
 
 
 def _extract_section_keywords(text: str) -> set:
-    """Extract section-related keywords from text for section matching."""
-    keywords = set()
-    section_patterns = [
-        r'statement\s+of\s+[\w\s]+',
-        r'balance\s+sheet',
-        r'cash\s+flow',
-        r'income\s+statement',
-        r'profit\s+(?:and|&)\s+loss',
-        r'changes?\s+in\s+equity',
-        r'financial\s+position',
-        r'comprehensive\s+income',
-        r'notes?\s+to\s+(?:the\s+)?financial',
-    ]
-    text_lower = text.lower()
-    for pat in section_patterns:
-        m = re.search(pat, text_lower)
-        if m:
-            keywords.add(m.group().strip())
-    return keywords
+    """Return canonical-section keys whose aliases appear in `text`.
+
+    Used symmetrically: against the question (to choose which sections are
+    in scope) and against each chunk's section_header (to test membership).
+    Replacement for the original literal-pattern matcher — it failed on
+    questions like "cash generated from operations?" because that phrase
+    didn't contain the exact bigram "cash flow", so q_sections came back
+    empty and section scoping never engaged.
+    """
+    return _section_buckets(text)
 
 
 def _find_parent_table(cell_id: str, grounding_dict: dict, table_index: list) -> int:
@@ -1068,14 +1312,28 @@ def _find_all_matching_cells(
     question_qualifiers: set = None,
     cell_section_map: dict = None,
     question_text: str = "",
+    table_grids: dict = None,
 ) -> list:
-    """Find ALL cells matching the answer values — Landing.AI approach.
+    """Resolve LLM answer values to specific cell IDs for citation chips.
 
-    Three-stage algorithm:
-    1. Extract values from the LLM answer, filter out question qualifiers
-    2. Scope search by section if question mentions one
-    3. Value-match within scope, dedup by table instance, gate on confidence
-    4. Fall back to LLM-cited IDs only if value matching found nothing
+    Decision A invariants enforced here (HARD GATES, not score arithmetic):
+
+      - Header-row cells, year-only cells, and cells whose row label
+        shares zero non-stopword tokens with the question are STRUCTURALLY
+        INVALID as citations. They are removed from the candidate set
+        before value matching, not penalised after the fact. A score
+        adjustment can never trump a wrong row label, but a gate can.
+
+      - Year values appearing in the answer are NEVER answer values. They
+        are filters/qualifiers — see Fix 1 in `_extract_answer_values`.
+
+    Phases:
+      1. Extract answer values, filter out question qualifiers + bare years
+      2. Scope candidate set to question's section bucket (alias-aware)
+      3. STRUCTURAL GATES (Decision A): drop header cells, year-only cells,
+         and cells whose row label is unrelated to the question
+      4. Value-match remaining cells, dedup per (table, value), drop scores < 60
+      5. Fall back to LLM-cited IDs only if value matching found nothing
     """
     # Strip [[cell-id]] citations before value extraction — digits inside
     # citation markers (e.g. [[0-800]]) would otherwise be falsely extracted
@@ -1091,6 +1349,10 @@ def _find_all_matching_cells(
 
     # ── Build table index for dedup ──
     table_index = _build_table_index(grounding_dict, cell_section_map or {})
+
+    # ── Decision A — structural-invalid set ──────────────────────────────
+    # Cells we will not cite no matter how well their text matches.
+    header_cells = _build_header_cell_set(table_grids or {})
 
     # ── Determine search scope: section-scoped or full ──
     q_sections = set()
@@ -1115,6 +1377,31 @@ def _find_all_matching_cells(
     else:
         scope_cells = cell_lookup
 
+    # ── Decision A — apply structural rejections to the candidate set ────
+    # Header-row cells and year-only cells are dropped here, before any
+    # scoring happens. We don't penalise — we remove. This is the contract.
+    if header_cells:
+        scope_cells = {
+            cid: txt for cid, txt in scope_cells.items()
+            if cid not in header_cells and not _is_year_only_cell_text(txt)
+        }
+    else:
+        scope_cells = {
+            cid: txt for cid, txt in scope_cells.items()
+            if not _is_year_only_cell_text(txt)
+        }
+
+    # ── Decision A / Fix 3 — row-label gate ──────────────────────────────
+    # Build the question's content-token set once. A candidate cell's row
+    # label must share at least one content token with the question OR with
+    # the answer (the answer often introduces the row name explicitly).
+    # Skip the gate when (a) we have no table_grids, (b) the question has
+    # no content tokens after stopword strip ("hello", "give summary"), or
+    # (c) the cell lives outside any known table grid (e.g. text chunks).
+    question_tokens = _tokenise(question_text)
+    answer_tokens   = _tokenise(clean_answer)
+    relevance_tokens = question_tokens | answer_tokens
+
     matched_cells = []
     seen_ids = set()
 
@@ -1138,12 +1425,41 @@ def _find_all_matching_cells(
             elif len(cell_norm) >= 5 and cell_norm in norm_val:
                 score = 80
 
-            if score > 0:
-                seen_ids.add(cell_id)
-                matched_cells.append((cell_id, cell_text, score, norm_val))
-                break
+            if score == 0:
+                continue
 
-    # ── Section scoring: bonus/penalty for section match ──
+            # Row-label gate (Decision A). Only applies when question has
+            # specific tokens AND the cell sits inside a known grid (so we
+            # actually know its row label). Cells without grid context are
+            # passed through — they're typically text chunks, not table data.
+            if question_tokens and table_grids:
+                grid = _find_grid_for_cell(cell_id, table_grids)
+                if grid is not None:
+                    cross = _get_cross_cells(grid, cell_id)
+                    row_label_id   = cross.get("row_label_id")
+                    group_label_id = cross.get("group_label_id")
+                    row_label_text = cell_lookup.get(row_label_id or "", "")
+                    grp_label_text = cell_lookup.get(group_label_id or "", "")
+                    label_tokens = _tokenise(row_label_text) | _tokenise(grp_label_text)
+                    # Reject when label exists and has zero overlap with the
+                    # question/answer. If the cell IS its own row label
+                    # (rare — e.g. answer cites a label cell directly), keep.
+                    if label_tokens and not (label_tokens & relevance_tokens):
+                        continue
+                    # Boost when row label aligns with the question itself
+                    # (not just the answer). This biases ties toward the cell
+                    # whose row label was directly asked about.
+                    if label_tokens & question_tokens:
+                        score += 20
+
+            seen_ids.add(cell_id)
+            matched_cells.append((cell_id, cell_text, score, norm_val))
+            break
+
+    # ── Section scoring: keep the bonus/penalty post-gate ──
+    # The structural gates have already removed clearly-wrong candidates.
+    # Section match still helps break ties between sibling tables that
+    # legitimately survive (e.g. two consecutive years on the same page).
     if q_sections and cell_section_map:
         rescored = []
         for cell_id, cell_text, score, val in matched_cells:
@@ -1180,13 +1496,20 @@ def _find_all_matching_cells(
     matched_cells = matched_cells_3
 
     # ── Phase 2: LLM-cited IDs as fallback (only if Phase 1 found nothing) ──
+    # Even here we apply the structural-invalid gate — if GPT cited a header
+    # cell, we still don't surface it as a citation chip. Adjacent-cell
+    # rescue path is similarly gated.
     if not matched_cells:
         for cid in llm_cited_ids:
             if cid in seen_ids:
                 continue
             if cid not in grounding_dict:
                 continue
+            if cid in header_cells:
+                continue  # Decision A — never cite a header cell
             cell_text = cell_lookup.get(cid, "")
+            if _is_year_only_cell_text(cell_text):
+                continue
             if cell_text.strip():
                 seen_ids.add(cid)
                 matched_cells.append((cid, cell_text, 70))
@@ -1197,10 +1520,10 @@ def _find_all_matching_cells(
                     prefix, seq = parts[0], int(parts[1])
                     for offset in [1, -1, 2, -2]:
                         adj_id = f"{prefix}-{seq + offset}"
-                        if adj_id in seen_ids:
+                        if adj_id in seen_ids or adj_id in header_cells:
                             continue
                         adj_text = cell_lookup.get(adj_id, "")
-                        if not adj_text.strip():
+                        if not adj_text.strip() or _is_year_only_cell_text(adj_text):
                             continue
                         adj_norm = _normalise_for_match(adj_text)
                         for _, norm_val in answer_values:
@@ -1458,6 +1781,10 @@ async def upload_document(
     file: UploadFile = File(...),
     sha256_hash: str = Form(...),
     action: str = Form("parse"),
+    # Cost Lever 4: 'core' (default, ~50% cheaper) trims TOC/exhibits/blanks
+    # and runs Extract on a financial-section-only subset. 'full' parses
+    # everything. Lever 0 (classifier) and Lever 2 (cache) always run.
+    parse_scope: str = Form("core"),
 ):
     import os
     ext = os.path.splitext(file.filename or "")[-1].lower()
@@ -1487,6 +1814,9 @@ async def upload_document(
         logger.error(f"Storage upload failed: {e}")
         return JSONResponse(status_code=500, content={"success": False, "error": "Failed to store file"})
 
+    # Normalise parse_scope; anything other than 'full' falls back to 'core'.
+    scope = "full" if parse_scope == "full" else "core"
+
     # Insert document row
     doc = {
         "id": doc_id,
@@ -1497,7 +1827,7 @@ async def upload_document(
         "status": "queued",
         "progress": 0,
         "status_message": "Waiting for processing",
-        "metadata": {"action": action},
+        "metadata": {"action": action, "parse_scope": scope},
     }
     await asyncio.to_thread(db.insert_document, doc)
 
@@ -2073,12 +2403,15 @@ async def chat_document(
             except Exception:
                 all_chunks = []
 
-        # 3. Decide: full-context or RAG
+        # 3. Decide: full-context or RAG. Use the per-doc derived cache for
+        # full_context — same input markdown yields the same string, so we
+        # only pay the build cost once per doc per TTL window.
+        derived = _build_derived(doc_id, full_markdown, grounding_dict, all_chunks)
+        full_ctx = derived["full_context"]
+
         context = None
         results = []  # Qdrant results, only populated in RAG mode
         use_full_context = False
-
-        full_ctx = _build_full_context(full_markdown, qdrant_chunks=all_chunks)
         if full_ctx is not None:
             context = full_ctx
             use_full_context = True
@@ -2099,12 +2432,19 @@ async def chat_document(
                 context = _keyword_search_fallback(full_markdown, message)
                 results = []
 
-        # 4. Build messages with citation instructions
-        system_msg = (
+        # 4. Build messages — DOCUMENT CONTEXT FIRST in the system block.
+        #
+        # OpenAI prompt caching engages automatically when a request shares a
+        # ≥1024-token prefix with a recent request. By placing the (large,
+        # stable) document context inside the system message and the (small,
+        # variable) question/history afterwards, turns 2..N within ~5 minutes
+        # reuse the cached system prefix and pay 50% on those input tokens.
+        # The token break-even is roughly turn-2 of any doc above ~10 pages.
+        rules = (
             "You are a financial document analyst reasoning with a structured financial document.\n"
             "Give precise, evidence-grounded answers — not generic financial knowledge.\n\n"
             "Rules:\n"
-            "1. Answer only from the document context provided. If absent, say 'not available in this document.'\n"
+            "1. Answer only from the document context above. If absent, say 'not available in this document.'\n"
             "2. Match response depth to the question:\n"
             "   - Direct lookup ('what is X'): one value, one or two sentences.\n"
             "   - Comparison ('compare X vs Y' / 'difference'): both values, absolute + % change.\n"
@@ -2122,14 +2462,16 @@ async def chat_document(
             "Section awareness: always cite from the section that matches the question "
             "(e.g. 'Statement of Financial Position', 'Statement of Changes in Equity', 'Cash Flows')."
         )
+        # Order matters for prompt caching: document context BEFORE rules.
+        # The doc context dominates the byte count and is identical on every
+        # turn for a given doc — that's the prefix OpenAI caches.
+        system_msg = f"Document context:\n\n{context}\n\n---\n\n{rules}"
+
         messages = [{"role": "system", "content": system_msg}]
         for h in history[-6:]:
             if h.get("role") in ("user", "assistant") and h.get("content"):
                 messages.append({"role": h["role"], "content": h["content"]})
-        messages.append({
-            "role": "user",
-            "content": f"Document context:\n\n{context}\n\n---\n\nQuestion: {message}",
-        })
+        messages.append({"role": "user", "content": message})
 
         # 5. Stream LLM response with citation stripping
         full_answer = ""
@@ -2198,17 +2540,18 @@ async def chat_document(
         if pending:
             yield f"data: {json.dumps({'type': 'delta', 'text': pending})}\n\n"
 
-        # 6. Application-level value matching (Landing.AI approach)
-        cell_lookup = _build_cell_text_lookup(full_markdown)
-        cell_section_map: dict = {}
+        # 6. Application-level value matching (Landing.AI approach).
+        # Pull cell_lookup / cell_section_map / table_grids from the per-doc
+        # derived cache populated above. These don't change between turns
+        # for a given doc, so rebuilding them per-turn was pure waste.
+        cell_lookup      = dict(derived["cell_lookup"])      # copy — RAG path may augment it below
+        cell_section_map = dict(derived["cell_section_map"]) # copy — same reason
+        table_grids      = derived["table_grids"]            # read-only, share
 
-        if not cell_lookup and full_markdown and '<td' not in full_markdown.lower():
-            cell_lookup, cell_section_map = _build_plaintext_cell_lookup(
-                full_markdown, grounding_dict, all_chunks
-            )
-        elif cell_lookup:
-            cell_section_map = _build_cell_section_map(grounding_dict, all_chunks)
-
+        # RAG-only augmentation: if cell_lookup came back empty (e.g. doc
+        # didn't fit full-context and Qdrant search returned table chunks
+        # with `<td id=>` markup that wasn't in the cached markdown), pull
+        # cells out of the live search results.
         if not cell_lookup and results:
             for r in results:
                 p = r.payload
@@ -2218,10 +2561,9 @@ async def chat_document(
                         text = re.sub(r"<[^>]+>", "", chtml).strip()
                         cell_lookup[cid] = text
             if not cell_section_map:
-                cell_section_map = _build_cell_section_map(grounding_dict, [r.payload for r in results if r.payload])
-
-        # Build table grids for row/col/group cross-reference resolution
-        table_grids = _build_table_grids(full_markdown)
+                cell_section_map = _build_cell_section_map(
+                    grounding_dict, [r.payload for r in results if r.payload]
+                )
 
         question_qualifiers = _extract_question_qualifiers(message)
 
@@ -2230,6 +2572,7 @@ async def chat_document(
             question_qualifiers=question_qualifiers,
             cell_section_map=cell_section_map,
             question_text=message,
+            table_grids=table_grids,
         )
 
         # Build source chunks with full cross-cell context
@@ -2297,6 +2640,304 @@ async def chat_document(
 
 # ─── FinBot ───────────────────────────────────────────────────────────────────
 
+async def _load_finbot_context(user_id: str) -> tuple[dict | None, list[dict], int]:
+    """Load profile + watchlist + holding count in one shot. Each piece is
+    optional — missing data yields a generic-but-still-useful prompt."""
+    profile  = await asyncio.to_thread(finbot_repo.get_profile, user_id)
+    watch    = await asyncio.to_thread(finbot_repo.list_watchlist, user_id)
+    holdings = await asyncio.to_thread(finbot_repo.list_holdings, user_id)
+    return profile, watch, len(holdings)
+
+
+def _build_finbot_system_prompt(
+    profile: dict | None,
+    watch_rows: list[dict],
+    holding_count: int,
+) -> str:
+    """Compose the FinBot system message from saved user state. Keep tight —
+    every token here is paid on every chat turn."""
+    base = (
+        "You are FinBot, an expert financial markets assistant. "
+        "Tools available: quotes, fundamentals, price history, news, "
+        "comparisons, earnings calendar, dividends, insider trades, "
+        "options chain, technical indicators (RSI/MACD/SMAs), US macro "
+        "(Fed funds, CPI, unemployment, yields), the user's saved portfolio "
+        "(get_portfolio_pnl), and watchlist mutation (add_to_watchlist). "
+        "Always use tools to fetch real data — never guess prices or figures. "
+        "When the user asks about 'my portfolio', 'my positions', or any "
+        "ticker they may own, call get_portfolio_pnl first. "
+        "Use get_macro_indicators when the user asks about rates, inflation, "
+        "recession risk, or yield curves. Use get_technical_indicators when "
+        "they ask about RSI, MACD, moving averages, or oversold/overbought. "
+        "Be concise and precise. Format numbers clearly "
+        "(e.g. $1.23T, 15.4%, $234.56). "
+        "When showing multiple data points, use a clean structured format."
+    )
+
+    parts = [base]
+
+    if profile:
+        risk    = profile.get("risk_tolerance")
+        horizon = profile.get("time_horizon")
+        goals   = profile.get("goals") or []
+        ccy     = profile.get("currency_preference") or "USD"
+        bits = []
+        if risk:    bits.append(f"risk tolerance: {risk}")
+        if horizon: bits.append(f"time horizon: {horizon}")
+        if goals:   bits.append(f"goals: {', '.join(goals)}")
+        if ccy:     bits.append(f"preferred currency: {ccy}")
+        if bits:
+            parts.append("User profile — " + "; ".join(bits) +
+                         ". Tune your tone and recommendations to match.")
+
+    if watch_rows:
+        tickers = ", ".join(w["ticker"] for w in watch_rows[:20])
+        parts.append(f"User watchlist: {tickers}. Reference these proactively "
+                     f"if they're relevant (earnings this week, big moves, etc).")
+
+    if holding_count > 0:
+        parts.append(f"User has {holding_count} open holdings. "
+                     f"Use get_portfolio_pnl when 'my portfolio' is implied.")
+
+    return " ".join(parts)
+
+
+@app.post("/api/finbot/conversations/{conversation_id}/messages")
+@limiter.limit("20/minute")
+async def finbot_conversation_messages(
+    conversation_id: str,
+    request: Request,
+    body: FinBotMessageSend,
+    current_user: dict = Depends(get_current_user),
+):
+    """Persistent multi-conversation FinBot. SSE streams the assistant reply
+    while writing the user + assistant messages to `finbot_messages`."""
+    import finbot as fb
+
+    user_id = current_user["id"]
+
+    # Verify conversation ownership before doing any LLM work.
+    convo = await asyncio.to_thread(finbot_repo.get_conversation, conversation_id, user_id)
+    if convo is None:
+        raise HTTPException(status_code=404, detail="Conversation not found.")
+
+    user_message = body.message.strip()
+    if not user_message:
+        raise HTTPException(status_code=400, detail="Message is empty.")
+
+    # Compliance pre-filter — refuse banned advice patterns before any LLM
+    # call. `disclaim` cases proceed but with a forced disclaimer footer.
+    import finbot_compliance as compliance
+    compliance_decision = compliance.check_user_message(user_message)
+
+    # Load saved history; on first turn this is empty.
+    prior_messages = await asyncio.to_thread(
+        finbot_repo.list_messages, conversation_id, user_id, limit=40
+    )
+
+    # Persist user message immediately so it's visible if the stream fails.
+    await asyncio.to_thread(
+        finbot_repo.insert_message,
+        conversation_id=conversation_id,
+        user_id=user_id,
+        role="user",
+        content=user_message,
+    )
+
+    # If pre-filter refused, persist + stream a refusal and return without
+    # invoking the LLM. Cheap, deterministic, audit-friendly.
+    if compliance_decision.action == "refuse":
+        refusal_text = compliance_decision.message or "I can't help with that request."
+        logger.info(
+            "finbot compliance refusal: user=%s rule=%s",
+            user_id, compliance_decision.reason,
+        )
+        await asyncio.to_thread(
+            finbot_repo.insert_message,
+            conversation_id=conversation_id,
+            user_id=user_id,
+            role="assistant",
+            content=refusal_text,
+        )
+        await asyncio.to_thread(
+            finbot_repo.touch_conversation, conversation_id, user_id
+        )
+
+        async def refuse_stream():
+            for word in refusal_text.split(" "):
+                yield f"data: {json.dumps({'type': 'delta', 'text': word + ' '})}\n\n"
+            yield f"data: {json.dumps({'type': 'done'})}\n\n"
+
+        return StreamingResponse(
+            refuse_stream(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
+    # Auto-title on first user turn (default title = "New conversation").
+    is_first_user_message = not any(m.get("role") == "user" for m in prior_messages)
+    if is_first_user_message and (convo.get("title") in (None, "", "New conversation")):
+        snippet = " ".join(user_message.split()[:6])[:80] or "New conversation"
+        await asyncio.to_thread(
+            finbot_repo.update_conversation, conversation_id, user_id, {"title": snippet}
+        )
+
+    profile, watch_rows, holding_count = await _load_finbot_context(user_id)
+    system_msg = _build_finbot_system_prompt(profile, watch_rows, holding_count)
+
+    # Standing legal footer — appended to the system prompt every turn so the
+    # LLM ends advice-flavoured replies with the disclaimer naturally. The
+    # `disclaim` compliance flag intensifies this for borderline messages.
+    system_msg += (
+        " End any reply that discusses specific tickers, prices, valuations, "
+        "or trade ideas with the line on its own paragraph: "
+        "*Not investment advice — do your own research.*"
+    )
+    if compliance_decision.action == "disclaim":
+        system_msg += " " + compliance.DISCLAIMER_FOOTER + (
+            " Treat this turn as informational only — do not recommend a "
+            "specific entry, exit, leverage level, or strategy."
+        )
+
+    async def generate():
+        # Build LLM context from system + persisted history + new message.
+        messages: list[dict] = [{"role": "system", "content": system_msg}]
+        for m in prior_messages[-20:]:
+            if m.get("role") in ("user", "assistant") and m.get("content"):
+                messages.append({"role": m["role"], "content": m["content"]})
+        messages.append({"role": "user", "content": user_message})
+
+        full_assistant_content = ""
+        invoked_tools: list[dict] = []
+        prompt_tokens = 0
+        completion_tokens = 0
+
+        try:
+            for _ in range(8):
+                if await request.is_disconnected():
+                    logger.info("finbot conversation: client disconnected mid-loop")
+                    return
+                try:
+                    response = await asyncio.to_thread(
+                        lambda: _oai.chat.completions.create(
+                            model="gpt-4o-mini",
+                            messages=messages,
+                            tools=fb.TOOLS,
+                            tool_choice="auto",
+                            temperature=0.2,
+                            max_tokens=1024,
+                        )
+                    )
+                except openai.RateLimitError:
+                    yield f"data: {json.dumps({'type': 'error', 'text': 'Rate limit reached. Please wait a moment and try again.'})}\n\n"
+                    return
+                except Exception as e:
+                    yield f"data: {json.dumps({'type': 'error', 'text': str(e)})}\n\n"
+                    return
+
+                # Accumulate token totals when usage is reported.
+                if getattr(response, "usage", None):
+                    prompt_tokens     += getattr(response.usage, "prompt_tokens", 0) or 0
+                    completion_tokens += getattr(response.usage, "completion_tokens", 0) or 0
+
+                choice = response.choices[0]
+                messages.append(choice.message)
+
+                # No tool calls → stream the final answer.
+                if not choice.message.tool_calls:
+                    content = choice.message.content or ""
+                    full_assistant_content = content
+                    for word in content.split(" "):
+                        if await request.is_disconnected():
+                            return
+                        yield f"data: {json.dumps({'type': 'delta', 'text': word + ' '})}\n\n"
+                    yield f"data: {json.dumps({'type': 'done'})}\n\n"
+
+                    # Persist assistant turn.
+                    await asyncio.to_thread(
+                        finbot_repo.insert_message,
+                        conversation_id=conversation_id,
+                        user_id=user_id,
+                        role="assistant",
+                        content=full_assistant_content,
+                        tool_calls=invoked_tools or None,
+                        tokens_prompt=prompt_tokens,
+                        tokens_completion=completion_tokens,
+                    )
+                    await asyncio.to_thread(
+                        finbot_repo.touch_conversation, conversation_id, user_id
+                    )
+                    return
+
+                # If the LLM emitted content alongside tool calls, surface it
+                # as the agent's "plan" — visible reasoning above the tools.
+                plan_text = (choice.message.content or "").strip()
+                if plan_text:
+                    yield f"data: {json.dumps({'type': 'reasoning', 'text': plan_text})}\n\n"
+
+                # Execute tool calls; invoke user-context tools with user_id.
+                for tc in choice.message.tool_calls:
+                    fn_name = tc.function.name
+                    try:
+                        fn_args = json.loads(tc.function.arguments)
+                    except Exception:
+                        fn_args = {}
+                    fn = fb.TOOL_MAP.get(fn_name)
+                    try:
+                        if fn is None:
+                            tool_result = {"error": f"Unknown tool: {fn_name}"}
+                        elif fn_name in fb.USER_CONTEXT_TOOLS:
+                            fn_args.pop("user_id", None)
+                            tool_result = await asyncio.to_thread(
+                                fn, user_id=user_id, **fn_args
+                            )
+                        else:
+                            tool_result = await asyncio.to_thread(fn, **fn_args)
+                    except Exception as te:
+                        logger.warning(f"FinBot tool {fn_name} failed: {te}")
+                        tool_result = {"error": str(te)}
+
+                    yield f"data: {json.dumps({'type': 'tool', 'name': fn_name, 'args': fn_args})}\n\n"
+                    invoked_tools.append({"name": fn_name, "args": fn_args})
+
+                    # `render_chart` is a UI-side effect tool: when the LLM
+                    # invokes it, we ship the spec to the client as a
+                    # `chart` event, then feed a tiny ack back to the LLM
+                    # so it doesn't re-call.
+                    if fn_name == "render_chart" and isinstance(tool_result, dict) and "spec" in tool_result:
+                        yield f"data: {json.dumps({'type': 'chart', 'spec': tool_result['spec']})}\n\n"
+                        tool_result = {"rendered": True, "note": "Chart was shown to the user."}
+
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc.id,
+                        "content": json.dumps(tool_result),
+                    })
+
+            yield f"data: {json.dumps({'type': 'delta', 'text': 'Sorry, I could not complete the request.'})}\n\n"
+            yield f"data: {json.dumps({'type': 'done'})}\n\n"
+
+            await asyncio.to_thread(
+                finbot_repo.insert_message,
+                conversation_id=conversation_id,
+                user_id=user_id,
+                role="assistant",
+                content="(could not complete the request — agent loop exhausted)",
+                tool_calls=invoked_tools or None,
+                tokens_prompt=prompt_tokens,
+                tokens_completion=completion_tokens,
+            )
+
+        except Exception as e:
+            yield f"data: {json.dumps({'type': 'error', 'text': str(e)})}\n\n"
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
 @app.post("/api/finbot/chat")
 @limiter.limit("20/minute")
 async def finbot_chat(
@@ -2310,13 +2951,12 @@ async def finbot_chat(
     history = [h.model_dump() for h in body.history]
 
     async def generate():
-        system_msg = (
-            "You are FinBot, an expert financial markets assistant. "
-            "You have access to live market data tools: stock quotes, fundamentals, price history, news, and comparisons. "
-            "Always use the tools to fetch real data before answering — never guess prices or figures. "
-            "Be concise and precise. Format numbers clearly (e.g. $1.23T, 15.4%, $234.56). "
-            "When showing multiple data points, use a clean structured format."
-        )
+        # Load the user's saved context once per request — profile, watchlist
+        # tickers, position count. Cheap (~3 quick Postgres reads) and lets
+        # FinBot tailor every answer to "you" instead of generic-user-N.
+        profile, watch_rows, holding_count = await _load_finbot_context(current_user["id"])
+
+        system_msg = _build_finbot_system_prompt(profile, watch_rows, holding_count)
 
         messages = [{"role": "system", "content": system_msg}]
         for h in history[-8:]:
@@ -2327,8 +2967,10 @@ async def finbot_chat(
 
 
         try:
-            # Agentic loop: allow up to 4 tool call rounds
-            for _ in range(4):
+            # Agentic loop: up to 8 tool-call rounds. Multi-step questions
+            # (e.g. "is AAPL overbought given current macro?") need 4-6
+            # tool calls; 8 leaves headroom without unbounded LLM cost.
+            for _ in range(8):
                 if await request.is_disconnected():
                     logger.info("finbot: client disconnected before tool round")
                     return
@@ -2373,7 +3015,16 @@ async def finbot_chat(
                         fn_args = {}
                     fn = fb.TOOL_MAP.get(fn_name)
                     try:
-                        tool_result = await asyncio.to_thread(fn, **fn_args) if fn else {"error": f"Unknown tool: {fn_name}"}
+                        if fn is None:
+                            tool_result = {"error": f"Unknown tool: {fn_name}"}
+                        elif fn_name in fb.USER_CONTEXT_TOOLS:
+                            # Inject user_id; ignore any user-supplied override for safety.
+                            fn_args.pop("user_id", None)
+                            tool_result = await asyncio.to_thread(
+                                fn, user_id=current_user["id"], **fn_args
+                            )
+                        else:
+                            tool_result = await asyncio.to_thread(fn, **fn_args)
                     except Exception as te:
                         logger.warning(f"FinBot tool {fn_name} failed: {te}")
                         tool_result = {"error": str(te)}
@@ -2398,6 +3049,214 @@ async def finbot_chat(
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+# ─── FinBot Holdings (Phase 2 / Slice 1) ─────────────────────────────────────
+
+@app.get("/api/finbot/holdings")
+async def list_holdings_endpoint(current_user: dict = Depends(get_current_user)):
+    holdings = await asyncio.to_thread(finbot_repo.list_holdings, current_user["id"])
+    return {"success": True, "holdings": holdings}
+
+
+@app.post("/api/finbot/holdings")
+async def add_holding_endpoint(
+    body: HoldingCreate,
+    current_user: dict = Depends(get_current_user),
+):
+    try:
+        holding = await asyncio.to_thread(
+            finbot_repo.add_holding, current_user["id"], body.model_dump()
+        )
+    except Exception as e:
+        logger.warning(f"add_holding failed: {e}")
+        raise HTTPException(status_code=400, detail="Could not save holding.")
+    return {"success": True, "holding": holding}
+
+
+@app.patch("/api/finbot/holdings/{holding_id}")
+async def update_holding_endpoint(
+    holding_id: str,
+    body: HoldingUpdate,
+    current_user: dict = Depends(get_current_user),
+):
+    payload = {k: v for k, v in body.model_dump().items() if v is not None}
+    holding = await asyncio.to_thread(
+        finbot_repo.update_holding, holding_id, current_user["id"], payload
+    )
+    if holding is None:
+        raise HTTPException(status_code=404, detail="Holding not found.")
+    return {"success": True, "holding": holding}
+
+
+@app.delete("/api/finbot/holdings/{holding_id}")
+async def delete_holding_endpoint(
+    holding_id: str,
+    current_user: dict = Depends(get_current_user),
+):
+    ok = await asyncio.to_thread(
+        finbot_repo.soft_delete_holding, holding_id, current_user["id"]
+    )
+    if not ok:
+        raise HTTPException(status_code=404, detail="Holding not found.")
+    return {"success": True}
+
+
+# ─── FinBot Profile (Phase 2 / Slice 2) ──────────────────────────────────────
+
+@app.get("/api/finbot/profile")
+async def get_profile_endpoint(current_user: dict = Depends(get_current_user)):
+    profile = await asyncio.to_thread(finbot_repo.get_profile, current_user["id"])
+    if profile is None:
+        raise HTTPException(status_code=404, detail="No profile yet.")
+    return {"success": True, "profile": profile}
+
+
+@app.put("/api/finbot/profile")
+async def upsert_profile_endpoint(
+    body: ProfileUpsert,
+    current_user: dict = Depends(get_current_user),
+):
+    profile = await asyncio.to_thread(
+        finbot_repo.upsert_profile, current_user["id"], body.model_dump()
+    )
+    return {"success": True, "profile": profile}
+
+
+@app.post("/api/finbot/onboarding/complete")
+async def complete_onboarding_endpoint(
+    current_user: dict = Depends(get_current_user),
+):
+    profile = await asyncio.to_thread(
+        finbot_repo.mark_onboarding_complete, current_user["id"]
+    )
+    if profile is None:
+        raise HTTPException(status_code=404, detail="Profile must exist before completing onboarding.")
+    return {"success": True, "profile": profile}
+
+
+# ─── FinBot Watchlist (Phase 2 / Slice 2) ────────────────────────────────────
+
+@app.get("/api/finbot/watchlist")
+async def list_watchlist_endpoint(current_user: dict = Depends(get_current_user)):
+    watchlist = await asyncio.to_thread(finbot_repo.list_watchlist, current_user["id"])
+    return {"success": True, "watchlist": watchlist}
+
+
+@app.post("/api/finbot/watchlist")
+async def add_watch_endpoint(
+    body: WatchlistCreate,
+    current_user: dict = Depends(get_current_user),
+):
+    try:
+        watch = await asyncio.to_thread(
+            finbot_repo.add_watch, current_user["id"], body.model_dump()
+        )
+    except Exception as e:
+        # UNIQUE (user_id, ticker) violation surfaces here as 23505.
+        msg = str(e)
+        if "23505" in msg or "duplicate" in msg.lower():
+            raise HTTPException(status_code=409, detail=f"{body.ticker.upper()} is already on your watchlist.")
+        logger.warning(f"add_watch failed: {e}")
+        raise HTTPException(status_code=400, detail="Could not add to watchlist.")
+    return {"success": True, "watch": watch}
+
+
+@app.patch("/api/finbot/watchlist/{watch_id}")
+async def update_watch_endpoint(
+    watch_id: str,
+    body: WatchlistUpdate,
+    current_user: dict = Depends(get_current_user),
+):
+    payload = {k: v for k, v in body.model_dump().items() if v is not None}
+    watch = await asyncio.to_thread(
+        finbot_repo.update_watch, watch_id, current_user["id"], payload
+    )
+    if watch is None:
+        raise HTTPException(status_code=404, detail="Watchlist entry not found.")
+    return {"success": True, "watch": watch}
+
+
+@app.delete("/api/finbot/watchlist/{watch_id}")
+async def delete_watch_endpoint(
+    watch_id: str,
+    current_user: dict = Depends(get_current_user),
+):
+    ok = await asyncio.to_thread(
+        finbot_repo.delete_watch, watch_id, current_user["id"]
+    )
+    if not ok:
+        raise HTTPException(status_code=404, detail="Watchlist entry not found.")
+    return {"success": True}
+
+
+# ─── FinBot Conversations (Phase 2 / Slice 4) ────────────────────────────────
+
+@app.get("/api/finbot/conversations")
+async def list_conversations_endpoint(
+    current_user: dict = Depends(get_current_user),
+    include_archived: bool = False,
+):
+    rows = await asyncio.to_thread(
+        finbot_repo.list_conversations, current_user["id"],
+        include_archived=include_archived,
+    )
+    return {"success": True, "conversations": rows}
+
+
+@app.post("/api/finbot/conversations")
+async def create_conversation_endpoint(
+    body: ConversationCreate,
+    current_user: dict = Depends(get_current_user),
+):
+    convo = await asyncio.to_thread(
+        finbot_repo.create_conversation, current_user["id"], body.title
+    )
+    return {"success": True, "conversation": convo}
+
+
+@app.get("/api/finbot/conversations/{conversation_id}")
+async def get_conversation_endpoint(
+    conversation_id: str,
+    current_user: dict = Depends(get_current_user),
+):
+    convo = await asyncio.to_thread(
+        finbot_repo.get_conversation, conversation_id, current_user["id"]
+    )
+    if convo is None:
+        raise HTTPException(status_code=404, detail="Conversation not found.")
+    messages = await asyncio.to_thread(
+        finbot_repo.list_messages, conversation_id, current_user["id"]
+    )
+    return {"success": True, "conversation": convo, "messages": messages}
+
+
+@app.patch("/api/finbot/conversations/{conversation_id}")
+async def update_conversation_endpoint(
+    conversation_id: str,
+    body: ConversationUpdate,
+    current_user: dict = Depends(get_current_user),
+):
+    payload = {k: v for k, v in body.model_dump().items() if v is not None}
+    convo = await asyncio.to_thread(
+        finbot_repo.update_conversation, conversation_id, current_user["id"], payload
+    )
+    if convo is None:
+        raise HTTPException(status_code=404, detail="Conversation not found.")
+    return {"success": True, "conversation": convo}
+
+
+@app.delete("/api/finbot/conversations/{conversation_id}")
+async def delete_conversation_endpoint(
+    conversation_id: str,
+    current_user: dict = Depends(get_current_user),
+):
+    ok = await asyncio.to_thread(
+        finbot_repo.delete_conversation, conversation_id, current_user["id"]
+    )
+    if not ok:
+        raise HTTPException(status_code=404, detail="Conversation not found.")
+    return {"success": True}
 
 
 # ─── FinBot News Feed ─────────────────────────────────────────────────────────
