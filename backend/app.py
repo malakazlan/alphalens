@@ -1365,7 +1365,8 @@ def _set_auth_cookie(response: JSONResponse, token: str) -> None:
 
 
 @app.post("/api/auth/signup")
-async def signup_user(body: SignUpRequest):
+@limiter.limit("3/15 minutes")
+async def signup_user(request: Request, body: SignUpRequest):
     result = await asyncio.to_thread(sign_up, body.email, body.password)
     if not result["success"]:
         return JSONResponse({"success": False, "error": result.get("error", "Sign up failed")})
@@ -1388,7 +1389,8 @@ async def signup_user(body: SignUpRequest):
 
 
 @app.post("/api/auth/login")
-async def login_user(body: SignInRequest):
+@limiter.limit("5/15 minutes")
+async def login_user(request: Request, body: SignInRequest):
     result = await asyncio.to_thread(sign_in, body.email, body.password)
     if not result["success"]:
         return JSONResponse({"success": False, "error": result.get("error", "Invalid credentials")})
@@ -1423,7 +1425,8 @@ async def get_session(current_user: dict = Depends(get_current_user)):
 
 
 @app.post("/api/auth/forgot-password")
-async def forgot_password(body: ForgotPasswordRequest):
+@limiter.limit("3/hour")
+async def forgot_password(request: Request, body: ForgotPasswordRequest):
     result = await asyncio.to_thread(reset_password, body.email)
     return result
 
