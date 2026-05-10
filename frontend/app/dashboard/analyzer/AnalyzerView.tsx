@@ -11,6 +11,7 @@ import ExtractPanel from "@/components/analyzer/ExtractPanel";
 import ChatPanel from "@/components/analyzer/ChatPanel";
 import { sha256File } from "@/lib/hash";
 import { useAnalyzerStore } from "@/lib/stores/analyzer-store";
+import { ROUTES } from "@/lib/routes";
 
 type WorkspaceTab = "parse" | "extract" | "chat";
 
@@ -167,7 +168,7 @@ export default function AnalyzerView({ docIdFromUrl }: { docIdFromUrl: string | 
     if (loadingDocs) return; // wait for docs list
     const doc = docs.find(d => d.id === docIdFromUrl);
     if (!doc) {
-      router.replace("/dashboard/analyzer");
+      router.replace(ROUTES.analyzer);
       return;
     }
     if (doc.status !== "complete") return; // workspace renders but no data fetch
@@ -267,7 +268,7 @@ export default function AnalyzerView({ docIdFromUrl }: { docIdFromUrl: string | 
 
   // ── Navigation helpers ─────────────────────────────────────────────────────
   function navigateToDoc(doc: Doc) {
-    router.push(`/dashboard/analyzer/${doc.id}`);
+    router.push(ROUTES.analyzerDoc(doc.id));
   }
 
   function navigateHome() {
@@ -276,7 +277,7 @@ export default function AnalyzerView({ docIdFromUrl }: { docIdFromUrl: string | 
     setChunkLabelMap(new Map());
     setFilesOpen(false);
     store.setSelectedDoc(null);
-    router.push("/dashboard/analyzer");
+    router.push(ROUTES.analyzer);
   }
 
   // ── Upload ───────────────────────────────────────────────────────────────────
@@ -296,7 +297,7 @@ export default function AnalyzerView({ docIdFromUrl }: { docIdFromUrl: string | 
         await fetchDocs();
         setIsUploading(false);
         // Show the existing doc instead of silently dropping the upload
-        router.push(`/dashboard/analyzer/${checkData.document_id}`);
+        router.push(ROUTES.analyzerDoc(checkData.document_id));
         return;
       }
 
