@@ -124,3 +124,7 @@ processed_data/
 /design
 /docs
 /technical.md
+
+# Supabase migrations are run from the dashboard, not the repo —
+# keep the SQL locally for reference but never commit/push.
+/supabase/
