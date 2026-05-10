@@ -1,13 +1,10 @@
-// Sentry init for the browser bundle (Next.js 14+ convention: this exact
-// filename is auto-loaded by @sentry/nextjs).
+// Sentry init for the browser bundle.
+// Auto-loaded by @sentry/nextjs's webpack plugin in Next.js 14.x.
+// (For Next 15.3+ the file name becomes `instrumentation-client.ts`.)
 //
 // Silent no-op when NEXT_PUBLIC_SENTRY_DSN is unset (local dev).
 
 import * as Sentry from "@sentry/nextjs";
-
-// Capture client-side navigation transitions in the App Router.
-// Required export per @sentry/nextjs build-time check.
-export const onRouterTransitionStart = Sentry.captureRouterTransitionStart;
 
 const dsn = process.env.NEXT_PUBLIC_SENTRY_DSN;
 
