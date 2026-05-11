@@ -1,5 +1,5 @@
 "use client";
-import { useState, useRef, useEffect, useMemo } from "react";
+import { useState, useRef, useEffect, useMemo, useCallback, memo } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { ChunkOverlay } from "@/components/analyzer/DocViewer";
@@ -247,19 +247,31 @@ function MarkdownContent({ text }: { text: string }) {
   );
 }
 
-// ── MessageRow — isolated so useMemo for chips doesn't re-run on content delta ─
+// ── MessageRow — memoised so old rows skip re-renders during streaming ──────
+// Without memo, every SSE delta runs setMessages → React diffs the whole list
+// → every MessageRow re-runs, including expensive paths like ReactMarkdown
+// (which re-parses the entire message text from scratch). With memo + a
+// custom equality, only the actively-streaming row re-renders.
+//
+// Equality rules:
+//  - Different message id → re-render (different message)
+//  - role / content / streaming changed → re-render
+//  - sources reference changed → re-render (chips need refresh)
+//  - activeChip relevance for THIS row changed → re-render
+//  - parseChunks/onChipClick are deliberately excluded; parent uses stable
+//    refs (see ChatPanel) so these don't trigger spurious re-renders.
 
-function MessageRow({
-  msg,
-  parseChunks,
-  activeChip,
-  onChipClick,
-}: {
+interface MessageRowProps {
   msg:         Message;
-  parseChunks: ChunkOverlay[];
   activeChip:  { msgId: string; idx: number } | null;
   onChipClick: (chip: ResolvedChip, msgId: string, idx: number) => void;
-}) {
+}
+
+const MessageRow = memo(function MessageRow({
+  msg,
+  activeChip,
+  onChipClick,
+}: MessageRowProps) {
   // Chips are resolved once when sources arrive — not on every streaming delta.
   // msg.sources is a stable reference (set once, never mutated after streaming ends).
   const chips = useMemo(
@@ -275,7 +287,10 @@ function MessageRow({
       <div style={{ maxWidth: isUser ? "88%" : "92%" }}>
         {/* Message bubble.
             User: plain text, gradient bubble (preserve newlines).
-            Assistant: markdown-rendered (headings/lists/tables/bold). */}
+            Assistant while streaming: plain text — markdown would re-parse
+              on every delta and stall the panel. Switch to MarkdownContent
+              ONCE when streaming ends (markdown parses exactly once per
+              assistant message). */}
         <div
           className={`rounded-2xl ${isUser ? "px-4 py-3 text-sm leading-relaxed whitespace-pre-wrap" : "px-4 py-3"}`}
           style={isUser ? {
@@ -292,7 +307,12 @@ function MessageRow({
           {isUser
             ? (msg.content || null)
             : msg.content
-              ? <MarkdownContent text={msg.content} />
+              ? (msg.streaming
+                  ? <span
+                      className="text-sm leading-relaxed"
+                      style={{ whiteSpace: "pre-wrap", color: "var(--al-text)" }}
+                    >{msg.content}</span>
+                  : <MarkdownContent text={msg.content} />)
               : (msg.streaming ? <TypingDots /> : null)}
         </div>
 
@@ -349,7 +369,20 @@ function MessageRow({
       </div>
     </div>
   );
-}
+}, (prev, next) => {
+  // Custom equality — return true to SKIP re-render.
+  if (prev.msg.id        !== next.msg.id)        return false;
+  if (prev.msg.role      !== next.msg.role)      return false;
+  if (prev.msg.content   !== next.msg.content)   return false;
+  if (prev.msg.streaming !== next.msg.streaming) return false;
+  if (prev.msg.sources   !== next.msg.sources)   return false;
+  // activeChip only matters for this specific row.
+  const prevIsActive = prev.activeChip?.msgId === prev.msg.id;
+  const nextIsActive = next.activeChip?.msgId === next.msg.id;
+  if (prevIsActive !== nextIsActive) return false;
+  if (prevIsActive && prev.activeChip?.idx !== next.activeChip?.idx) return false;
+  return true;
+});
 
 // ── ChatPanel ─────────────────────────────────────────────────────────────────
 
@@ -547,6 +580,45 @@ export default function ChatPanel({ docId, parseChunks = [], onChunkSelect }: Ch
     // message — fire-and-forget so it doesn't block the SSE stream below.
     if (messages.length === 0) { void maybeAutoTitle(currentConvId, userContent); }
 
+    // ── rAF-batched delta flush ─────────────────────────────────────────────
+    // SSE delivers many small deltas — `setMessages` per delta forces React
+    // to reconcile the entire messages list every time. Accumulate deltas
+    // in a local buffer; flush once per animation frame so the visible
+    // refresh rate caps at display refresh (≈60Hz). Markdown isn't parsed
+    // mid-stream (see MessageRow render), so this is purely a state-write
+    // throttle. Non-delta events (sources/done/error) flush immediately to
+    // keep the UI responsive at state transitions.
+    let pendingText = "";
+    let rafHandle: number | null = null;
+    const flushPending = () => {
+      rafHandle = null;
+      if (!pendingText) return;
+      const chunk = pendingText;
+      pendingText = "";
+      setMessages(prev => prev.map(m =>
+        m.id === aiMsgId ? { ...m, content: m.content + chunk } : m
+      ));
+    };
+    const queueDelta = (text: string) => {
+      pendingText += text;
+      if (rafHandle === null) {
+        rafHandle = requestAnimationFrame(flushPending);
+      }
+    };
+    const cancelFlush = () => {
+      if (rafHandle !== null) {
+        cancelAnimationFrame(rafHandle);
+        rafHandle = null;
+      }
+    };
+    // Run any queued delta inline before a control event (sources/done).
+    // Ensures the bubble's `content` is up-to-date when the user sees the
+    // streaming flag flip to false.
+    const drainPending = () => {
+      cancelFlush();
+      flushPending();
+    };
+
     try {
       const res = await fetch(`/api/documents/${docId}/chat`, {
         method:      "POST",
@@ -579,18 +651,19 @@ export default function ChatPanel({ docId, parseChunks = [], onChunkSelect }: Ch
           try {
             const event = JSON.parse(line.slice(6));
             if (event.type === "delta") {
-              setMessages(prev => prev.map(m =>
-                m.id === aiMsgId ? { ...m, content: m.content + event.text } : m
-              ));
+              queueDelta(event.text);
             } else if (event.type === "sources") {
+              drainPending();
               setMessages(prev => prev.map(m =>
                 m.id === aiMsgId ? { ...m, sources: event.chunks } : m
               ));
             } else if (event.type === "done") {
+              drainPending();
               setMessages(prev => prev.map(m =>
                 m.id === aiMsgId ? { ...m, streaming: false } : m
               ));
             } else if (event.type === "error") {
+              drainPending();
               setMessages(prev => prev.map(m =>
                 m.id === aiMsgId ? { ...m, content: `Error: ${event.text}`, streaming: false } : m
               ));
@@ -598,7 +671,10 @@ export default function ChatPanel({ docId, parseChunks = [], onChunkSelect }: Ch
           } catch { /* ignore malformed SSE */ }
         }
       }
+      // Stream ended without a terminal event — flush whatever's queued.
+      drainPending();
     } catch (err: any) {
+      drainPending();
       if (err?.name === "AbortError") {
         // User sent a new message — mark previous response as done silently
         setMessages(prev => prev.map(m =>
@@ -612,49 +688,64 @@ export default function ChatPanel({ docId, parseChunks = [], onChunkSelect }: Ch
         ));
       }
     } finally {
+      cancelFlush();
       setStreaming(false);
     }
   }
 
   // ── Chip click — primary + secondary highlights ───────────────────────────
-  function handleChipClick(chip: ResolvedChip, msgId: string, idx: number) {
-    setActiveChip(prev =>
-      prev?.msgId === msgId && prev?.idx === idx ? null : { msgId, idx }
-    );
+  // Stable callback via refs (read latest values lazily) so MessageRow's
+  // memo equality isn't defeated by a fresh `handleChipClick` reference on
+  // every parent re-render. Same pattern as DocViewer's onChunkClickRef.
+  const onChunkSelectRef = useRef(onChunkSelect);
+  const parseChunksRef   = useRef(parseChunks);
+  useEffect(() => { onChunkSelectRef.current = onChunkSelect; });
+  useEffect(() => { parseChunksRef.current   = parseChunks;   });
 
-    if (!chip.cellId) {
-      onChunkSelect(null);
-      return;
-    }
-
-    // Primary: the value cell
-    const overlay = parseChunks.find(o => o.chunk_id === chip.cellId);
-    if (overlay) {
-      onChunkSelect(overlay.chunk_id, chip.secondaryCellIds);
-      return;
-    }
-
-    // Fallback: bbox center-point lookup
-    const chunk      = chip.source;
-    const pageChunks = parseChunks.filter(o => o.page === chunk.page);
-    if (hasBbox(chunk.bbox)) {
-      const cx = (chunk.bbox.left + chunk.bbox.right) / 2;
-      const cy = (chunk.bbox.top  + chunk.bbox.bottom) / 2;
-      const cell = pageChunks.find(o =>
-        o.chunk_type === "table_cell" &&
-        o.bbox.left <= cx && cx <= o.bbox.right &&
-        o.bbox.top  <= cy && cy <= o.bbox.bottom
+  const handleChipClick = useCallback(
+    (chip: ResolvedChip, msgId: string, idx: number) => {
+      setActiveChip(prev =>
+        prev?.msgId === msgId && prev?.idx === idx ? null : { msgId, idx }
       );
-      if (cell) { onChunkSelect(cell.chunk_id, chip.secondaryCellIds); return; }
 
-      const tbl = pageChunks.find(o =>
-        o.chunk_type === "table" &&
-        o.bbox.left < chunk.bbox.right && o.bbox.right > chunk.bbox.left &&
-        o.bbox.top  < chunk.bbox.bottom && o.bbox.bottom > chunk.bbox.top
-      );
-      if (tbl) { onChunkSelect(tbl.chunk_id, chip.secondaryCellIds); return; }
-    }
-  }
+      const select = onChunkSelectRef.current;
+      const chunks = parseChunksRef.current;
+
+      if (!chip.cellId) {
+        select(null);
+        return;
+      }
+
+      // Primary: the value cell
+      const overlay = chunks.find(o => o.chunk_id === chip.cellId);
+      if (overlay) {
+        select(overlay.chunk_id, chip.secondaryCellIds);
+        return;
+      }
+
+      // Fallback: bbox center-point lookup
+      const chunk      = chip.source;
+      const pageChunks = chunks.filter(o => o.page === chunk.page);
+      if (hasBbox(chunk.bbox)) {
+        const cx = (chunk.bbox.left + chunk.bbox.right) / 2;
+        const cy = (chunk.bbox.top  + chunk.bbox.bottom) / 2;
+        const cell = pageChunks.find(o =>
+          o.chunk_type === "table_cell" &&
+          o.bbox.left <= cx && cx <= o.bbox.right &&
+          o.bbox.top  <= cy && cy <= o.bbox.bottom
+        );
+        if (cell) { select(cell.chunk_id, chip.secondaryCellIds); return; }
+
+        const tbl = pageChunks.find(o =>
+          o.chunk_type === "table" &&
+          o.bbox.left < chunk.bbox.right && o.bbox.right > chunk.bbox.left &&
+          o.bbox.top  < chunk.bbox.bottom && o.bbox.bottom > chunk.bbox.top
+        );
+        if (tbl) { select(tbl.chunk_id, chip.secondaryCellIds); return; }
+      }
+    },
+    [],
+  );
 
   // ── Render ────────────────────────────────────────────────────────────────
   const currentConv = conversations.find(c => c.id === currentConvId);
@@ -789,7 +880,6 @@ export default function ChatPanel({ docId, parseChunks = [], onChunkSelect }: Ch
           <MessageRow
             key={msg.id}
             msg={msg}
-            parseChunks={parseChunks}
             activeChip={activeChip}
             onChipClick={handleChipClick}
           />
