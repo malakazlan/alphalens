@@ -275,7 +275,7 @@ def delete_watch(watch_id: str, user_id: str) -> bool:
 
 # ─── Conversations + Messages (Phase 2 / Slice 4) ──────────────────────────
 
-_CONVO_COLS = "id, user_id, title, pinned, archived_at, created_at, updated_at"
+_CONVO_COLS = "id, user_id, title, pinned, archived_at, created_at, updated_at, active_doc_id"
 _MSG_COLS   = ("id, conversation_id, user_id, role, content, tool_calls, "
                "tokens_prompt, tokens_completion, created_at")
 
@@ -350,6 +350,61 @@ def update_conversation(
     )
     rows = res.data or []
     return rows[0] if rows else None
+
+
+def set_active_doc(
+    conversation_id: str,
+    user_id: str,
+    doc_id: Optional[str],
+) -> Optional[dict[str, Any]]:
+    """Pin / unpin an Analyzer document on this conversation.
+
+    `doc_id=None` clears the pin. Ownership is enforced by RLS plus the
+    explicit user_id filter; the doc itself is validated by the caller
+    (the backend endpoint) before this is invoked — keeps the repo
+    layer purely about persistence.
+    """
+    res = (
+        db.get_client()
+        .table("finbot_conversations")
+        .update({"active_doc_id": doc_id})
+        .eq("id", conversation_id)
+        .eq("user_id", user_id)
+        .execute()
+    )
+    rows = res.data or []
+    return rows[0] if rows else None
+
+
+def get_doc_brief(doc_id: str, user_id: str) -> Optional[dict[str, Any]]:
+    """Return just the fields we need to render a pinned-doc pill or
+    inject doc facts into the FinBot system prompt. Avoids pulling
+    extract_data + grounding when all we want is the filename + a few
+    extract-derived bits."""
+    res = (
+        db.get_client()
+        .table("documents")
+        .select("id, filename, status, upload_time, metadata")
+        .eq("id", doc_id)
+        .eq("user_id", user_id)
+        .limit(1)
+        .execute()
+    )
+    rows = res.data or []
+    if not rows:
+        return None
+    row = rows[0]
+    meta = row.get("metadata") or {}
+    return {
+        "doc_id":       row["id"],
+        "filename":     row.get("filename"),
+        "status":       row.get("status"),
+        "uploaded_at":  row.get("upload_time"),
+        "company_name": meta.get("company_name"),
+        "doc_type":     meta.get("doc_type"),
+        "fiscal_year":  meta.get("fiscal_year"),
+        "currency":     meta.get("currency"),
+    }
 
 
 def delete_conversation(conversation_id: str, user_id: str) -> bool:

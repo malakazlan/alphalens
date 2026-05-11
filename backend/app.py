@@ -20,6 +20,7 @@ from schemas import (
     HoldingCreate, HoldingUpdate,
     ProfileUpsert, WatchlistCreate, WatchlistUpdate,
     ConversationCreate, ConversationUpdate, FinBotMessageSend,
+    FinBotActiveDocRequest,
     AnalyzerConversationCreate, AnalyzerConversationUpdate,
 )
 import finbot_repo
@@ -3651,6 +3652,34 @@ async def finbot_conversation_messages(
     profile, watch_rows, holding_count = await _load_finbot_context(user_id)
     system_msg = _build_finbot_system_prompt(profile, watch_rows, holding_count)
 
+    # Active-doc enrichment. When this conversation has a pinned Analyzer
+    # document, tell the model directly so doc-related questions skip the
+    # list→match dance and go straight to query_user_document.
+    active_doc_id = convo.get("active_doc_id")
+    if active_doc_id:
+        doc_brief = await asyncio.to_thread(
+            finbot_repo.get_doc_brief, active_doc_id, user_id,
+        )
+        if doc_brief and doc_brief.get("status") == "complete":
+            doc_label_bits: list[str] = []
+            if doc_brief.get("filename"):     doc_label_bits.append(doc_brief["filename"])
+            if doc_brief.get("company_name"): doc_label_bits.append(doc_brief["company_name"])
+            if doc_brief.get("doc_type"):     doc_label_bits.append(doc_brief["doc_type"])
+            if doc_brief.get("fiscal_year"):  doc_label_bits.append(f"FY{doc_brief['fiscal_year']}")
+            doc_label = " · ".join(doc_label_bits) or active_doc_id
+            system_msg += (
+                "\n\n"
+                "ACTIVE DOCUMENT (pinned by the user for this conversation):\n"
+                f"- doc_id: {active_doc_id}\n"
+                f"- label:  {doc_label}\n"
+                "When the user asks about 'this document', 'this report', "
+                "'this filing', or any doc-related question, call "
+                f"query_user_document(doc_id='{active_doc_id}', query=…) "
+                "directly. Do NOT call list_user_documents — the doc is "
+                "already known. Only fall back to list_user_documents if "
+                "the user clearly names a DIFFERENT document."
+            )
+
     # Standing legal footer — appended to the system prompt every turn so the
     # LLM ends advice-flavoured replies with the disclaimer naturally. The
     # `disclaim` compliance flag intensifies this for borderline messages.
@@ -4123,6 +4152,49 @@ async def delete_conversation_endpoint(
     if not ok:
         raise HTTPException(status_code=404, detail="Conversation not found.")
     return {"success": True}
+
+
+# ─── Active-doc pinning (FinBot ↔ Analyzer) ───────────────────────────────────
+# Pin one of the user's parsed documents to a conversation. While pinned,
+# FinBot answers doc-questions without asking the user to name the file —
+# the system prompt is enriched with the pinned doc's filename and ID, and
+# the model calls query_user_document with it directly.
+
+@app.patch("/api/finbot/conversations/{conversation_id}/active-doc")
+async def set_finbot_active_doc(
+    conversation_id: str,
+    body: FinBotActiveDocRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    user_id = current_user["id"]
+
+    # Ensure the conversation exists and belongs to the caller. We don't
+    # rely on RLS alone — explicit check produces a cleaner 404.
+    conv = await asyncio.to_thread(
+        finbot_repo.get_conversation, conversation_id, user_id,
+    )
+    if not conv:
+        raise HTTPException(status_code=404, detail="Conversation not found.")
+
+    if body.doc_id:
+        # Validate doc ownership + readiness before persisting the pin so
+        # we never end up with a conversation pointing at a doc the user
+        # can't read or that's still parsing.
+        doc = await asyncio.to_thread(
+            finbot_repo.get_doc_brief, body.doc_id, user_id,
+        )
+        if not doc:
+            raise HTTPException(status_code=404, detail="Document not found.")
+        if doc.get("status") != "complete":
+            raise HTTPException(
+                status_code=400,
+                detail=f"Document is not ready (status: {doc.get('status')}).",
+            )
+
+    updated = await asyncio.to_thread(
+        finbot_repo.set_active_doc, conversation_id, user_id, body.doc_id,
+    )
+    return {"success": True, "conversation": updated}
 
 
 # ─── FinBot News Feed ─────────────────────────────────────────────────────────

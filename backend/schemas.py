@@ -146,6 +146,16 @@ class FinBotMessageSend(BaseModel):
     message: str = Field(..., min_length=1, max_length=2000)
 
 
+class FinBotActiveDocRequest(BaseModel):
+    """Body for PATCH /api/finbot/conversations/{id}/active-doc.
+
+    `doc_id=None` clears the pin. When set, FinBot's system prompt for
+    this conversation is enriched with the doc's filename and ID, so
+    every doc-related question is answered against that document
+    without the user re-stating which one."""
+    doc_id: Optional[str] = None
+
+
 # ─── Financial Schemas (for ADE extract()) ─────────────────────────────────────
 
 class IncomeStatement(BaseModel):

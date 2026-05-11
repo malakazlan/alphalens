@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import Markdown from "@/components/ui/Markdown";
 import OnboardingWizard from "@/components/finbot/OnboardingWizard";
 import ConversationsMenu from "@/components/finbot/ConversationsMenu";
+import DocPicker, { type PickedDoc } from "@/components/finbot/DocPicker";
 import FinbotChart, { type ChartSpec } from "@/components/finbot/FinbotChart";
 import { ROUTES } from "@/lib/routes";
 
@@ -309,10 +310,17 @@ export function FinBotShell({ conversationId }: { conversationId: string | null 
   const [activeConvoId, setActiveConvoId] = useState<string | null>(conversationId);
   useEffect(() => { setActiveConvoId(conversationId); }, [conversationId]);
 
+  // Active (pinned) Analyzer doc for this conversation. Backend persists
+  // the doc_id; we mirror enough fields to render the pill above the
+  // input without a second fetch per turn.
+  const [activeDoc,     setActiveDoc]     = useState<PickedDoc | null>(null);
+  const [docPickerOpen, setDocPickerOpen] = useState(false);
+
   // Load history when the URL points at an existing conversation.
   useEffect(() => {
     if (!conversationId) {
       setMessages([]);
+      setActiveDoc(null);  // fresh chat → no pinned doc
       return;
     }
     let cancelled = false;
@@ -336,6 +344,34 @@ export function FinBotShell({ conversationId }: { conversationId: string | null 
             toolCalls: m.tool_calls ?? undefined,
           }));
         if (!cancelled) setMessages(loaded);
+
+        // Restore pinned doc if the conversation has one. Best-effort:
+        // a 404 here (doc was deleted) silently leaves activeDoc null.
+        const pinnedId = data?.conversation?.active_doc_id as string | null | undefined;
+        if (pinnedId) {
+          try {
+            const dr = await fetch(`/api/documents/${pinnedId}`, { credentials: "include" });
+            if (!cancelled && dr.ok) {
+              const dd = await dr.json();
+              if (dd?.id) {
+                const meta = dd?.metadata ?? {};
+                setActiveDoc({
+                  id:           dd.id,
+                  filename:     dd.filename ?? "",
+                  company_name: meta.company_name ?? null,
+                  doc_type:     meta.doc_type ?? null,
+                  fiscal_year:  meta.fiscal_year ?? null,
+                });
+              }
+            } else if (!cancelled) {
+              setActiveDoc(null);
+            }
+          } catch {
+            if (!cancelled) setActiveDoc(null);
+          }
+        } else if (!cancelled) {
+          setActiveDoc(null);
+        }
       } catch {
         // Soft-fail: leave the panel empty rather than blocking input.
       }
@@ -370,6 +406,54 @@ export function FinBotShell({ conversationId }: { conversationId: string | null 
     ta.style.height = "auto";
     ta.style.height = `${Math.min(ta.scrollHeight, 120)}px`;
   }, [input]);
+
+  // ── Active-doc pin/unpin ───────────────────────────────────────────────────
+  // Persists the pinned doc on the conversation row so reload restores it.
+  // Creates a conversation on the fly if the URL is on /dashboard/finbot
+  // with no convo yet — same pattern as the first-send-creates-convo flow.
+  async function patchActiveDoc(convoId: string, docId: string | null): Promise<boolean> {
+    try {
+      const res = await fetch(`/api/finbot/conversations/${convoId}/active-doc`, {
+        method:      "PATCH",
+        credentials: "include",
+        headers:     { "Content-Type": "application/json" },
+        body:        JSON.stringify({ doc_id: docId }),
+      });
+      return res.ok;
+    } catch {
+      return false;
+    }
+  }
+
+  async function handlePickDoc(doc: PickedDoc) {
+    setDocPickerOpen(false);
+    let convoId = activeConvoId;
+    if (!convoId) {
+      // Fresh chat — materialise a conversation so the pin can persist.
+      try {
+        const r = await fetch("/api/finbot/conversations", {
+          method: "POST", credentials: "include",
+          headers: { "Content-Type": "application/json" }, body: JSON.stringify({}),
+        });
+        const d = await r.json();
+        if (!r.ok || !d?.success) throw new Error("create failed");
+        convoId = d.conversation.id as string;
+        setActiveConvoId(convoId);
+        router.replace(`${ROUTES.finbot}/${convoId}`);
+      } catch {
+        return;  // soft-fail; user can retry
+      }
+    }
+    const ok = await patchActiveDoc(convoId, doc.id);
+    if (ok) setActiveDoc(doc);
+  }
+
+  async function handleUnpinDoc() {
+    const convoId = activeConvoId;
+    setActiveDoc(null);  // optimistic
+    if (!convoId) return;
+    await patchActiveDoc(convoId, null);
+  }
 
   async function handleSend(text?: string) {
     const content = (text ?? input).trim();
@@ -597,6 +681,38 @@ export function FinBotShell({ conversationId }: { conversationId: string | null 
               </div>
             </div>
             <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <button
+                onClick={() => setDocPickerOpen(true)}
+                title={activeDoc ? `Pinned: ${activeDoc.filename}` : "Attach a document for this chat"}
+                style={{
+                  background:   activeDoc ? "rgba(5, 150, 105, 0.10)" : "transparent",
+                  border:       `1px solid ${activeDoc ? "#059669" : "#e5e7eb"}`,
+                  color:        activeDoc ? "#059669" : "#374151",
+                  borderRadius: 8,
+                  padding:      "5px 10px",
+                  fontSize:     12,
+                  fontWeight:   600,
+                  cursor:       "pointer",
+                  display:      "inline-flex",
+                  alignItems:   "center",
+                  gap:          5,
+                  transition:   "all 0.2s",
+                }}
+                onMouseEnter={e => {
+                  if (!activeDoc) (e.currentTarget as HTMLButtonElement).style.background = "#f3f4f6";
+                }}
+                onMouseLeave={e => {
+                  if (!activeDoc) (e.currentTarget as HTMLButtonElement).style.background = "transparent";
+                }}
+              >
+                <span style={{ fontSize: 13 }}>📎</span>
+                <span style={{
+                  maxWidth: 140, overflow: "hidden",
+                  textOverflow: "ellipsis", whiteSpace: "nowrap",
+                }}>
+                  {activeDoc ? activeDoc.filename : "Attach doc"}
+                </span>
+              </button>
               <ConversationsMenu activeConversationId={activeConvoId} />
               <Link href={ROUTES.finbotPortfolio}
                 style={{
@@ -815,6 +931,45 @@ export function FinBotShell({ conversationId }: { conversationId: string | null 
             padding: "12px 20px", borderTop: "1px solid #eaecf0",
             background: "#fff", flexShrink: 0,
           }}>
+            {/* Pinned-doc pill — shows when a doc is attached to this convo.
+                Same visual language as the header button so the user sees
+                the same identity in two places (good for orientation). */}
+            {activeDoc && (
+              <div style={{
+                maxWidth: 760, margin: "0 auto 8px",
+                display: "inline-flex", alignItems: "center", gap: 6,
+                padding: "5px 10px 5px 8px",
+                background: "rgba(5, 150, 105, 0.08)",
+                border: "1px solid rgba(5, 150, 105, 0.25)",
+                borderRadius: 999,
+                fontSize: 12, color: "#0f5132",
+              }}>
+                <span style={{ fontSize: 12 }}>📎</span>
+                <span style={{
+                  fontWeight: 600,
+                  maxWidth: 200, overflow: "hidden",
+                  textOverflow: "ellipsis", whiteSpace: "nowrap",
+                }}>{activeDoc.filename}</span>
+                {(activeDoc.company_name || activeDoc.fiscal_year) && (
+                  <span style={{ opacity: 0.7 }}>
+                    · {[activeDoc.company_name, activeDoc.fiscal_year ? `FY${activeDoc.fiscal_year}` : null]
+                          .filter(Boolean).join(" · ")}
+                  </span>
+                )}
+                <button
+                  onClick={handleUnpinDoc}
+                  title="Detach document"
+                  aria-label="Detach document"
+                  style={{
+                    marginLeft: 4, width: 18, height: 18,
+                    border: "none", background: "transparent",
+                    color: "#0f5132", cursor: "pointer",
+                    fontSize: 14, lineHeight: 1,
+                    display: "inline-flex", alignItems: "center", justifyContent: "center",
+                  }}
+                >×</button>
+              </div>
+            )}
             <div style={{ display: "flex", gap: 10, alignItems: "flex-end", maxWidth: 760, margin: "0 auto" }}>
               <textarea
                 ref={textareaRef}
@@ -822,7 +977,9 @@ export function FinBotShell({ conversationId }: { conversationId: string | null 
                 value={input}
                 onChange={e => setInput(e.target.value)}
                 onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSend(); } }}
-                placeholder="Ask about stocks, prices, earnings, news… (Enter to send)"
+                placeholder={activeDoc
+                  ? `Ask about ${activeDoc.filename}… (Enter to send)`
+                  : "Ask about stocks, prices, earnings, news… (Enter to send)"}
                 disabled={streaming}
                 style={{
                   flex: 1, resize: "none", border: "1px solid #e5e7eb",
@@ -856,6 +1013,15 @@ export function FinBotShell({ conversationId }: { conversationId: string | null 
           </div>
         </div>
       </div>
+
+      {/* Document picker — modal overlay opens from the header attach
+          button and from clicks on the pinned-doc pill area later. */}
+      <DocPicker
+        open={docPickerOpen}
+        onClose={() => setDocPickerOpen(false)}
+        onPick={handlePickDoc}
+        activeDocId={activeDoc?.id ?? null}
+      />
     </>
   );
 }
