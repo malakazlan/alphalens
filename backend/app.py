@@ -1755,6 +1755,34 @@ def _find_all_matching_cells(
             rescored.append((cell_id, cell_text, score, val))
         matched_cells = rescored
 
+    # ── Within-bucket discrimination via question/section word overlap ──
+    # Bucket scoring above treats sibling sections (e.g. ASSETS and
+    # LIABILITIES under the 'balance sheet' bucket) as equally relevant.
+    # When the same numeric value appears in BOTH siblings (the classic
+    # case: Total Assets ≡ Total Liabilities + Equity by accounting
+    # identity), this leaves the chip picking arbitrarily.
+    #
+    # Refine by comparing the question's content tokens (after stopword
+    # strip) against the section_header tokens. A cell whose section
+    # contains the question's specific word — 'assets', 'liabilities',
+    # 'equity', 'operating activities', 'financing', etc. — wins the
+    # tie. Generic by construction: any future section vocabulary
+    # benefits without code changes.
+    if cell_section_map and question_tokens:
+        refined = []
+        for cell_id, cell_text, score, val in matched_cells:
+            sec = cell_section_map.get(cell_id, "")
+            if sec:
+                sec_tokens = _tokenise(sec)
+                overlap = sec_tokens & question_tokens
+                if overlap:
+                    # Generous boost — must dominate the bucket-level
+                    # +10 from above so that a sibling-section cell
+                    # (same bucket, no word overlap) can't outrank.
+                    score += 25
+            refined.append((cell_id, cell_text, score, val))
+        matched_cells = refined
+
     # ── Table-instance dedup: keep best match per (table, value) ──
     # This allows different values in the same table (compare case) while
     # deduplicating same value within a table instance.
