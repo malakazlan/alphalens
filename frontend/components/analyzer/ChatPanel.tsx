@@ -14,7 +14,12 @@ interface SourceChunk {
   markdown:          string;
   bbox:              { left: number; top: number; right: number; bottom: number };
   score:             number;
-  // Cross-cell context (set by backend table grid builder)
+  // Phase 6 — LLM-provided short label. When present, this drives the
+  // chip text directly (most accurate path, since the LLM has read the
+  // actual table content). Empty when the LLM emitted [[id]] without
+  // the `|label` suffix — falls back to heuristic-derived labels.
+  llm_label?:        string;
+  // Cross-cell context (heuristic fallback for chip label)
   row_label_id?:     string | null;
   row_label_text?:   string;
   group_label_id?:   string | null;
@@ -55,30 +60,42 @@ interface Conversation {
 // ── Chip label builder ────────────────────────────────────────────────────────
 
 function buildChipLabel(chunk: SourceChunk): string {
+  const value = chunk.markdown || "";
+
+  // Phase 6 — LLM-provided label wins. The model has read the actual
+  // table content and named what each value represents; that's strictly
+  // more reliable than our row-major grid heuristics, which break on
+  // messy ADE table parses (e.g. multi-line row labels, missing sub-
+  // section headers). Still pair with a year when one is available so
+  // YoY chip lists stay disambiguated.
+  if (chunk.llm_label && chunk.llm_label.trim()) {
+    const yearPart =
+      chunk.year_label ||
+      (/^(19|20)\d{2}$/.test(chunk.col_header_text ?? "") ? chunk.col_header_text : null);
+    const parts = [chunk.llm_label.trim()];
+    if (yearPart) parts.push(yearPart);
+    return `${parts.join(" · ")}${value ? `  →  ${value}` : ""}`;
+  }
+
+  // ── Heuristic fallback (pre-Phase-6 path) ─────────────────────────────
+  // Runs only when the LLM didn't annotate the citation with a label.
+  // Section · year · group · row → value.
   const parts: string[] = [];
 
-  // Section name (take last 3 words to keep chips compact for long section names)
   const section = chunk.section_header || "";
   if (section) {
     const words = section.trim().split(/\s+/);
     parts.push(words.length > 4 ? words.slice(-3).join(" ") : section);
   }
 
-  // Year: prefer explicit year_label (from SOCE table pattern),
-  // fall back to col_header_text if it looks like a year.
   const yearPart =
     chunk.year_label ||
     (/^(19|20)\d{2}$/.test(chunk.col_header_text ?? "") ? chunk.col_header_text : null);
   if (yearPart) parts.push(yearPart);
 
-  // Sub-group header (disambiguates identical row labels, e.g. "Foreign Currency")
   if (chunk.group_label_text) parts.push(chunk.group_label_text);
+  if (chunk.row_label_text)   parts.push(chunk.row_label_text);
 
-  // Row label
-  if (chunk.row_label_text) parts.push(chunk.row_label_text);
-
-  // Value
-  const value = chunk.markdown || "";
   return parts.length > 0
     ? `${parts.join(" · ")}${value ? `  →  ${value}` : ""}`
     : value || chunk.chunk_id;

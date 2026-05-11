@@ -212,7 +212,14 @@ _TD_WITH_ID_RE = re.compile(
 )
 _TR_RE = re.compile(r"<tr>(.*?)</tr>", re.DOTALL | re.IGNORECASE)
 _HTML_TAG_RE = re.compile(r"<[^>]+>")
-_CITATION_RE = re.compile(r"\[\[([^\]]+)\]\]")
+# Citation marker — supports both:
+#   [[cell-id]]               legacy / unannotated form
+#   [[cell-id|short label]]   Phase 6: LLM-annotated form
+# Group 1 = cell id, Group 2 = optional short label.
+# The label, when present, drives the chip text in the UI — far more
+# robust than heuristically deriving a row label from a grid that may
+# have been parsed messily by ADE.
+_CITATION_RE = re.compile(r"\[\[([^|\]]+)(?:\|([^\]]+))?\]\]")
 _FULL_CONTEXT_TOKEN_LIMIT = 28000
 # Canonical refusal phrase the model produces when a question can't be
 # answered from the document. Used to suppress citation chips on
@@ -3138,9 +3145,18 @@ async def chat_document(
             "- Never invent figures. If a SPECIFIC value is missing, say so for that one\n"
             "  value, but still answer with whatever IS available.\n\n"
 
-            "CITATION: append the cell ID in double brackets immediately after every\n"
-            "figure you cite.\n"
-            "  Table cell: 1,529,797 [[cell-id]]   Text chunk: noted in audit [[uuid]]\n"
+            "CITATION: append the cell ID AND a short human-readable label in\n"
+            "double brackets immediately after every figure you cite. The label\n"
+            "must be the row name, line-item name, or concept that the value\n"
+            "represents — copy the exact wording from the document context where\n"
+            "possible (e.g. 'Property, plant and equipment', 'Total Assets',\n"
+            "'Net cash from operating activities'). Truncate to ~60 characters.\n"
+            "Use `cell-id|label` inside the brackets:\n"
+            "  Table cell:  1,529,797 [[0-12|Total Revenue]]\n"
+            "  Text chunk:  noted in audit [[uuid|Audit committee findings]]\n"
+            "If the value has no clear row label in the document, omit the\n"
+            "|label part and emit just [[cell-id]] — the system will fall back\n"
+            "to its own label derivation.\n"
             "Do not cite the same ID twice. Cite every unique figure you mention.\n\n"
 
             "SECTION AWARENESS: always cite from the section that matches the question\n"
@@ -3181,6 +3197,10 @@ async def chat_document(
         # 5. Stream LLM response with citation stripping
         full_answer = ""
         cited_ids = []
+        # Phase 6: optional `[[id|label]]` form — the LLM provides a short
+        # human-readable label for each citation, which the chip layer
+        # prefers over heuristically-derived row labels. Keyed by cell id.
+        cited_labels: dict[str, str] = {}
         pending = ""  # buffer for potential citation markers
 
         try:
@@ -3222,10 +3242,23 @@ async def chat_document(
                         # Check if citation is complete
                         bracket_end = pending.find(']]', bracket_start + 2)
                         if bracket_end != -1:
-                            # Complete citation — extract ID, don't emit
-                            cited_id = pending[bracket_start + 2:bracket_end].strip()
+                            # Complete citation — extract ID and optional
+                            # label (Phase 6 syntax: `[[id|label]]`).
+                            content = pending[bracket_start + 2:bracket_end]
+                            if "|" in content:
+                                _id, _label = content.split("|", 1)
+                                cited_id = _id.strip()
+                                lbl = _label.strip()
+                            else:
+                                cited_id = content.strip()
+                                lbl = ""
                             if cited_id:
                                 cited_ids.append(cited_id)
+                                if lbl and cited_id not in cited_labels:
+                                    # Cap chip-label length defensively;
+                                    # the prompt asks for ~60 chars but the
+                                    # model occasionally exceeds.
+                                    cited_labels[cited_id] = lbl[:80]
                             pending = pending[bracket_end + 2:]
                         else:
                             # Citation not complete — wait for more tokens
@@ -3308,7 +3341,12 @@ async def chat_document(
                 "section_header":  cell_section_map.get(cell_id, ""),
                 "markdown":        cell_text,
                 "score":           score / 100.0,
-                # Cross-cell references (IDs for highlight, texts for chip label)
+                # Phase 6: LLM-provided short label. Frontend prefers this
+                # over heuristic row/group labels when present. Empty when
+                # the LLM emitted [[id]] without the `|label` suffix.
+                "llm_label":       cited_labels.get(cell_id, ""),
+                # Cross-cell references (IDs for highlight, heuristic
+                # fallback for chip label when llm_label is empty).
                 "row_label_id":    cross["row_label_id"],
                 "row_label_text":  row_label_text,
                 "group_label_id":  cross["group_label_id"],
