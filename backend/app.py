@@ -284,6 +284,11 @@ _SECTION_ALIASES: dict[str, tuple[str, ...]] = {
         "basic earnings per share",
         "revenue", "net revenue", "operating income", "operating profit",
         "gross profit", "gross margin", "net income", "net loss",
+        # Common income-statement terminology variants. Required for RAG
+        # query expansion: a question about "revenue" needs to retrieve
+        # chunks where the line item is labelled "Sales" (Pakistani filings),
+        # "Turnover" (older UK filings), or "Net sales" (US filings).
+        "sales", "net sales", "turnover", "total revenue",
     ),
     "balance sheet": (
         "balance sheet", "balance sheets",
@@ -360,6 +365,79 @@ def _is_year_only_cell_text(text: str) -> bool:
     if not text:
         return False
     return bool(_BARE_YEAR_RE.match(text.strip()))
+
+
+# ─── RAG retrieval quality helpers (Phase 2.5) ──────────────────────────────
+# When the full document exceeds the LLM context window, the chat falls
+# back to embedding RAG. Two problems show up at that boundary:
+#
+#   1. Terminology variance — a question about "revenue" should retrieve
+#      chunks where the line item is labelled "Sales" / "Turnover" /
+#      "Net sales". Pure vector similarity on the raw query "revenue"
+#      does NOT consistently land on those chunks; the embedding for
+#      "revenue" leans semantically toward chunks that USE the word
+#      "revenue", which in financial filings is often the revenue-
+#      recognition policy note — not the income statement.
+#
+#   2. Section drift — the top-k semantically-closest chunks can come
+#      from unrelated sections that happen to share content overlap
+#      (e.g., a Notes paragraph about an income-related provision).
+#
+# The two helpers below address both, without re-embedding the corpus
+# or adding new infrastructure.
+
+
+def _expand_query_for_retrieval(query: str) -> str:
+    """Augment the query with the canonical-bucket aliases it implies,
+    so the embedding lies closer to chunks that use a synonym instead.
+
+    Example: 'what was revenue in 2016' → 'what was revenue in 2016 sales
+    turnover'. The embedder encodes both directions; vector similarity
+    against Sales chunks improves materially.
+
+    Conservative: only fires when the question maps to a known bucket;
+    no-op for off-topic queries to avoid muddying the embedding.
+    """
+    buckets = _section_buckets(query)
+    if not buckets:
+        return query
+    extras: list[str] = []
+    for bucket in buckets:
+        aliases = _SECTION_ALIASES.get(bucket, ())
+        # Sort by length, take the three shortest. Short aliases are the
+        # high-recall terms (sales, revenue, turnover) — the longer ones
+        # are formal headings that are already encoded by the question.
+        # Dedup so we don't pad with repeats.
+        for a in sorted(set(aliases), key=len)[:3]:
+            if a.lower() not in query.lower():
+                extras.append(a)
+    if not extras:
+        return query
+    return f"{query} {' '.join(extras)}"
+
+
+def _rerank_results_by_section(results: list, q_buckets: set[str]) -> list:
+    """Add a small score boost to results whose section_header belongs to
+    the question's section bucket, then resort.
+
+    The boost is intentionally small (≈0.15) so it only flips near-ties.
+    A semantically-strong RAG hit on an unrelated section still wins; a
+    weak hit on the RIGHT section gets a slight nudge. Stops the typical
+    failure mode of a vague-but-on-topic Notes paragraph beating the
+    actual financial table by a small embedding margin.
+    """
+    if not q_buckets:
+        return results
+    boosted: list[tuple[float, object]] = []
+    for r in results:
+        payload = getattr(r, "payload", None) or {}
+        section = payload.get("section_header", "")
+        score   = getattr(r, "score", 0.0) or 0.0
+        if section and _section_buckets(section) & q_buckets:
+            score += 0.15
+        boosted.append((score, r))
+    boosted.sort(key=lambda x: -x[0])
+    return [r for _, r in boosted]
 
 
 def _keyword_search_fallback(markdown: str, query: str, top_k: int = 5) -> str:
@@ -2598,15 +2676,36 @@ async def chat_document(
             context = full_ctx
             use_full_context = True
         else:
-            # RAG fallback: embed query and search Qdrant
+            # ── RAG path (full_context too big to fit) ─────────────────────
+            # Phase 2.5 — retrieval quality improvements:
+            #   1. Expand the query with section-bucket synonyms before
+            #      embedding (terminology variance).
+            #   2. Pull top-15 instead of top-10 (more chance the relevant
+            #      table chunk is in the candidate set).
+            #   3. Re-rank the candidates with a section-match boost, then
+            #      keep the top-10 for context.
+            q_buckets = _section_buckets(message)
+            retrieval_query = _expand_query_for_retrieval(message)
             try:
-                query_vec = await asyncio.to_thread(embeddings.embed_query, message)
+                query_vec = await asyncio.to_thread(embeddings.embed_query, retrieval_query)
             except Exception as e:
                 yield f"data: {json.dumps({'type': 'error', 'text': str(e)})}\n\n"
                 return
 
             try:
-                results = await asyncio.to_thread(qdrant_store.search, query_vec, user_id, doc_id, 10)
+                raw_results = await asyncio.to_thread(
+                    qdrant_store.search, query_vec, user_id, doc_id, 15,
+                )
+                ranked = _rerank_results_by_section(raw_results, q_buckets)
+                results = ranked[:10]
+                if q_buckets:
+                    logger.info(
+                        "rag: doc=%s buckets=%s expanded=%s top10_sections=%s",
+                        doc_id, sorted(q_buckets),
+                        retrieval_query != message,
+                        [((r.payload or {}).get("section_header") or "")[:32]
+                         for r in results[:5]],
+                    )
                 context = _build_rag_context(results)
             except Exception:
                 # Qdrant unreachable — fall back to keyword search on cached markdown
