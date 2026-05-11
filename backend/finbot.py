@@ -581,6 +581,68 @@ def get_options_chain(ticker: str, expiry: str | None = None) -> dict:
 
 
 # ── Document linkage (user-context tool, RAG into AlphaLens documents) ──────
+def list_user_documents(user_id: str) -> dict:
+    """List the user's COMPLETED documents in the AlphaLens Analyzer.
+
+    The companion to `query_user_document`: when the user mentions a doc
+    by NAME or generically ("my latest report", "the accounts doc"),
+    FinBot calls this first to resolve the doc_id, then calls
+    `query_user_document` with that id. Stops the agent from asking the
+    user for a UUID.
+
+    Returns at most the 20 most recent completed docs to keep the
+    response within token budget. Includes name + extracted metadata
+    so the model can disambiguate by company / fiscal year when
+    multiple docs share a similar filename.
+    """
+    # Local import to avoid circulars at module load.
+    import db
+
+    try:
+        res = (
+            db.get_client()
+            .table("documents")
+            .select("id, filename, status, upload_time, metadata")
+            .eq("user_id", user_id)
+            .eq("status", "complete")
+            .order("upload_time", desc=True)
+            .limit(20)
+            .execute()
+        )
+    except Exception as e:
+        return {"error": f"Could not list documents: {e}"}
+
+    rows = res.data or []
+    docs = []
+    for r in rows:
+        meta = r.get("metadata") or {}
+        docs.append({
+            "doc_id":       r.get("id"),
+            "filename":     r.get("filename"),
+            "uploaded_at":  r.get("upload_time"),
+            # These come from the worker's extract step; absent on docs
+            # parsed before that feature shipped. Caller must tolerate None.
+            "company_name": meta.get("company_name"),
+            "doc_type":     meta.get("doc_type"),
+            "fiscal_year":  meta.get("fiscal_year"),
+            "currency":     meta.get("currency"),
+        })
+
+    return {
+        "count": len(docs),
+        "documents": docs,
+        "instructions_for_assistant": (
+            "Resolve user phrases like 'my accounts doc' or 'the 10-K I "
+            "uploaded' by matching against `filename`, `company_name`, and "
+            "`doc_type` (case-insensitive substring). If multiple plausible "
+            "matches exist, prefer the most recently uploaded; if the user's "
+            "phrasing is genuinely ambiguous (e.g. two docs from the same "
+            "company), name them briefly and ask which one. Never ask the "
+            "user for a UUID — call this tool first."
+        ),
+    }
+
+
 def query_user_document(user_id: str, doc_id: str, query: str) -> dict:
     """RAG into a document the user has parsed in AlphaLens Analyzer.
 
@@ -935,22 +997,43 @@ TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "list_user_documents",
+            "description": (
+                "List the user's COMPLETED documents in the AlphaLens "
+                "Analyzer. Call this BEFORE `query_user_document` whenever "
+                "the user references a doc by name, by company, by type, or "
+                "generically ('my latest report', 'the accounts doc', 'the "
+                "10-K I uploaded'). Returns each doc's UUID, filename, and "
+                "extracted metadata (company, fiscal year, doc type). "
+                "Resolve the user's phrasing against those fields, then call "
+                "`query_user_document` with the matching doc_id. Never ask "
+                "the user for a UUID — call this tool instead."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "query_user_document",
             "description": (
                 "Search inside an AlphaLens document the user has uploaded "
                 "and parsed (10-K, 10-Q, prospectus, annual report). Returns "
                 "the top relevant chunks with text, page, and chunk_id. Cite "
                 "[chunk_id] in your reply so the UI can link back to the PDF. "
-                "Use this when the user references 'my document', 'the 10-K I "
-                "uploaded', a specific filename, or asks about a company they "
-                "have documents for."
+                "Use this AFTER `list_user_documents` to fetch the doc_id "
+                "from a user's name-based reference."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "doc_id": {
                         "type": "string",
-                        "description": "UUID of the user's parsed document. The user typically refers to docs by company name; ask if ambiguous.",
+                        "description": "UUID of the user's parsed document. Obtain from `list_user_documents` — do not ask the user.",
                     },
                     "query":  {
                         "type": "string",
@@ -1006,10 +1089,16 @@ TOOL_MAP = {
     "get_macro_indicators":     get_macro_indicators,
     "get_technical_indicators": get_technical_indicators,
     "get_options_chain":        get_options_chain,
+    "list_user_documents":      list_user_documents,
     "query_user_document":      query_user_document,
     "render_chart":             render_chart,
 }
 
 # Tools that require the calling user's id. The agent dispatcher in app.py
 # injects user_id automatically for these.
-USER_CONTEXT_TOOLS = {"get_portfolio_pnl", "add_to_watchlist", "query_user_document"}
+USER_CONTEXT_TOOLS = {
+    "get_portfolio_pnl",
+    "add_to_watchlist",
+    "list_user_documents",
+    "query_user_document",
+}
