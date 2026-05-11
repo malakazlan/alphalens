@@ -1165,42 +1165,46 @@ def _get_cross_cells(
                     col_header_id = hrow[ci]
 
             # ── Group label: bbox-column-band match within group-header row
+            # Strategy depends on how many label-shaped cells the group-
+            # header row contains:
+            #   1 candidate  → unambiguous (normal single-section table).
+            #                  Accept regardless of bbox distance.
+            #   2+ candidates → side-by-side layout. Use bbox centre-x to
+            #                  pick the one closest to the value cell;
+            #                  rejects the OTHER section's header.
             group_label_id: str | None = None
             value_cx = _bbox_center_x(value_cell_id)
             for prev_ri in range(ri - 1, -1, -1):
                 if prev_ri not in group_rows:
                     continue
                 prev_row = rows[prev_ri]
-                # When grounding is available AND we know the value cell's
-                # x-centre, pick the closest-aligned label-shaped cell in
-                # the group row. Falls back to the leftmost label-shaped
-                # cell when no grounding (preserves legacy behaviour for
-                # plain-text docs and unit tests that pass no grounding).
-                best: tuple[float, str] | None = None
+                candidates: list[tuple[str, float | None]] = []
                 for cand_id in prev_row:
                     if not cand_id:
                         continue
                     if not _is_label_text(cell_texts.get(cand_id, "")):
                         continue
-                    if value_cx is not None:
-                        cand_cx = _bbox_center_x(cand_id)
-                        if cand_cx is None:
-                            continue
-                        dist = abs(cand_cx - value_cx)
-                        # Cap on acceptable distance — > ~0.4 of page
-                        # width means the candidate is in a different
-                        # column band (e.g. liabilities header for an
-                        # assets-side value). Reject.
-                        if dist > 0.4:
-                            continue
-                        if best is None or dist < best[0]:
-                            best = (dist, cand_id)
-                    else:
-                        # No grounding — first label-shaped cell wins.
-                        best = (0.0, cand_id)
-                        break
-                if best is not None:
-                    group_label_id = best[1]
+                    candidates.append((cand_id, _bbox_center_x(cand_id)))
+
+                if len(candidates) == 1:
+                    # Unambiguous — accept. This is the normal-table case
+                    # where the group header sits in the label column and
+                    # the value is far to the right; distance is irrelevant
+                    # because there's no competing candidate.
+                    group_label_id = candidates[0][0]
+                elif len(candidates) > 1 and value_cx is not None:
+                    # Ambiguous (side-by-side) — pick by closest x-centre.
+                    ranked = [
+                        (abs(cx - value_cx), cid)
+                        for cid, cx in candidates if cx is not None
+                    ]
+                    if ranked:
+                        ranked.sort()
+                        group_label_id = ranked[0][1]
+                elif candidates:
+                    # Multiple candidates but no grounding — leftmost wins
+                    # (preserves legacy behaviour for plain-text docs).
+                    group_label_id = candidates[0][0]
                 break
 
             return {
