@@ -1021,7 +1021,75 @@ def _is_label_text(text: str) -> bool:
     return bool(leftover)
 
 
-def _get_cross_cells(grid: dict, value_cell_id: str, grounding_dict: dict | None = None) -> dict:
+def _resolve_row_label_by_bbox(
+    value_cell_id: str,
+    grounding_dict: dict | None,
+    cell_lookup: dict | None,
+) -> str | None:
+    """Bbox-based row-label resolver — used when grid walk-left finds no
+    label cell in the value's row (the structural case is the bottom
+    TOTAL row of a side-by-side balance sheet, where ADE emits the value
+    as a standalone <tr> or alongside empty cells).
+
+    Searches all grounding cells for one that is:
+      • on the SAME page,
+      • within a tight vertical band of the value cell (same visual row),
+      • horizontally LEFT of the value cell, AND
+      • whose text is label-shaped (non-empty, non-numeric, ≥3 chars).
+
+    Picks the rightmost match — the candidate closest to the value cell.
+    Crossing too far left risks pulling the OTHER section's label on
+    side-by-side layouts; the closest left-of cell is the correct one
+    in nearly every real-world filing.
+    """
+    if not grounding_dict or not cell_lookup:
+        return None
+    v_g = grounding_dict.get(value_cell_id)
+    if not v_g:
+        return None
+    v_bbox = v_g.get("bbox") or {}
+    v_top   = v_bbox.get("top")
+    v_left  = v_bbox.get("left")
+    v_page  = v_g.get("page", 0)
+    if v_top is None or v_left is None:
+        return None
+
+    # Vertical band: ~1.5% of page height. Tight enough that we don't
+    # cross-match neighbouring rows.
+    BAND_TOLERANCE = 0.015
+
+    candidates: list[tuple[float, str]] = []  # (right_edge, cid)
+    for cid, g in grounding_dict.items():
+        if cid == value_cell_id:
+            continue
+        if g.get("page", 0) != v_page:
+            continue
+        b = g.get("bbox") or {}
+        c_top   = b.get("top")
+        c_right = b.get("right")
+        if c_top is None or c_right is None:
+            continue
+        if abs(c_top - v_top) > BAND_TOLERANCE:
+            continue
+        if c_right >= v_left:
+            continue  # not to the left
+        if not _is_label_text(cell_lookup.get(cid, "")):
+            continue
+        candidates.append((c_right, cid))
+
+    if not candidates:
+        return None
+    # Rightmost = closest to value cell.
+    candidates.sort(key=lambda x: -x[0])
+    return candidates[0][1]
+
+
+def _get_cross_cells(
+    grid: dict,
+    value_cell_id: str,
+    grounding_dict: dict | None = None,
+    cell_lookup: dict | None = None,
+) -> dict:
     """Given a value cell, return context cell IDs for chip-label rendering.
 
     Returns:
@@ -1079,6 +1147,15 @@ def _get_cross_cells(grid: dict, value_cell_id: str, grounding_dict: dict | None
                 if _is_label_text(cell_texts.get(back_id, "")):
                     row_label_id = back_id
                     break
+
+            # Phase 4.5 fallback: when the grid row has no label-shaped cell
+            # to the left (typical for the bottom TOTAL row of a side-by-
+            # side balance sheet, where ADE emits the value as a standalone
+            # cell), fall back to a bbox-based search across grounding.
+            if row_label_id is None:
+                row_label_id = _resolve_row_label_by_bbox(
+                    value_cell_id, grounding_dict, cell_lookup,
+                )
 
             # ── Column header (header row, same column index) ─────────────
             col_header_id: str | None = None
@@ -1636,7 +1713,7 @@ def _find_all_matching_cells(
             if question_tokens and table_grids:
                 grid = _find_grid_for_cell(cell_id, table_grids)
                 if grid is not None:
-                    cross = _get_cross_cells(grid, cell_id, grounding_dict)
+                    cross = _get_cross_cells(grid, cell_id, grounding_dict, cell_lookup)
                     row_label_id   = cross.get("row_label_id")
                     group_label_id = cross.get("group_label_id")
                     row_label_text = cell_lookup.get(row_label_id or "", "")
@@ -3184,7 +3261,7 @@ async def chat_document(
             year_label: str | None = None
             grid = _find_grid_for_cell(cell_id, table_grids)
             if grid:
-                cross     = _get_cross_cells(grid, cell_id, grounding_dict)
+                cross     = _get_cross_cells(grid, cell_id, grounding_dict, cell_lookup)
                 year_label = grid["year_label"]
 
             row_label_text   = cell_lookup.get(cross["row_label_id"]   or "", "")
