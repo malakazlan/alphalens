@@ -646,15 +646,20 @@ def list_user_documents(user_id: str) -> dict:
 def query_user_document(user_id: str, doc_id: str, query: str) -> dict:
     """RAG into a document the user has parsed in AlphaLens Analyzer.
 
-    Verifies ownership, embeds the query, and returns the top chunks from
-    Qdrant filtered by both user_id and doc_id. Each chunk includes a
-    truncated text snippet, page number, section header, and chunk_id so
-    FinBot's reply can cite [chunk_id] references that the frontend can
-    navigate back to."""
+    Verifies ownership, runs the analyzer-chat retrieval improvements
+    (synonym expansion + section-header rerank + top-15 search → keep
+    top-8), and returns the relevant chunks with truncated text, page,
+    and section header. FinBot must NOT echo the raw chunk identifiers
+    into its answer — there's no chip UI on the FinBot surface, so the
+    IDs would just leak into the bubble.
+    """
     # Local imports to avoid circulars at module load.
     import db
     import embeddings
     import qdrant_store
+    # Lazy import the analyzer-chat retrieval helpers so FinBot inherits
+    # the same RAG quality without forcing a circular module dep.
+    from app import _expand_query_for_retrieval, _rerank_results_by_section, _section_buckets
 
     # 1. Ownership + status check (uses existing documents table).
     try:
@@ -679,22 +684,34 @@ def query_user_document(user_id: str, doc_id: str, query: str) -> dict:
             "error": f"Document '{doc.get('filename')}' is not ready (status: {doc.get('status')}).",
         }
 
-    # 2. Embed query (single-vector OpenAI call, ~50-100 ms).
+    # 2. Embed an EXPANDED query (e.g. 'growth' → 'growth sales turnover
+    # revenue'). The embedder encodes both directions of the synonym so
+    # vector similarity against chunks using a different word still hits.
+    expanded_query = _expand_query_for_retrieval(query)
     try:
-        query_vec = embeddings.embed_query(query)
+        query_vec = embeddings.embed_query(expanded_query)
     except Exception as e:
         return {"error": f"Embedding failed: {e}"}
 
-    # 3. Qdrant search filtered by both user_id and doc_id.
+    # 3. Qdrant search filtered by both user_id and doc_id. Pull top-15
+    # so the section reranker has candidates to choose from.
     try:
-        points = qdrant_store.search(
+        raw_points = qdrant_store.search(
             query_vector=query_vec,
             user_id=user_id,
             doc_id=doc_id,
-            top_k=5,
+            top_k=15,
         )
     except Exception as e:
         return {"error": f"Vector search failed: {e}"}
+
+    # 4. Section-header rerank: chunks whose section maps to the same
+    # bucket as the question get a small score boost; resort and keep
+    # the top 8. Stops the failure mode where 'growth' returns Notes-
+    # section policy paragraphs instead of the actual income statement.
+    q_buckets = _section_buckets(query)
+    ranked = _rerank_results_by_section(raw_points, q_buckets)
+    points = ranked[:8]
 
     chunks = []
     for p in points:
@@ -703,6 +720,8 @@ def query_user_document(user_id: str, doc_id: str, query: str) -> dict:
         if len(text) > 600:
             text = text[:600].rstrip() + "…"
         chunks.append({
+            # chunk_id is retained for backend audit/debug but the model
+            # is instructed NOT to surface it into the visible answer.
             "chunk_id":       payload.get("chunk_id"),
             "chunk_type":     payload.get("chunk_type"),
             "section_header": payload.get("section_header"),
@@ -717,9 +736,12 @@ def query_user_document(user_id: str, doc_id: str, query: str) -> dict:
         "query":    query,
         "chunks":   chunks,
         "instructions_for_assistant": (
-            "Cite findings using [chunk_id] markers from the chunks above. "
-            "Never quote text that isn't in these chunks. If the chunks don't "
-            "answer the question, say so plainly."
+            "Answer ONLY from the chunks above. Quote the relevant figure or "
+            "phrase plainly when useful, and reference the section header or "
+            "page number in human-readable form (e.g. 'Cash Flow Statement, "
+            "page 5'). Do NOT include raw chunk identifiers, UUIDs, "
+            "'[chunk_id: …]' markers, or any internal IDs in your reply. "
+            "If the chunks don't answer the question, say so plainly."
         ),
     }
 

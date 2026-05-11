@@ -3654,7 +3654,9 @@ async def finbot_conversation_messages(
 
     # Active-doc enrichment. When this conversation has a pinned Analyzer
     # document, tell the model directly so doc-related questions skip the
-    # list→match dance and go straight to query_user_document.
+    # list→match dance and go straight to query_user_document. Also surface
+    # the doc's top-line financials so 'summarize this doc' can answer
+    # instantly without a RAG call.
     active_doc_id = convo.get("active_doc_id")
     if active_doc_id:
         doc_brief = await asyncio.to_thread(
@@ -3667,13 +3669,64 @@ async def finbot_conversation_messages(
             if doc_brief.get("doc_type"):     doc_label_bits.append(doc_brief["doc_type"])
             if doc_brief.get("fiscal_year"):  doc_label_bits.append(f"FY{doc_brief['fiscal_year']}")
             doc_label = " · ".join(doc_label_bits) or active_doc_id
+
+            # Compact financial summary from extract_data. Only includes
+            # fields that are actually present — a doc parsed before the
+            # Extract step shipped, or where ADE returned nulls, just
+            # produces a shorter block.
+            extract = doc_brief.get("extract_data") or {}
+            inc = extract.get("income_statement") or {}
+            bs  = extract.get("balance_sheet") or {}
+            cf  = extract.get("cash_flow") or {}
+            km  = extract.get("key_metrics") or {}
+            ccy = doc_brief.get("currency") or extract.get("currency") or ""
+            ccy_prefix = f"{ccy} " if ccy else ""
+
+            facts: list[str] = []
+            def _add(label: str, val):
+                if val is None:
+                    return
+                # Format big numbers with commas for legibility — model
+                # parses commas fine.
+                if isinstance(val, (int, float)):
+                    facts.append(f"- {label}: {ccy_prefix}{val:,.0f}" if abs(val) >= 1000 else f"- {label}: {val}")
+                else:
+                    facts.append(f"- {label}: {val}")
+
+            _add("Revenue",                inc.get("revenue"))
+            _add("Gross profit",           inc.get("gross_profit"))
+            _add("Operating income",       inc.get("operating_income"))
+            _add("Net income",             inc.get("net_income"))
+            _add("EBITDA",                 inc.get("ebitda"))
+            _add("EPS",                    inc.get("eps"))
+            _add("Total assets",           bs.get("total_assets"))
+            _add("Total liabilities",      bs.get("total_liabilities"))
+            _add("Total equity",           bs.get("equity"))
+            _add("Cash & equivalents",     bs.get("cash"))
+            _add("Cash from operations",   cf.get("operating"))
+            _add("Free cash flow",         cf.get("free_cash_flow"))
+            if km.get("profit_margin")    is not None: facts.append(f"- Profit margin: {km['profit_margin']}%")
+            if km.get("revenue_growth")   is not None: facts.append(f"- Revenue YoY growth: {km['revenue_growth']}%")
+            if km.get("debt_to_equity")   is not None: facts.append(f"- Debt-to-equity: {km['debt_to_equity']}")
+
+            facts_block = ""
+            if facts:
+                facts_block = (
+                    "\nTop-line financials extracted from this document "
+                    "(use these directly for summary / overview questions; "
+                    "for any DETAIL the user asks for that isn't in this "
+                    "list, call query_user_document):\n" + "\n".join(facts)
+                )
+
             system_msg += (
                 "\n\n"
                 "ACTIVE DOCUMENT (pinned by the user for this conversation):\n"
                 f"- doc_id: {active_doc_id}\n"
                 f"- label:  {doc_label}\n"
+                + facts_block + "\n"
                 "When the user asks about 'this document', 'this report', "
-                "'this filing', or any doc-related question, call "
+                "'this filing', or any doc-related question, prefer the "
+                "top-line facts above for overview questions; otherwise call "
                 f"query_user_document(doc_id='{active_doc_id}', query=…) "
                 "directly. Do NOT call list_user_documents — the doc is "
                 "already known. Only fall back to list_user_documents if "

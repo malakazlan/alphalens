@@ -377,14 +377,18 @@ def set_active_doc(
 
 
 def get_doc_brief(doc_id: str, user_id: str) -> Optional[dict[str, Any]]:
-    """Return just the fields we need to render a pinned-doc pill or
-    inject doc facts into the FinBot system prompt. Avoids pulling
-    extract_data + grounding when all we want is the filename + a few
-    extract-derived bits."""
+    """Return the fields needed to render a pinned-doc pill AND to
+    enrich the FinBot system prompt with top-line financials.
+
+    Pulls `extract_data` (ADE-extracted FinancialDocument JSON) so the
+    caller can inject a compact financial summary into FinBot's system
+    prompt. Letting the model see top-line numbers up front means a
+    'summarize this doc' question can be answered without burning a
+    RAG round-trip — frees RAG for specific drill-ins."""
     res = (
         db.get_client()
         .table("documents")
-        .select("id, filename, status, upload_time, metadata")
+        .select("id, filename, status, upload_time, metadata, extract_data")
         .eq("id", doc_id)
         .eq("user_id", user_id)
         .limit(1)
@@ -404,6 +408,8 @@ def get_doc_brief(doc_id: str, user_id: str) -> Optional[dict[str, Any]]:
         "doc_type":     meta.get("doc_type"),
         "fiscal_year":  meta.get("fiscal_year"),
         "currency":     meta.get("currency"),
+        # FinancialDocument-shaped dict — caller decides what to surface.
+        "extract_data": row.get("extract_data") or {},
     }
 
 
