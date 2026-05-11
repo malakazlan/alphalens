@@ -2906,11 +2906,22 @@ async def chat_document(
         # we want the same `sources` array the chip layer rendered so a
         # reload reproduces the exact UI. Best-effort: a write failure here
         # should not error the SSE response we've already delivered.
+        #
+        # IMPORTANT: store the CLEANED answer (citation markers stripped).
+        # `full_answer` accumulates raw deltas including `[[cell-id]]`
+        # markers that the streaming strip-buffer hides from the user in
+        # real time. Persisting the raw version would re-expose them on
+        # reload — exactly the leak the user reported.
+        cleaned_answer = _CITATION_RE.sub("", full_answer)
+        # Tidy whitespace left behind by stripped markers: collapse runs of
+        # spaces and remove stray spaces before punctuation.
+        cleaned_answer = re.sub(r"[ \t]+(?=[.,;:!?])", "", cleaned_answer)
+        cleaned_answer = re.sub(r"[ \t]{2,}", " ", cleaned_answer).strip()
         try:
             await asyncio.to_thread(
                 analyzer_chat_repo.append_message,
                 conversation_id, current_user["id"], "assistant",
-                full_answer, source_chunks,
+                cleaned_answer, source_chunks,
             )
         except Exception as e:
             logger.warning(f"analyzer chat: persist assistant msg failed: {e}")

@@ -1,5 +1,7 @@
 "use client";
 import { useState, useRef, useEffect, useMemo } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { ChunkOverlay } from "@/components/analyzer/DocViewer";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -151,6 +153,100 @@ function hasBbox(bbox: SourceChunk["bbox"]): boolean {
          typeof bbox?.top  === "number" && typeof bbox?.bottom === "number";
 }
 
+// ── Markdown renderer ────────────────────────────────────────────────────────
+// Assistant messages stream as markdown — `## Heading`, `**bold**`, GFM tables,
+// bullets, etc. Rendering them as plain text exposes the raw syntax to the
+// user (`## Heading` shows literally). react-markdown + remark-gfm builds a
+// React tree from the text; we map every node type to a Tailwind/inline style
+// so the result blends with the chat panel's typography.
+//
+// Defence-in-depth: any `[[cell-id]]` markers that leaked past the backend
+// strip (stream edge cases, old persisted messages from before the fix) are
+// removed here before rendering. Citation chips still drive the highlight
+// flow; users should never see the raw markers in the bubble.
+const _CITATION_LEAK_RE = /\[\[[^\]]+\]\]/g;
+
+function MarkdownContent({ text }: { text: string }) {
+  const cleaned = useMemo(
+    () => text.replace(_CITATION_LEAK_RE, "").replace(/[ \t]+(?=[.,;:!?])/g, ""),
+    [text],
+  );
+  return (
+    <div className="markdown-body">
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        components={{
+          h1: ({ children }) => <h2 className="text-base font-bold mt-3 mb-2" style={{ color: "var(--al-text)" }}>{children}</h2>,
+          h2: ({ children }) => <h3 className="text-base font-bold mt-3 mb-2" style={{ color: "var(--al-text)" }}>{children}</h3>,
+          h3: ({ children }) => <h4 className="text-sm font-semibold mt-2.5 mb-1.5" style={{ color: "var(--al-text)" }}>{children}</h4>,
+          h4: ({ children }) => <h5 className="text-sm font-semibold mt-2 mb-1" style={{ color: "var(--al-text-secondary)" }}>{children}</h5>,
+          h5: ({ children }) => <h6 className="text-xs font-semibold mt-2 mb-1 uppercase tracking-wide" style={{ color: "var(--al-text-secondary)" }}>{children}</h6>,
+          h6: ({ children }) => <h6 className="text-xs font-semibold mt-2 mb-1 uppercase tracking-wide" style={{ color: "var(--al-subtle)" }}>{children}</h6>,
+          p:  ({ children }) => <p  className="text-sm leading-relaxed my-1.5" style={{ color: "var(--al-text)" }}>{children}</p>,
+          strong: ({ children }) => <strong className="font-semibold" style={{ color: "var(--al-text)" }}>{children}</strong>,
+          em:     ({ children }) => <em className="italic">{children}</em>,
+          ul: ({ children }) => <ul className="text-sm space-y-1 pl-5 my-1.5" style={{ listStyle: "disc" }}>{children}</ul>,
+          ol: ({ children }) => <ol className="text-sm space-y-1 pl-5 my-1.5" style={{ listStyle: "decimal" }}>{children}</ol>,
+          li: ({ children }) => <li className="leading-relaxed" style={{ color: "var(--al-text)" }}>{children}</li>,
+          blockquote: ({ children }) => (
+            <blockquote
+              className="my-2 pl-3 py-1 text-sm italic rounded-r-md"
+              style={{ borderLeft: "3px solid var(--al-accent)", background: "var(--al-bg-soft)", color: "var(--al-text-secondary)" }}
+            >{children}</blockquote>
+          ),
+          code: ({ children, className }) => {
+            const isBlock = (className ?? "").includes("language-");
+            if (isBlock) {
+              return (
+                <pre
+                  className="my-2 px-3 py-2 rounded-lg overflow-x-auto text-xs font-mono"
+                  style={{ background: "var(--al-bg-soft)", border: "1px solid var(--al-border)", color: "var(--al-text)" }}
+                >
+                  <code>{children}</code>
+                </pre>
+              );
+            }
+            return (
+              <code
+                className="px-1.5 py-0.5 rounded text-xs font-mono"
+                style={{ background: "var(--al-bg-soft)", border: "1px solid var(--al-border)", color: "var(--al-text)" }}
+              >{children}</code>
+            );
+          },
+          a: ({ children, href }) => (
+            <a
+              href={href}
+              target="_blank"
+              rel="noreferrer noopener"
+              className="underline"
+              style={{ color: "var(--al-accent)" }}
+            >{children}</a>
+          ),
+          // GFM tables — wrap in a scroll container so wide financial tables
+          // don't blow the panel width on small screens.
+          table: ({ children }) => (
+            <div className="my-2 overflow-x-auto rounded-lg" style={{ border: "1px solid var(--al-border)" }}>
+              <table className="w-full text-xs border-collapse">{children}</table>
+            </div>
+          ),
+          thead: ({ children }) => <thead style={{ background: "var(--al-bg-soft)" }}>{children}</thead>,
+          tbody: ({ children }) => <tbody>{children}</tbody>,
+          tr: ({ children }) => <tr style={{ borderTop: "1px solid var(--al-border)" }}>{children}</tr>,
+          th: ({ children }) => (
+            <th className="text-left px-3 py-1.5 font-semibold" style={{ color: "var(--al-text)" }}>{children}</th>
+          ),
+          td: ({ children }) => (
+            <td className="px-3 py-1.5" style={{ color: "var(--al-text)" }}>{children}</td>
+          ),
+          hr: () => <hr className="my-3" style={{ borderColor: "var(--al-border)" }} />,
+        }}
+      >
+        {cleaned}
+      </ReactMarkdown>
+    </div>
+  );
+}
+
 // ── MessageRow — isolated so useMemo for chips doesn't re-run on content delta ─
 
 function MessageRow({
@@ -172,24 +268,32 @@ function MessageRow({
     [msg.sources],
   );
 
+  const isUser = msg.role === "user";
+
   return (
-    <div className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
-      <div style={{ maxWidth: "88%" }}>
-        {/* Message bubble */}
+    <div className={`flex ${isUser ? "justify-end" : "justify-start"}`}>
+      <div style={{ maxWidth: isUser ? "88%" : "92%" }}>
+        {/* Message bubble.
+            User: plain text, gradient bubble (preserve newlines).
+            Assistant: markdown-rendered (headings/lists/tables/bold). */}
         <div
-          className="px-4 py-3 rounded-2xl text-sm leading-relaxed whitespace-pre-wrap"
-          style={msg.role === "user" ? {
-            background:            "linear-gradient(135deg, #059669 0%, #10b981 100%)",
-            color:                 "#fff",
+          className={`rounded-2xl ${isUser ? "px-4 py-3 text-sm leading-relaxed whitespace-pre-wrap" : "px-4 py-3"}`}
+          style={isUser ? {
+            background:              "linear-gradient(135deg, #059669 0%, #10b981 100%)",
+            color:                   "#fff",
             borderBottomRightRadius: 4,
           } : {
-            background:           "var(--al-card)",
-            color:                "var(--al-text)",
-            border:               "1.5px solid var(--al-border)",
+            background:             "var(--al-card)",
+            color:                  "var(--al-text)",
+            border:                 "1.5px solid var(--al-border)",
             borderBottomLeftRadius: 4,
           }}
         >
-          {msg.content || (msg.streaming ? <TypingDots /> : null)}
+          {isUser
+            ? (msg.content || null)
+            : msg.content
+              ? <MarkdownContent text={msg.content} />
+              : (msg.streaming ? <TypingDots /> : null)}
         </div>
 
         {/* Source chips — shown after streaming ends */}
