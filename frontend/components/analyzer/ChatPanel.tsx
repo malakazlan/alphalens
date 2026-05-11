@@ -57,6 +57,17 @@ interface Conversation {
   updated_at: string;
 }
 
+// Doc-agnostic starter prompts shown in the empty state. Generic-financial
+// so they work on any uploaded filing; clicking sends immediately so a
+// first-time user sees a cited answer without typing. Keep at 4 — more
+// crowds the panel.
+const STARTER_PROMPTS: { icon: string; label: string; prompt: string }[] = [
+  { icon: "✦", label: "Document summary",       prompt: "Give me a short document summary." },
+  { icon: "★", label: "Main findings",          prompt: "What are the main findings of this document?" },
+  { icon: "▶", label: "Cash flow overview",     prompt: "Give me a summary of the cash flow statement." },
+  { icon: "⇄", label: "Compare year-over-year", prompt: "Compare the most recent two years of revenue." },
+];
+
 // ── Chip label builder ────────────────────────────────────────────────────────
 
 function buildChipLabel(chunk: SourceChunk): string {
@@ -299,9 +310,22 @@ const MessageRow = memo(function MessageRow({
 
   const isUser = msg.role === "user";
 
+  // Copy-to-clipboard for assistant answers. Shows brief 'Copied' feedback.
+  // Uses the cleaned content directly — any stray [[id|label]] markers
+  // have already been stripped server-side at persist time and
+  // defensively in MarkdownContent.
+  const [copied, setCopied] = useState(false);
+  async function handleCopy() {
+    try {
+      await navigator.clipboard.writeText(msg.content || "");
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1600);
+    } catch { /* clipboard blocked — fail silently */ }
+  }
+
   return (
-    <div className={`flex ${isUser ? "justify-end" : "justify-start"}`}>
-      <div style={{ maxWidth: isUser ? "88%" : "92%" }}>
+    <div className={`chat-msg-enter flex ${isUser ? "justify-end" : "justify-start"}`}>
+      <div style={{ maxWidth: isUser ? "88%" : "92%" }} className="group">
         {/* Message bubble.
             User: plain text, gradient bubble (preserve newlines).
             Assistant while streaming: plain text — markdown would re-parse
@@ -309,7 +333,7 @@ const MessageRow = memo(function MessageRow({
               ONCE when streaming ends (markdown parses exactly once per
               assistant message). */}
         <div
-          className={`rounded-2xl ${isUser ? "px-4 py-3 text-sm leading-relaxed whitespace-pre-wrap" : "px-4 py-3"}`}
+          className={`relative rounded-2xl ${isUser ? "px-4 py-3 text-sm leading-relaxed whitespace-pre-wrap" : "px-4 py-3"}`}
           style={isUser ? {
             background:              "linear-gradient(135deg, #059669 0%, #10b981 100%)",
             color:                   "#fff",
@@ -331,6 +355,25 @@ const MessageRow = memo(function MessageRow({
                     >{msg.content}</span>
                   : <MarkdownContent text={msg.content} />)
               : (msg.streaming ? <TypingDots /> : null)}
+
+          {/* Copy button — only on completed assistant messages with
+              content. Hover-revealed on the bubble's group hover to keep
+              the resting state clean. */}
+          {!isUser && !msg.streaming && msg.content && (
+            <button
+              onClick={handleCopy}
+              aria-label={copied ? "Copied" : "Copy message"}
+              title={copied ? "Copied" : "Copy"}
+              className="absolute top-2 right-2 px-2 py-1 rounded-md text-[11px] font-medium opacity-0 group-hover:opacity-100 transition-opacity"
+              style={{
+                background: "var(--al-bg-soft)",
+                border:     "1px solid var(--al-border)",
+                color:      copied ? "var(--al-accent)" : "var(--al-subtle)",
+              }}
+            >
+              {copied ? "✓ Copied" : "⧉ Copy"}
+            </button>
+          )}
         </div>
 
         {/* Source chips — shown after streaming ends */}
@@ -569,15 +612,27 @@ export default function ChatPanel({ docId, parseChunks = [], onChunkSelect }: Ch
     ta.style.height = `${Math.min(ta.scrollHeight, 120)}px`;
   }, [input]);
 
-  // ── Send message ─────────────────────────────────────────────────────────────
-  async function handleSend() {
-    if (!input.trim()) return;
+  // ── Send / stop ──────────────────────────────────────────────────────────────
+  // handleStop is a dedicated cancel — same AbortController the next send
+  // call would interrupt, just triggered explicitly via the Stop button so
+  // the user can abort a long answer without sending a new message.
+  function handleStop() {
+    abortRef.current?.abort();
+  }
+
+  // Programmatic send used by suggested-prompt cards. Passes the text
+  // directly into handleSend (avoids racing with React's setInput batch).
+  function sendPrompt(text: string) {
+    void handleSend(text);
+  }
+
+  async function handleSend(textOverride?: string) {
+    const userContent = (textOverride ?? input).trim();
+    if (!userContent) return;
 
     // Abort any in-flight stream cleanly
     abortRef.current?.abort();
     abortRef.current = new AbortController();
-
-    const userContent = input.trim();
     // Cap history at 20 messages to prevent unbounded growth
     const history = messages.slice(-20).map(m => ({ role: m.role, content: m.content }));
 
@@ -879,17 +934,55 @@ export default function ChatPanel({ docId, parseChunks = [], onChunkSelect }: Ch
         )}
 
         {!hydrating && messages.length === 0 && (
-          <div className="flex flex-col items-center justify-center h-full gap-3 select-none">
-            <div className="w-10 h-10 rounded-full flex items-center justify-center text-lg"
-              style={{ background: "var(--al-accent-soft)", color: "var(--al-accent)" }}>
-              💬
+          <div className="flex flex-col items-center justify-center h-full gap-5 select-none px-2">
+            <div className="flex flex-col items-center gap-2">
+              <div
+                className="w-11 h-11 rounded-2xl flex items-center justify-center"
+                style={{
+                  background: "linear-gradient(135deg, var(--al-accent) 0%, var(--al-accent-2) 100%)",
+                  boxShadow:  "0 4px 14px var(--al-accent-glow)",
+                }}
+              >
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none"
+                  stroke="#fff" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z" />
+                </svg>
+              </div>
+              <p className="text-sm font-semibold" style={{ color: "var(--al-text)" }}>
+                Ask anything about this document
+              </p>
+              <p className="text-xs text-center" style={{ color: "var(--al-subtle)", maxWidth: 260 }}>
+                Cite-grounded answers with click-through to the source cell.
+              </p>
             </div>
-            <p className="text-sm font-medium" style={{ color: "var(--al-text-secondary)" }}>
-              Ask anything about this document
-            </p>
-            <p className="text-xs" style={{ color: "var(--al-subtle)" }}>
-              Click a source chip to highlight it in the PDF
-            </p>
+
+            {/* Starter prompts — generic-financial, doc-agnostic.
+                Clicking sends immediately so first-time users see a result
+                without typing. Four feels right; more would crowd the panel. */}
+            <div className="w-full max-w-sm grid grid-cols-1 sm:grid-cols-2 gap-2 mt-1">
+              {STARTER_PROMPTS.map(({ label, prompt, icon }) => (
+                <button
+                  key={prompt}
+                  onClick={() => sendPrompt(prompt)}
+                  className="text-left px-3 py-2.5 rounded-xl transition-all hover:-translate-y-px"
+                  style={{
+                    background: "var(--al-card)",
+                    border:     "1.5px solid var(--al-border)",
+                    boxShadow:  "var(--al-shadow-sm, 0 1px 2px rgba(0,0,0,0.04))",
+                  }}
+                >
+                  <div className="flex items-start gap-2">
+                    <span className="text-base shrink-0" style={{ color: "var(--al-accent)" }}>{icon}</span>
+                    <div className="min-w-0">
+                      <p className="text-xs font-semibold truncate" style={{ color: "var(--al-text)" }}>{label}</p>
+                      <p className="text-[11px] leading-tight mt-0.5 truncate" style={{ color: "var(--al-subtle)" }}>
+                        {prompt}
+                      </p>
+                    </div>
+                  </div>
+                </button>
+              ))}
+            </div>
           </div>
         )}
 
@@ -915,36 +1008,75 @@ export default function ChatPanel({ docId, parseChunks = [], onChunkSelect }: Ch
             value={input}
             onChange={e => setInput(e.target.value)}
             onKeyDown={e => {
-              if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSend(); }
+              if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void handleSend(); }
             }}
-            placeholder="Ask about this document… (Enter to send)"
-            className="flex-1 resize-none px-3 py-2.5 rounded-xl text-sm outline-none transition-all"
+            disabled={streaming}
+            placeholder={streaming ? "Generating…" : "Ask about this document"}
+            className="chat-textarea flex-1 resize-none px-3.5 py-2.5 rounded-xl text-sm outline-none transition-all"
             style={{
               background: "var(--al-card)",
               border:     "1.5px solid var(--al-border)",
               color:      "var(--al-text)",
               minHeight:  "40px",
               maxHeight:  "120px",
+              opacity:    streaming ? 0.6 : 1,
             }}
           />
-          <button
-            onClick={handleSend}
-            disabled={!input.trim()}
-            className="px-4 py-2.5 rounded-xl text-sm font-semibold transition-all shrink-0"
-            style={{
-              background: input.trim() ? "var(--al-accent)" : "var(--al-bg-secondary)",
-              color:      input.trim() ? "#fff" : "var(--al-subtle)",
-              cursor:     input.trim() ? "pointer" : "not-allowed",
-            }}
-          >
-            {streaming ? "↺" : "Send"}
-          </button>
+          {streaming ? (
+            // Streaming → dedicated Stop. Visually distinct from Send so
+            // the user knows tapping cancels (not sends a new turn).
+            <button
+              onClick={handleStop}
+              aria-label="Stop generating"
+              title="Stop generating"
+              className="w-10 h-10 rounded-xl flex items-center justify-center transition-all shrink-0"
+              style={{
+                background: "var(--al-bg-secondary)",
+                color:      "var(--al-text)",
+                border:     "1.5px solid var(--al-border)",
+              }}
+            >
+              <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true">
+                <rect x="2" y="2" width="10" height="10" rx="1.5" fill="currentColor" />
+              </svg>
+            </button>
+          ) : (
+            // Idle → arrow-up Send. Disabled when input is empty.
+            <button
+              onClick={() => handleSend()}
+              disabled={!input.trim()}
+              aria-label="Send message"
+              title="Send (Enter)"
+              className="w-10 h-10 rounded-xl flex items-center justify-center transition-all shrink-0"
+              style={{
+                background: input.trim() ? "var(--al-accent)" : "var(--al-bg-secondary)",
+                color:      input.trim() ? "#fff"            : "var(--al-subtle)",
+                cursor:     input.trim() ? "pointer"         : "not-allowed",
+                boxShadow:  input.trim() ? "0 2px 8px var(--al-accent-glow)" : "none",
+              }}
+            >
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none"
+                stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M8 13V3" />
+                <path d="M3.5 7.5L8 3l4.5 4.5" />
+              </svg>
+            </button>
+          )}
         </div>
-        {streaming && (
-          <p className="text-xs mt-1.5 px-1" style={{ color: "var(--al-subtle)" }}>
-            Analyzing… send a new message to cancel
+        {/* Keyboard hint footer — replaces the streaming-only "Analyzing…"
+            message with a permanent, more useful affordance. */}
+        <div className="flex items-center justify-between mt-1.5 px-1">
+          <p className="text-[11px]" style={{ color: "var(--al-subtle)" }}>
+            {streaming
+              ? "Analyzing… click ■ to stop."
+              : <><kbd className="chat-kbd">Enter</kbd> to send · <kbd className="chat-kbd">Shift+Enter</kbd> for new line</>}
           </p>
-        )}
+          {input.length > 1500 && (
+            <span className="text-[11px]" style={{ color: input.length > 1900 ? "#dc2626" : "var(--al-subtle)" }}>
+              {input.length} / 2000
+            </span>
+          )}
+        </div>
       </div>
     </div>
   );

@@ -122,6 +122,38 @@
 .fade-in-up:nth-child(3) { animation-delay: 0.3s; }
 .fade-in-up:nth-child(4) { animation-delay: 0.4s; }
 
+/* Chat-message slide-in: small fade + lift, ~200ms. Used on every new
+   message bubble so the panel feels native during streaming. Lighter
+   than fade-in-up — chat is high-frequency, the entrance should be
+   subtle, not theatrical. */
+@keyframes chatMsgIn {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.chat-msg-enter { animation: chatMsgIn 200ms ease-out both; }
+
+/* Chat textarea focus state — accent ring on focus only, neutral at rest.
+   Replaces the "outline-none + nothing else" default that made it look
+   half-finished. */
+.chat-textarea:focus {
+  border-color: var(--al-accent) !important;
+  box-shadow:   0 0 0 3px var(--al-accent-soft);
+}
+
+/* Inline kbd shortcuts used in the chat input footer. */
+.chat-kbd {
+  display:        inline-block;
+  padding:        1px 5px;
+  margin:         0 1px;
+  border-radius:  4px;
+  font-family:    ui-monospace, "SF Mono", Menlo, monospace;
+  font-size:      10px;
+  line-height:    1.4;
+  background:     var(--al-bg-secondary);
+  border:         1px solid var(--al-border);
+  color:          var(--al-text-secondary);
+}
+
 /* ─── Scrollbar styling ──────────────────────────────────────────────────────── */
 ::-webkit-scrollbar { width: 6px; height: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }
