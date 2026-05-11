@@ -52,6 +52,21 @@ def create_conversation(user_id: str, doc_id: str, title: Optional[str]) -> dict
     return res.data[0]
 
 
+def get_conversation(conv_id: str, user_id: str) -> Optional[dict]:
+    """Single-row lookup keyed by id AND user_id. RLS would also gate this,
+    but the explicit check makes the surface unambiguous."""
+    res = (
+        db.get_client()
+        .table("analyzer_conversations")
+        .select("id, user_id, doc_id, title, created_at, updated_at")
+        .eq("id", conv_id)
+        .eq("user_id", user_id)
+        .limit(1)
+        .execute()
+    )
+    return res.data[0] if res.data else None
+
+
 def list_conversations(user_id: str, doc_id: str) -> list[dict]:
     res = (
         db.get_client()

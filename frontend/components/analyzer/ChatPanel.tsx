@@ -43,6 +43,13 @@ interface ChatPanelProps {
   onChunkSelect: (chunkId: string | null, secondaryIds?: string[]) => void;
 }
 
+interface Conversation {
+  id:         string;
+  title:      string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 // ── Chip label builder ────────────────────────────────────────────────────────
 
 function buildChipLabel(chunk: SourceChunk): string {
@@ -249,9 +256,17 @@ export default function ChatPanel({ docId, parseChunks = [], onChunkSelect }: Ch
   const [hydrating, setHydrating] = useState(true);
   const [activeChip, setActiveChip] = useState<{ msgId: string; idx: number } | null>(null);
 
+  // Multi-conversation state. `conversations` is the list for the current
+  // doc (ordered most-recent-first); `currentConvId` is the active thread.
+  // `menuOpen` toggles the dropdown that lets the user switch threads.
+  const [conversations,  setConversations]  = useState<Conversation[]>([]);
+  const [currentConvId,  setCurrentConvId]  = useState<string | null>(null);
+  const [menuOpen,       setMenuOpen]       = useState(false);
+
   const bottomRef   = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const abortRef    = useRef<AbortController | null>(null);
+  const menuRef     = useRef<HTMLDivElement>(null);
 
   // Auto-scroll to latest message
   useEffect(() => {
@@ -259,30 +274,138 @@ export default function ChatPanel({ docId, parseChunks = [], onChunkSelect }: Ch
     if (container) container.scrollTop = container.scrollHeight;
   }, [messages]);
 
-  // Hydrate from server on mount / doc change — replaces the previous
-  // browser-only history. Reloading the page or navigating away and back
-  // restores the full conversation including chip sources.
+  // Close the conversation dropdown on outside click
+  useEffect(() => {
+    if (!menuOpen) return;
+    function onDown(e: MouseEvent) {
+      if (!menuRef.current?.contains(e.target as Node)) setMenuOpen(false);
+    }
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [menuOpen]);
+
+  // ── Helpers ───────────────────────────────────────────────────────────────
+  // Load (or hydrate) one conversation's messages into state.
+  async function loadConversation(convId: string | null) {
+    setHydrating(true);
+    setMessages([]);
+    setActiveChip(null);
+    try {
+      const url = convId
+        ? `/api/documents/${docId}/chat-history?conversation_id=${convId}`
+        : `/api/documents/${docId}/chat-history`;
+      const res = await fetch(url, { credentials: "include" });
+      if (!res.ok) throw new Error(String(res.status));
+      const data = await res.json();
+      const rows = Array.isArray(data?.messages) ? data.messages : [];
+      setMessages(
+        rows.map((m: { id: string; role: "user" | "assistant"; content: string; sources?: SourceChunk[] }) => ({
+          id:      m.id,
+          role:    m.role,
+          content: m.content,
+          sources: m.sources ?? undefined,
+        })),
+      );
+      const id = data?.conversation?.id ?? null;
+      setCurrentConvId(id);
+    } catch {
+      setMessages([]);
+    } finally {
+      setHydrating(false);
+    }
+  }
+
+  async function refreshConversations(): Promise<Conversation[]> {
+    try {
+      const r = await fetch(`/api/documents/${docId}/conversations`, { credentials: "include" });
+      if (!r.ok) return [];
+      const data = await r.json();
+      const list: Conversation[] = data?.conversations ?? [];
+      setConversations(list);
+      return list;
+    } catch {
+      return [];
+    }
+  }
+
+  // Hydrate from server on mount / doc change. Pulls the conversation list
+  // AND the most-recent thread's messages. Reloading the page or switching
+  // docs restores the user's last active thread for that doc.
   useEffect(() => {
     let cancelled = false;
-    setHydrating(true);
-    fetch(`/api/documents/${docId}/chat-history`, { credentials: "include" })
-      .then(r => (r.ok ? r.json() : Promise.reject(r.status)))
-      .then(data => {
-        if (cancelled) return;
-        const rows = Array.isArray(data?.messages) ? data.messages : [];
-        setMessages(
-          rows.map((m: { id: string; role: "user" | "assistant"; content: string; sources?: SourceChunk[] }) => ({
-            id:      m.id,
-            role:    m.role,
-            content: m.content,
-            sources: m.sources ?? undefined,
-          })),
-        );
-      })
-      .catch(() => { /* leave messages empty — fresh conversation */ })
-      .finally(() => { if (!cancelled) setHydrating(false); });
+    (async () => {
+      if (cancelled) return;
+      await refreshConversations();
+      // loadConversation(null) → server returns the most-recent thread,
+      // creating one if none exist. Same contract as before.
+      if (!cancelled) await loadConversation(null);
+    })();
     return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [docId]);
+
+  // ── New / switch / rename / delete handlers ───────────────────────────────
+  async function handleNewConversation() {
+    setMenuOpen(false);
+    try {
+      const r = await fetch(`/api/documents/${docId}/conversations`, {
+        method:      "POST",
+        credentials: "include",
+        headers:     { "Content-Type": "application/json" },
+        body:        JSON.stringify({}),
+      });
+      if (!r.ok) return;
+      const data  = await r.json();
+      const newId = data?.conversation?.id;
+      if (!newId) return;
+      await refreshConversations();
+      await loadConversation(newId);
+    } catch { /* swallow — user can retry */ }
+  }
+
+  async function handleSwitchConversation(convId: string) {
+    if (convId === currentConvId) { setMenuOpen(false); return; }
+    setMenuOpen(false);
+    await loadConversation(convId);
+  }
+
+  async function handleDeleteConversation(convId: string) {
+    try {
+      const r = await fetch(`/api/documents/${docId}/conversations/${convId}`, {
+        method:      "DELETE",
+        credentials: "include",
+      });
+      if (!r.ok) return;
+      const remaining = await refreshConversations();
+      // If we just deleted the active thread, drop into the most-recent
+      // remaining one (or auto-create a fresh one via loadConversation(null)).
+      if (convId === currentConvId) {
+        if (remaining.length > 0) await loadConversation(remaining[0].id);
+        else                       await loadConversation(null);
+      }
+    } catch { /* swallow */ }
+  }
+
+  // First user message text → conversation title (auto-name). Keeps the
+  // dropdown readable. Server stores the title; we patch it on first send
+  // of a freshly-created (titleless) conversation.
+  async function maybeAutoTitle(convId: string | null, firstMessage: string) {
+    if (!convId) return;
+    const conv = conversations.find(c => c.id === convId);
+    if (!conv || conv.title) return;
+    const title = firstMessage.slice(0, 60).trim();
+    if (!title) return;
+    try {
+      await fetch(`/api/documents/${docId}/conversations/${convId}`, {
+        method:      "PATCH",
+        credentials: "include",
+        headers:     { "Content-Type": "application/json" },
+        body:        JSON.stringify({ title }),
+      });
+      // Optimistic local update so the dropdown reflects the title right away.
+      setConversations(prev => prev.map(c => c.id === convId ? { ...c, title } : c));
+    } catch { /* swallow */ }
+  }
 
   // Auto-resize textarea
   useEffect(() => {
@@ -316,12 +439,20 @@ export default function ChatPanel({ docId, parseChunks = [], onChunkSelect }: Ch
     setStreaming(true);
     setActiveChip(null);
 
+    // Auto-title the (still-untitled) conversation from the first user
+    // message — fire-and-forget so it doesn't block the SSE stream below.
+    if (messages.length === 0) { void maybeAutoTitle(currentConvId, userContent); }
+
     try {
       const res = await fetch(`/api/documents/${docId}/chat`, {
         method:      "POST",
         credentials: "include",
         headers:     { "Content-Type": "application/json" },
-        body:        JSON.stringify({ message: userContent, history }),
+        body:        JSON.stringify({
+          message:         userContent,
+          history,
+          conversation_id: currentConvId,
+        }),
         signal:      abortRef.current.signal,
       });
 
@@ -422,8 +553,108 @@ export default function ChatPanel({ docId, parseChunks = [], onChunkSelect }: Ch
   }
 
   // ── Render ────────────────────────────────────────────────────────────────
+  const currentConv = conversations.find(c => c.id === currentConvId);
+  const currentTitle = currentConv?.title?.trim() || "New chat";
+
   return (
     <div className="h-full flex flex-col">
+      {/* Header — conversation switcher + new-chat */}
+      <div
+        ref={menuRef}
+        className="relative px-3 py-2 border-b shrink-0 flex items-center gap-2"
+        style={{ borderColor: "var(--al-border)", background: "var(--al-bg-soft)" }}
+      >
+        <button
+          onClick={() => setMenuOpen(o => !o)}
+          className="flex-1 flex items-center gap-2 min-w-0 text-left px-2.5 py-1.5 rounded-lg transition-all"
+          style={{
+            background: menuOpen ? "var(--al-card)" : "transparent",
+            border:     `1px solid ${menuOpen ? "var(--al-border)" : "transparent"}`,
+          }}
+          aria-label="Switch conversation"
+        >
+          <span className="text-xs shrink-0" style={{ color: "var(--al-subtle)" }}>💬</span>
+          <span
+            className="text-xs font-medium truncate"
+            style={{ color: currentConv?.title ? "var(--al-text)" : "var(--al-subtle)" }}
+          >
+            {currentTitle}
+          </span>
+          <span
+            className="text-xs shrink-0 ml-auto transition-transform"
+            style={{
+              color:      "var(--al-subtle)",
+              transform:  menuOpen ? "rotate(180deg)" : "none",
+            }}
+          >
+            ▾
+          </span>
+        </button>
+        <button
+          onClick={handleNewConversation}
+          title="Start a new chat"
+          className="shrink-0 w-7 h-7 rounded-lg flex items-center justify-center text-sm font-semibold transition-all"
+          style={{
+            background: "var(--al-accent-soft)",
+            color:      "var(--al-accent)",
+          }}
+        >
+          +
+        </button>
+
+        {menuOpen && (
+          <div
+            className="absolute left-3 right-3 top-full mt-1 rounded-xl overflow-hidden z-20"
+            style={{
+              background: "var(--al-card)",
+              border:     "1.5px solid var(--al-border)",
+              boxShadow:  "0 6px 24px rgba(0,0,0,0.12)",
+            }}
+          >
+            {conversations.length === 0 && (
+              <div className="px-3 py-3 text-xs" style={{ color: "var(--al-subtle)" }}>
+                No conversations yet.
+              </div>
+            )}
+            {conversations.map(c => {
+              const isActive = c.id === currentConvId;
+              return (
+                <div
+                  key={c.id}
+                  className="flex items-center gap-2 px-2 py-1.5 group transition-colors"
+                  style={{ background: isActive ? "var(--al-accent-soft)" : "transparent" }}
+                >
+                  <button
+                    onClick={() => handleSwitchConversation(c.id)}
+                    className="flex-1 min-w-0 text-left px-1.5 py-1 rounded-md"
+                  >
+                    <p
+                      className="text-xs font-medium truncate"
+                      style={{ color: isActive ? "var(--al-accent)" : "var(--al-text)" }}
+                    >
+                      {c.title?.trim() || "New chat"}
+                    </p>
+                    <p className="text-[10px] mt-0.5" style={{ color: "var(--al-subtle)" }}>
+                      {new Date(c.updated_at).toLocaleString(undefined, {
+                        month: "short", day: "numeric", hour: "2-digit", minute: "2-digit",
+                      })}
+                    </p>
+                  </button>
+                  <button
+                    onClick={(e) => { e.stopPropagation(); handleDeleteConversation(c.id); }}
+                    title="Delete this conversation"
+                    className="shrink-0 w-6 h-6 rounded-md opacity-0 group-hover:opacity-100 transition-opacity text-xs"
+                    style={{ color: "var(--al-subtle)" }}
+                  >
+                    ✕
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
       {/* Messages */}
       <div className="flex-1 overflow-y-auto p-4 space-y-4">
         {hydrating && messages.length === 0 && (

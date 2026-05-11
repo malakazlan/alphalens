@@ -20,6 +20,7 @@ from schemas import (
     HoldingCreate, HoldingUpdate,
     ProfileUpsert, WatchlistCreate, WatchlistUpdate,
     ConversationCreate, ConversationUpdate, FinBotMessageSend,
+    AnalyzerConversationCreate, AnalyzerConversationUpdate,
 )
 import finbot_repo
 import analyzer_chat_repo
@@ -2336,26 +2337,40 @@ async def get_templates(current_user: dict = Depends(get_current_user)):
 
 
 # ─── Analyzer chat persistence ─────────────────────────────────────────────────
-# A single conversation per (user, doc) is the default UX today — the
-# get_or_create helper hides that decision. The schema supports multiple
-# threads per doc when we wire UI for that later.
+# Multiple conversations per (user, doc) are supported — the chat panel
+# shows a switcher + 'New chat' button. The default for hydration without
+# an explicit conversation_id is still get_or_create (most-recent or fresh)
+# so older clients that don't send the id keep working.
 
 @app.get("/api/documents/{doc_id}/chat-history")
 async def get_chat_history(
     doc_id: str,
+    conversation_id: str | None = None,
     current_user: dict = Depends(get_current_user),
 ):
-    """Hydrate the chat panel on mount. Returns the latest conversation for
-    this (user, doc) and its messages in chronological order. Auto-creates
-    an empty conversation if none exist — keeps the frontend's contract
-    simple (always something to render)."""
+    """Hydrate the chat panel on mount.
+
+    If `conversation_id` is supplied, return that specific thread (404 if
+    it doesn't exist or doesn't belong to the caller). Otherwise return
+    the most-recent thread for this (user, doc), creating one if none
+    exist — keeps the frontend's contract simple (always something to
+    render)."""
     user_id = current_user["id"]
     doc = await asyncio.to_thread(db.get_document, doc_id, user_id)
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
-    conv = await asyncio.to_thread(
-        analyzer_chat_repo.get_or_create_conversation, user_id, doc_id,
-    )
+
+    if conversation_id:
+        conv = await asyncio.to_thread(
+            analyzer_chat_repo.get_conversation, conversation_id, user_id,
+        )
+        if not conv or conv.get("doc_id") != doc_id:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+    else:
+        conv = await asyncio.to_thread(
+            analyzer_chat_repo.get_or_create_conversation, user_id, doc_id,
+        )
+
     messages = await asyncio.to_thread(
         analyzer_chat_repo.list_messages, conv["id"], user_id,
     )
@@ -2380,6 +2395,81 @@ async def clear_chat_history(
     return {"success": True, "deleted": len(convs)}
 
 
+# ─── Conversation thread management ────────────────────────────────────────
+# These four endpoints expose the multi-thread surface. Single-thread UX
+# keeps using /chat-history without an `id`; multi-thread UX uses these.
+
+@app.get("/api/documents/{doc_id}/conversations")
+async def list_doc_conversations(
+    doc_id: str,
+    current_user: dict = Depends(get_current_user),
+):
+    user_id = current_user["id"]
+    doc = await asyncio.to_thread(db.get_document, doc_id, user_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+    conversations = await asyncio.to_thread(
+        analyzer_chat_repo.list_conversations, user_id, doc_id,
+    )
+    return {"conversations": conversations}
+
+
+@app.post("/api/documents/{doc_id}/conversations")
+async def create_doc_conversation(
+    doc_id: str,
+    body: AnalyzerConversationCreate | None = None,
+    current_user: dict = Depends(get_current_user),
+):
+    """Start a fresh thread for this doc. Returns the new conversation row
+    so the frontend can switch to it immediately."""
+    user_id = current_user["id"]
+    doc = await asyncio.to_thread(db.get_document, doc_id, user_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+    title = body.title if body else None
+    conv = await asyncio.to_thread(
+        analyzer_chat_repo.create_conversation, user_id, doc_id, title,
+    )
+    return {"conversation": conv}
+
+
+@app.patch("/api/documents/{doc_id}/conversations/{conv_id}")
+async def rename_doc_conversation(
+    doc_id: str,
+    conv_id: str,
+    body: AnalyzerConversationUpdate,
+    current_user: dict = Depends(get_current_user),
+):
+    user_id = current_user["id"]
+    conv = await asyncio.to_thread(
+        analyzer_chat_repo.get_conversation, conv_id, user_id,
+    )
+    if not conv or conv.get("doc_id") != doc_id:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    await asyncio.to_thread(
+        analyzer_chat_repo.update_conversation_title, conv_id, user_id, body.title,
+    )
+    return {"success": True}
+
+
+@app.delete("/api/documents/{doc_id}/conversations/{conv_id}")
+async def delete_doc_conversation(
+    doc_id: str,
+    conv_id: str,
+    current_user: dict = Depends(get_current_user),
+):
+    user_id = current_user["id"]
+    conv = await asyncio.to_thread(
+        analyzer_chat_repo.get_conversation, conv_id, user_id,
+    )
+    if not conv or conv.get("doc_id") != doc_id:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    await asyncio.to_thread(
+        analyzer_chat_repo.delete_conversation, conv_id, user_id,
+    )
+    return {"success": True}
+
+
 @app.post("/api/documents/{doc_id}/chat")
 @limiter.limit("20/minute")
 async def chat_document(
@@ -2397,10 +2487,19 @@ async def chat_document(
 
     # Resolve (or create) the persistence conversation BEFORE streaming
     # starts, so we have a stable conversation_id to write the user message
-    # against. Done synchronously off-thread to keep the SSE handler async.
-    conv = await asyncio.to_thread(
-        analyzer_chat_repo.get_or_create_conversation, current_user["id"], doc_id,
-    )
+    # against. If the client supplied an explicit thread id, honour it
+    # (404 if it doesn't belong to the caller); otherwise fall back to
+    # get_or_create (single-thread default).
+    if body.conversation_id:
+        conv = await asyncio.to_thread(
+            analyzer_chat_repo.get_conversation, body.conversation_id, current_user["id"],
+        )
+        if not conv or conv.get("doc_id") != doc_id:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+    else:
+        conv = await asyncio.to_thread(
+            analyzer_chat_repo.get_or_create_conversation, current_user["id"], doc_id,
+        )
     conversation_id = conv["id"]
     # Persist the user message immediately. If the stream fails mid-flight
     # we still want the prompt itself stored so the UI can replay it.

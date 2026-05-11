@@ -39,6 +39,21 @@ class ChatRequest(BaseModel):
     """Body for POST /api/documents/{doc_id}/chat and /api/finbot/chat."""
     message: str = Field(..., min_length=1, max_length=2000)
     history: list[ChatHistoryItem] = Field(default_factory=list, max_length=40)
+    # Optional: target a specific analyzer-side conversation thread. When
+    # omitted, the chat endpoint falls back to get_or_create_conversation
+    # (most-recent for this user+doc, create one if none exist).
+    conversation_id: Optional[str] = None
+
+
+class AnalyzerConversationCreate(BaseModel):
+    """Body for POST /api/documents/{doc_id}/conversations — title optional.
+    Untitled threads show up as 'New chat' until renamed."""
+    title: Optional[str] = Field(default=None, max_length=120)
+
+
+class AnalyzerConversationUpdate(BaseModel):
+    """Body for PATCH /api/documents/{doc_id}/conversations/{id}."""
+    title: str = Field(..., min_length=1, max_length=120)
 
 
 class ReportGenerateRequest(BaseModel):
