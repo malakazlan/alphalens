@@ -30,6 +30,42 @@ from financial_classifier import classify_pdf
 from page_filter import select_pages, build_filtered_pdf
 from extract_filter import build_extract_markdown
 
+# ─── Section-title relaxation ────────────────────────────────────────────────
+# ADE inconsistently classifies financial section headings — sometimes as
+# `title`, sometimes as `text`, sometimes as `page_header`. The downstream
+# chunk pipeline only inherits `current_section` from `title` chunks, so a
+# heading that ADE tags as `text` silently disappears from every table chunk
+# below it. Result: a question like "summary of cash flow" finds no chunks
+# tagged with that section and the model says "not available."
+#
+# Fix: any chunk whose plain text starts with one of these well-known section
+# names AND is short enough to plausibly BE a heading (not a paragraph
+# mentioning the phrase) is treated as a section title equivalent. The
+# subsequent table chunks then inherit the correct section_header.
+import re as _re_section
+_FINANCIAL_SECTION_TITLE_RE = _re_section.compile(
+    r"^\s*("
+    r"cash\s+flows?(?:\s+statement)?"
+    r"|statement\s+of\s+cash\s+flows?"
+    r"|balance\s+sheet"
+    r"|statement\s+of\s+financial\s+position"
+    r"|income\s+statement"
+    r"|(?:consolidated\s+)?statements?\s+of\s+operations"
+    r"|profit\s+(?:and|&)\s+loss(?:\s+account)?"
+    r"|statement\s+of\s+changes\s+in\s+equity"
+    r"|statement\s+of\s+comprehensive\s+income"
+    r"|notes\s+to\s+(?:and\s+forming\s+part\s+of\s+)?(?:the\s+)?(?:consolidated\s+)?financial\s+statements"
+    r")\b",
+    _re_section.IGNORECASE,
+)
+# Heading-vs-paragraph gate. A paragraph that mentions "cash flow" buried in
+# narrative text would also match the regex above — the length gate prevents
+# that. Empirically, ADE-emitted financial headings are <100 chars; the row
+# label "Cash generated from operations" and similar table content are also
+# short, but they don't start with a canonical section name so the regex
+# anchor `^\s*(...)` filters them out.
+_MAX_SECTION_HEADING_LEN = 120
+
 # ─── Cost Lever 2: Global ADE response cache ─────────────────────────────────
 # Cache is keyed by file SHA-256, persisted in the same Supabase Storage
 # bucket as documents (under a non-user prefix). RLS doesn't matter since
@@ -674,10 +710,23 @@ async def process_document(ctx: dict, doc_id: str, user_id: str, file_path: str)
             chunk_id = chunk.id if hasattr(chunk, "id") else chunk.get("id", str(uuid.uuid4()))
             cgrounding = chunk.grounding if hasattr(chunk, "grounding") else chunk.get("grounding", {})
 
+            # Track the running section header. Two sources, in this order:
+            #   1. ADE-classified `title` chunks (canonical path)
+            #   2. Short chunks whose text matches a financial-section name
+            #      even when ADE tagged them as text/page_header/etc.
+            # Without (2), headings like a bare "CASH FLOW STATEMENT" that
+            # ADE classifies as text get dropped, and every table below them
+            # loses its section_header.
+            import re
+            plain = re.sub(r"<[^>]+>", "", cmarkdown).strip()
             if ctype == "title":
-                # Strip anchor tag to get clean title text
-                import re
-                current_section = re.sub(r"<[^>]+>", "", cmarkdown).strip()
+                current_section = plain
+            elif (
+                plain
+                and len(plain) <= _MAX_SECTION_HEADING_LEN
+                and _FINANCIAL_SECTION_TITLE_RE.match(plain)
+            ):
+                current_section = plain
 
             page = 0
             bbox = {}
