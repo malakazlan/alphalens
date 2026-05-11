@@ -39,7 +39,12 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # ── OpenAI singleton ──────────────────────────────────────────────────────────
-_oai = openai.OpenAI(api_key=settings.OPENAI_API_KEY)
+_oai  = openai.OpenAI(api_key=settings.OPENAI_API_KEY)
+# Async client — used by the report-generation flow to fan out section
+# calls in parallel without blocking the event loop. The sync `_oai`
+# stays in place for the chat / SSE paths so we don't disturb anything
+# already in production.
+_aoai = openai.AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
 
 # ── processed.json in-memory cache (keyed by doc_id, 10-min TTL) ─────────────
 import time as _time
@@ -2428,24 +2433,69 @@ async def get_extract(doc_id: str, current_user: dict = Depends(get_current_user
 
 # ── Report endpoints (section-by-section generation) ─────────────────────────
 from report_templates import (
-    get_template_sections, get_section_config, build_section_extract, TEMPLATES, SECTION_CONFIGS,
+    get_template_sections, get_section_config, build_section_extract,
+    section_system_prompt, resolve_model,
+    TEMPLATES, SECTION_CONFIGS,
 )
 
 
-def _build_section_chunks(all_chunks: list, rag_query: str, top_k: int) -> str:
-    """Build context string from chunks, preferring those matching the rag_query keywords."""
-    keywords = set(rag_query.lower().split())
-    scored = []
-    for c in all_chunks:
-        if c.get("chunk_type") not in ("text", "title", "key_value", "table"):
+def _section_rag(
+    *,
+    user_id:  str,
+    doc_id:   str,
+    rag_query: str,
+    top_k:    int,
+) -> tuple[str, list[dict]]:
+    """Per-section retrieval — embedding-based, not keyword.
+
+    Phase 3 commit 2 swap-in for the old keyword-overlap scorer. Each
+    section's rag_query is run through:
+      1. Synonym expansion via `_expand_query_for_retrieval` (same helper
+         the chat path uses) so a query about 'revenue' also lifts chunks
+         using the word 'sales' / 'turnover'.
+      2. Qdrant search filtered by user_id + doc_id, top-15 raw.
+      3. Section-bucket rerank so on-topic chunks beat marginally-better
+         off-topic ones.
+      4. Keep top-`top_k` for the LLM call.
+
+    Returns (context_text, chunks). The chunks list is kept so commit 3
+    can persist a row in report_sources per (section, chunk_id) for the
+    audit trail — today we only consume context_text.
+    """
+    try:
+        query_vec = embeddings.embed_query(_expand_query_for_retrieval(rag_query))
+    except Exception as e:
+        logger.warning(f"section_rag embed failed: {e}")
+        return ("", [])
+    try:
+        raw = qdrant_store.search(query_vec, user_id, doc_id, max(15, top_k))
+    except Exception as e:
+        logger.warning(f"section_rag search failed: {e}")
+        return ("", [])
+
+    q_buckets = _section_buckets(rag_query)
+    ranked    = _rerank_results_by_section(raw, q_buckets)
+    selected  = ranked[:top_k]
+
+    chunks_meta: list[dict] = []
+    lines:       list[str]  = []
+    for r in selected:
+        payload = getattr(r, "payload", None) or {}
+        text    = (payload.get("markdown") or "").strip()
+        page    = payload.get("page", 0)
+        if not text:
             continue
-        md = c.get("markdown", "")
-        lower_md = md.lower()
-        score = sum(1 for kw in keywords if kw in lower_md)
-        scored.append((score, c.get("page", 0), md))
-    scored.sort(key=lambda x: (-x[0], x[1]))
-    lines = [f"[p{s[1]+1}] {s[2]}" for s in scored[:top_k]]
-    return "\n\n".join(lines)[:5000]
+        lines.append(f"[p{int(page) + 1}] {text}")
+        chunks_meta.append({
+            "chunk_id":       payload.get("chunk_id"),
+            "page":           page,
+            "section_header": payload.get("section_header"),
+        })
+
+    # Soft cap on prompt size — 6000 chars is roughly 1500 tokens per
+    # section, leaves plenty of headroom for the per-section instructions
+    # and the extract_data block.
+    return ("\n\n".join(lines)[:6000], chunks_meta)
 
 
 @app.post("/api/documents/{doc_id}/report")
@@ -2456,126 +2506,246 @@ async def generate_report(
     body: ReportGenerateRequest,
     current_user: dict = Depends(get_current_user),
 ):
-    """Generate a multi-section report. Streams SSE events per section."""
+    """Generate a multi-section report.
+
+    Phase 3 commit 2 — sections run in parallel (concurrency cap = 4)
+    via the async OpenAI client. Each section uses per-section RAG
+    (real embedding search + section-bucket rerank), per-section
+    model routing (`gpt-4o-mini` for structural, `gpt-4o` for
+    analytical), and a stable system-prompt prefix so OpenAI prompt
+    caching engages across sibling sections of the same report.
+
+    All section events are multiplexed onto a single SSE stream via
+    an asyncio.Queue — section_start / delta / section_done / section_error
+    are interleaved by completion time rather than ordered by section
+    index. The frontend already keys section UI by `section` id so
+    out-of-order events render correctly.
+    """
     doc = await asyncio.to_thread(db.get_document, doc_id, current_user["id"])
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
 
     template_id = body.template if body.template in TEMPLATES else "full_analysis"
 
-    user_id = current_user["id"]
-    extract = doc.get("extract_data") or {}
+    user_id     = current_user["id"]
+    extract     = doc.get("extract_data") or {}
     section_ids = get_template_sections(template_id)
 
-    # Create report row upfront
+    # Create report row upfront so the streaming UI has a target.
     report_id = str(uuid.uuid4())
     initial_sections = {sid: {"markdown": "", "status": "pending"} for sid in section_ids}
     await asyncio.to_thread(db.insert_report, {
-        "id": report_id,
-        "doc_id": doc_id,
-        "user_id": user_id,
-        "template": template_id,
-        "sections": initial_sections,
-        "status": "generating",
+        "id":         report_id,
+        "doc_id":     doc_id,
+        "user_id":    user_id,
+        "template":   template_id,
+        "sections":   initial_sections,
+        "status":     "generating",
         "word_count": 0,
     })
 
+    # ── Concurrency + multiplex plumbing ─────────────────────────────────
+    # Cap of 4 parallel sections. Empirically:
+    #   - Tier-1 OpenAI accounts comfortably handle this with gpt-4o + mini.
+    #   - 4 was the sweet spot in chat-side testing for prompt-cache hit
+    #     rate vs. RPS pressure.
+    # Bump cautiously after observing real-world rate-limit behaviour.
+    CONCURRENCY = 4
+
+    # ── Stable system prefix for prompt caching ─────────────────────────
+    # Sibling sections of the same report share the same doc context.
+    # Putting it first in the system message means OpenAI prompt caching
+    # auto-hits across them — typically ~50% off cached tokens, which
+    # matters when 7 sections fan out at once.
+    # Document facts: small block from metadata.
+    meta = doc.get("metadata") or {}
+    doc_facts_bits: list[str] = []
+    if meta.get("doc_type"):     doc_facts_bits.append(f"Document type: {meta['doc_type']}")
+    if meta.get("company_name"): doc_facts_bits.append(f"Company: {meta['company_name']}")
+    if meta.get("fiscal_year"):  doc_facts_bits.append(f"Fiscal year: {meta['fiscal_year']}")
+    if meta.get("currency"):     doc_facts_bits.append(f"Currency: {meta['currency']}")
+    doc_facts_block = (
+        "KNOWN DOCUMENT FACTS:\n" + "\n".join(f"- {b}" for b in doc_facts_bits) + "\n\n"
+    ) if doc_facts_bits else ""
+
     async def generate():
-        # Fetch all chunks once, reuse per section
-        try:
-            all_chunks = await asyncio.to_thread(qdrant_store.get_chunks_by_doc, doc_id, user_id, 120)
-        except Exception as e:
-            yield f"data: {json.dumps({'type': 'error', 'text': str(e)})}\n\n"
-            return
+        turn_start = _time.time()
 
         yield f"data: {json.dumps({'type': 'report_start', 'report_id': report_id, 'template': template_id, 'sections': section_ids})}\n\n"
 
+        # Per-section title broadcast up front so the UI lays out all
+        # cards immediately (queued state) rather than appearing as
+        # sections complete.
+        for idx, sid in enumerate(section_ids):
+            cfg = get_section_config(sid)
+            yield f"data: {json.dumps({'type': 'section_start', 'section': sid, 'index': idx, 'title': cfg['title']})}\n\n"
 
-        total_words = 0
+        # Aggregate stats for the structured ops log line at end-of-report.
+        stats = {
+            "tokens_in":  0,
+            "tokens_out": 0,
+            "models":     {},  # model_name → section_count
+            "words":      0,
+            "errors":     0,
+        }
+        event_q: asyncio.Queue = asyncio.Queue()
+        sem = asyncio.Semaphore(CONCURRENCY)
 
-        for idx, section_id in enumerate(section_ids):
-            cfg = get_section_config(section_id)
-            yield f"data: {json.dumps({'type': 'section_start', 'section': section_id, 'index': idx, 'title': cfg['title']})}\n\n"
+        async def run_section(idx: int, section_id: str) -> None:
+            async with sem:
+                cfg   = get_section_config(section_id)
+                model = resolve_model(section_id)
 
-            section_extract = build_section_extract(extract, cfg["extract_keys"])
-            context_text = _build_section_chunks(all_chunks, cfg["rag_query"], cfg["rag_top_k"])
-
-            extract_json = json.dumps(section_extract, indent=2) if section_extract else "No data available for this section."
-
-            user_msg = (
-                f"Structured financial data for this section:\n```json\n{extract_json}\n```\n\n"
-                f"Relevant document excerpts:\n{context_text}\n\n---\n\n"
-                f"Write the **{cfg['title']}** section now. "
-                f"Start with ## {cfg['title']} as the header. Be precise, cite specific figures."
-            )
-
-            section_md = ""
-            try:
-                stream = _oai.chat.completions.create(
-                    model="gpt-4o",
-                    messages=[
-                        {"role": "system", "content": cfg["system"]},
-                        {"role": "user", "content": user_msg},
-                    ],
-                    stream=True,
-                    temperature=0.2,
-                    max_tokens=cfg["max_tokens"],
+                # Per-section RAG. Returns context + chunk metadata; the
+                # chunks list is captured in stats for commit 3's
+                # report_sources audit trail.
+                context_text, _chunks_meta = await asyncio.to_thread(
+                    _section_rag,
+                    user_id=user_id, doc_id=doc_id,
+                    rag_query=cfg["rag_query"], top_k=cfg["rag_top_k"],
                 )
+
+                section_extract = build_section_extract(extract, cfg["extract_keys"])
+                extract_json = (
+                    json.dumps(section_extract, indent=2) if section_extract
+                    else "No structured extract data for this section."
+                )
+
+                system_msg = (
+                    doc_facts_block + section_system_prompt(section_id)
+                )
+                user_msg = (
+                    f"Structured financial data extracted from the document "
+                    f"(use these exact values; do not recompute):\n```json\n"
+                    f"{extract_json}\n```\n\n"
+                    f"Relevant document excerpts (per-section retrieval):\n"
+                    f"{context_text or '(none retrieved for this section)'}\n\n"
+                    f"---\n\nWrite the **{cfg['title']}** section now. Start "
+                    f"with `## {cfg['title']}` as the header."
+                )
+
+                section_md = ""
+                section_tokens_in  = 0
+                section_tokens_out = 0
                 client_gone = False
-                for chunk in stream:
-                    # Bail out if user closed the tab — saves OpenAI tokens
-                    # for sections the user will never see.
-                    if await request.is_disconnected():
-                        client_gone = True
-                        stream.close()
-                        break
-                    delta = chunk.choices[0].delta.content if chunk.choices else None
-                    if delta:
-                        section_md += delta
-                        yield f"data: {json.dumps({'type': 'delta', 'section': section_id, 'text': delta})}\n\n"
 
-                if client_gone:
-                    # Persist whatever we got, mark partial, stop the report
+                try:
+                    stream = await _aoai.chat.completions.create(
+                        model=model,
+                        messages=[
+                            {"role": "system", "content": system_msg},
+                            {"role": "user",   "content": user_msg},
+                        ],
+                        stream=True,
+                        temperature=0.2,
+                        max_tokens=cfg["max_tokens"],
+                        # Ask OpenAI to include usage stats with the final
+                        # chunk — lets us log per-section cost without a
+                        # second tokeniser pass.
+                        stream_options={"include_usage": True},
+                    )
+                    async for chunk in stream:
+                        if await request.is_disconnected():
+                            client_gone = True
+                            break
+                        # Usage chunk arrives at the end (no choices).
+                        if chunk.usage:
+                            section_tokens_in  = chunk.usage.prompt_tokens     or 0
+                            section_tokens_out = chunk.usage.completion_tokens or 0
+                            continue
+                        if not chunk.choices:
+                            continue
+                        delta = chunk.choices[0].delta.content
+                        if delta:
+                            section_md += delta
+                            await event_q.put({
+                                "type": "delta", "section": section_id, "text": delta,
+                            })
+
+                    if client_gone:
+                        await asyncio.to_thread(db.update_report_section, report_id, section_id, {
+                            "markdown": section_md, "status": "error", "error": "client_disconnected",
+                        })
+                        await event_q.put({
+                            "type": "section_error", "section": section_id,
+                            "error": "client_disconnected",
+                        })
+                        return
+
+                    word_count = len(section_md.split())
+                    stats["tokens_in"]  += section_tokens_in
+                    stats["tokens_out"] += section_tokens_out
+                    stats["words"]      += word_count
+                    stats["models"][model] = stats["models"].get(model, 0) + 1
+
                     await asyncio.to_thread(db.update_report_section, report_id, section_id, {
-                        "markdown": section_md,
-                        "status": "error",
-                        "error": "client_disconnected",
+                        "markdown":   section_md,
+                        "status":     "done",
+                        "word_count": word_count,
                     })
-                    logger.info(f"report {report_id}: client disconnected during {section_id}")
-                    return
+                    await event_q.put({
+                        "type": "section_done", "section": section_id,
+                        "word_count": word_count, "model": model,
+                    })
 
-                word_count = len(section_md.split())
-                total_words += word_count
+                except openai.RateLimitError:
+                    stats["errors"] += 1
+                    await asyncio.to_thread(db.update_report_section, report_id, section_id, {
+                        "markdown": section_md, "status": "error", "error": "rate_limit",
+                    })
+                    await event_q.put({
+                        "type": "section_error", "section": section_id,
+                        "error": "Rate limit reached. Please retry this section in a moment.",
+                    })
+                except Exception as e:
+                    stats["errors"] += 1
+                    logger.exception(f"report {report_id} section {section_id} failed")
+                    await asyncio.to_thread(db.update_report_section, report_id, section_id, {
+                        "markdown": section_md, "status": "error", "error": str(e),
+                    })
+                    await event_q.put({
+                        "type": "section_error", "section": section_id, "error": str(e),
+                    })
 
-                # Persist this section
-                await asyncio.to_thread(db.update_report_section, report_id, section_id, {
-                    "markdown": section_md,
-                    "status": "done",
-                    "word_count": word_count,
-                })
-                yield f"data: {json.dumps({'type': 'section_done', 'section': section_id, 'word_count': word_count})}\n\n"
+        # Fan out tasks; watcher closes the queue when they're all done so
+        # the SSE drain loop knows when to stop.
+        tasks = [
+            asyncio.create_task(run_section(idx, sid))
+            for idx, sid in enumerate(section_ids)
+        ]
 
-            except openai.RateLimitError:
-                await asyncio.to_thread(db.update_report_section, report_id, section_id, {
-                    "markdown": section_md,
-                    "status": "error",
-                    "error": "rate_limit",
-                })
-                yield f"data: {json.dumps({'type': 'section_error', 'section': section_id, 'error': 'Rate limit reached. Please retry this section in a moment.'})}\n\n"
-            except Exception as e:
-                await asyncio.to_thread(db.update_report_section, report_id, section_id, {
-                    "markdown": section_md,
-                    "status": "error",
-                    "error": str(e),
-                })
-                yield f"data: {json.dumps({'type': 'section_error', 'section': section_id, 'error': str(e)})}\n\n"
+        async def watcher() -> None:
+            try:
+                await asyncio.gather(*tasks, return_exceptions=True)
+            finally:
+                await event_q.put(None)  # sentinel
 
-        # Mark report complete
+        asyncio.create_task(watcher())
+
+        # Drain the multiplexed queue, yielding each event as SSE.
+        while True:
+            item = await event_q.get()
+            if item is None:
+                break
+            yield f"data: {json.dumps(item)}\n\n"
+
+        # Final aggregate state + log.
+        latency_ms = int((_time.time() - turn_start) * 1000)
+        status = "complete" if stats["errors"] == 0 else "complete_with_errors"
         await asyncio.to_thread(db.update_report, report_id, {
-            "status": "complete",
-            "word_count": total_words,
+            "status": status, "word_count": stats["words"],
         })
-        yield f"data: {json.dumps({'type': 'report_done', 'report_id': report_id, 'word_count': total_words})}\n\n"
+        logger.info(
+            "report: doc=%s tpl=%s sections=%d concurrency=%d tokens_in=%d "
+            "tokens_out=%d words=%d errors=%d latency_ms=%d models=%s",
+            doc_id, template_id, len(section_ids), CONCURRENCY,
+            stats["tokens_in"], stats["tokens_out"],
+            stats["words"], stats["errors"], latency_ms,
+            ",".join(f"{m}:{c}" for m, c in stats["models"].items()) or "-",
+        )
+        yield (
+            f"data: {json.dumps({'type': 'report_done', 'report_id': report_id, 'word_count': stats['words'], 'tokens_in': stats['tokens_in'], 'tokens_out': stats['tokens_out'], 'latency_ms': latency_ms, 'errors': stats['errors']})}\n\n"
+        )
 
     return StreamingResponse(
         generate(),
