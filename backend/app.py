@@ -22,6 +22,7 @@ from schemas import (
     ConversationCreate, ConversationUpdate, FinBotMessageSend,
 )
 import finbot_repo
+import analyzer_chat_repo
 import db
 import storage_client
 import qdrant_store
@@ -2334,6 +2335,51 @@ async def get_templates(current_user: dict = Depends(get_current_user)):
     return {"success": True, "templates": templates}
 
 
+# ─── Analyzer chat persistence ─────────────────────────────────────────────────
+# A single conversation per (user, doc) is the default UX today — the
+# get_or_create helper hides that decision. The schema supports multiple
+# threads per doc when we wire UI for that later.
+
+@app.get("/api/documents/{doc_id}/chat-history")
+async def get_chat_history(
+    doc_id: str,
+    current_user: dict = Depends(get_current_user),
+):
+    """Hydrate the chat panel on mount. Returns the latest conversation for
+    this (user, doc) and its messages in chronological order. Auto-creates
+    an empty conversation if none exist — keeps the frontend's contract
+    simple (always something to render)."""
+    user_id = current_user["id"]
+    doc = await asyncio.to_thread(db.get_document, doc_id, user_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+    conv = await asyncio.to_thread(
+        analyzer_chat_repo.get_or_create_conversation, user_id, doc_id,
+    )
+    messages = await asyncio.to_thread(
+        analyzer_chat_repo.list_messages, conv["id"], user_id,
+    )
+    return {"conversation": conv, "messages": messages}
+
+
+@app.delete("/api/documents/{doc_id}/chat-history")
+async def clear_chat_history(
+    doc_id: str,
+    current_user: dict = Depends(get_current_user),
+):
+    """Drop every conversation + message tied to this (user, doc) pair.
+    The frontend uses this for the 'clear chat' control."""
+    user_id = current_user["id"]
+    convs = await asyncio.to_thread(
+        analyzer_chat_repo.list_conversations, user_id, doc_id,
+    )
+    for c in convs:
+        await asyncio.to_thread(
+            analyzer_chat_repo.delete_conversation, c["id"], user_id,
+        )
+    return {"success": True, "deleted": len(convs)}
+
+
 @app.post("/api/documents/{doc_id}/chat")
 @limiter.limit("20/minute")
 async def chat_document(
@@ -2348,6 +2394,23 @@ async def chat_document(
     doc = await asyncio.to_thread(db.get_document, doc_id, current_user["id"])
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
+
+    # Resolve (or create) the persistence conversation BEFORE streaming
+    # starts, so we have a stable conversation_id to write the user message
+    # against. Done synchronously off-thread to keep the SSE handler async.
+    conv = await asyncio.to_thread(
+        analyzer_chat_repo.get_or_create_conversation, current_user["id"], doc_id,
+    )
+    conversation_id = conv["id"]
+    # Persist the user message immediately. If the stream fails mid-flight
+    # we still want the prompt itself stored so the UI can replay it.
+    try:
+        await asyncio.to_thread(
+            analyzer_chat_repo.append_message,
+            conversation_id, current_user["id"], "user", message, None,
+        )
+    except Exception as e:
+        logger.warning(f"analyzer chat: persist user msg failed: {e}")
 
     user_id = current_user["id"]
 
@@ -2697,6 +2760,20 @@ async def chat_document(
                     })
 
         yield f"data: {json.dumps({'type': 'sources', 'chunks': source_chunks})}\n\n"
+
+        # Persist the assistant turn AFTER the stream is fully assembled —
+        # we want the same `sources` array the chip layer rendered so a
+        # reload reproduces the exact UI. Best-effort: a write failure here
+        # should not error the SSE response we've already delivered.
+        try:
+            await asyncio.to_thread(
+                analyzer_chat_repo.append_message,
+                conversation_id, current_user["id"], "assistant",
+                full_answer, source_chunks,
+            )
+        except Exception as e:
+            logger.warning(f"analyzer chat: persist assistant msg failed: {e}")
+
         yield f"data: {json.dumps({'type': 'done'})}\n\n"
 
     return StreamingResponse(

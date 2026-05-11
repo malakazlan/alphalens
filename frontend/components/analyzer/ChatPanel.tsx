@@ -246,6 +246,7 @@ export default function ChatPanel({ docId, parseChunks = [], onChunkSelect }: Ch
   const [messages,  setMessages]  = useState<Message[]>([]);
   const [input,     setInput]     = useState("");
   const [streaming, setStreaming] = useState(false);
+  const [hydrating, setHydrating] = useState(true);
   const [activeChip, setActiveChip] = useState<{ msgId: string; idx: number } | null>(null);
 
   const bottomRef   = useRef<HTMLDivElement>(null);
@@ -257,6 +258,31 @@ export default function ChatPanel({ docId, parseChunks = [], onChunkSelect }: Ch
     const container = bottomRef.current?.parentElement;
     if (container) container.scrollTop = container.scrollHeight;
   }, [messages]);
+
+  // Hydrate from server on mount / doc change — replaces the previous
+  // browser-only history. Reloading the page or navigating away and back
+  // restores the full conversation including chip sources.
+  useEffect(() => {
+    let cancelled = false;
+    setHydrating(true);
+    fetch(`/api/documents/${docId}/chat-history`, { credentials: "include" })
+      .then(r => (r.ok ? r.json() : Promise.reject(r.status)))
+      .then(data => {
+        if (cancelled) return;
+        const rows = Array.isArray(data?.messages) ? data.messages : [];
+        setMessages(
+          rows.map((m: { id: string; role: "user" | "assistant"; content: string; sources?: SourceChunk[] }) => ({
+            id:      m.id,
+            role:    m.role,
+            content: m.content,
+            sources: m.sources ?? undefined,
+          })),
+        );
+      })
+      .catch(() => { /* leave messages empty — fresh conversation */ })
+      .finally(() => { if (!cancelled) setHydrating(false); });
+    return () => { cancelled = true; };
+  }, [docId]);
 
   // Auto-resize textarea
   useEffect(() => {
@@ -400,7 +426,16 @@ export default function ChatPanel({ docId, parseChunks = [], onChunkSelect }: Ch
     <div className="h-full flex flex-col">
       {/* Messages */}
       <div className="flex-1 overflow-y-auto p-4 space-y-4">
-        {messages.length === 0 && (
+        {hydrating && messages.length === 0 && (
+          <div className="flex items-center justify-center h-full">
+            <div
+              className="w-5 h-5 border-2 border-t-transparent rounded-full animate-spin"
+              style={{ borderColor: "var(--al-accent-light)", borderTopColor: "var(--al-accent)" }}
+            />
+          </div>
+        )}
+
+        {!hydrating && messages.length === 0 && (
           <div className="flex flex-col items-center justify-center h-full gap-3 select-none">
             <div className="w-10 h-10 rounded-full flex items-center justify-center text-lg"
               style={{ background: "var(--al-accent-soft)", color: "var(--al-accent)" }}>
