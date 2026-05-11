@@ -214,6 +214,11 @@ _TR_RE = re.compile(r"<tr>(.*?)</tr>", re.DOTALL | re.IGNORECASE)
 _HTML_TAG_RE = re.compile(r"<[^>]+>")
 _CITATION_RE = re.compile(r"\[\[([^\]]+)\]\]")
 _FULL_CONTEXT_TOKEN_LIMIT = 28000
+# Canonical refusal phrase the model produces when a question can't be
+# answered from the document. Used to suppress citation chips on
+# refusal-shaped answers — chips paired with "Not available" mislead the
+# user about what the surface actually found.
+_REFUSAL_RE = re.compile(r"\bnot\s+available\s+in\s+this\s+document\b", re.IGNORECASE)
 
 # Section heading + year detection for table grid builder
 _HEADING_RE   = re.compile(r'(?:^|\n)#{1,3}\s+([^\n]+)', re.MULTILINE)
@@ -1513,6 +1518,21 @@ def _find_all_matching_cells(
             if _is_year_only_cell_text(cell_text):
                 continue
             if cell_text.strip():
+                # 2.3 — answer-value sanity gate. When the answer text
+                # carries extractable values, the LLM-cited cell MUST
+                # contain one of them. Stops the matcher from accepting
+                # a citation to a row label or section heading just
+                # because the model decorated its answer with that ID.
+                if answer_values:
+                    cell_norm = _normalise_for_match(cell_text)
+                    has_value = any(
+                        cell_norm == nv
+                        or (len(nv) >= 3 and nv in cell_norm)
+                        or (len(cell_norm) >= 5 and cell_norm in nv)
+                        for _, nv in answer_values
+                    )
+                    if not has_value:
+                        continue
                 seen_ids.add(cid)
                 matched_cells.append((cid, cell_text, 70))
             else:
@@ -2885,20 +2905,27 @@ async def chat_document(
                 "year_label":      year_label,
             })
 
-        # Fallback: if no matches found at all, use top 3 RAG results
-        if not source_chunks and results:
-            for r in results[:3]:
-                p = r.payload
-                if p:
-                    source_chunks.append({
-                        "chunk_id": p.get("chunk_id", ""),
-                        "chunk_type": p.get("chunk_type", ""),
-                        "section_header": p.get("section_header", ""),
-                        "page": p.get("page", 0),
-                        "markdown": p.get("markdown", ""),
-                        "bbox": p.get("bbox") or {},
-                        "score": round(r.score, 4),
-                    })
+        # Decision A — citation contract.
+        # Refusal-shaped answer + no extractable answer values: suppress
+        # any chips the LLM-cited fallback may have surfaced. Pairing
+        # "Not available in this document" with arbitrary references is
+        # exactly the failure mode the user reported (e.g. "what is
+        # science and albert" returning logo/figure citations).
+        clean_full_answer = _CITATION_RE.sub("", full_answer or "")
+        if (
+            _REFUSAL_RE.search(clean_full_answer)
+            and len(_extract_answer_values(clean_full_answer)) == 0
+        ):
+            if source_chunks:
+                logger.info(
+                    "chat: refusal answer — suppressing %d chip(s) for doc=%s",
+                    len(source_chunks), doc_id,
+                )
+            source_chunks = []
+        # Deliberate omission: NO "fall back to top-3 RAG results when
+        # matcher returned nothing" path. That was the source of misleading
+        # chips on edge-case prompts. An empty chip list is the honest
+        # signal that the surface couldn't pin a value to a specific cell.
 
         yield f"data: {json.dumps({'type': 'sources', 'chunks': source_chunks})}\n\n"
 
