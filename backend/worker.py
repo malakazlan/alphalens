@@ -82,8 +82,23 @@ def _remap_pages(chunks: list, grounding: dict, kept_indices: list[int]) -> None
                 g["page"] = _remap(g.get("page"))
 
 
-def _read_ade_cache(sha256: str) -> dict | None:
-    """Look up a cached ADE response. Returns None on miss / expired / error."""
+def _read_ade_cache(sha256: str, requested_scope: str) -> dict | None:
+    """Look up a cached ADE response, returning None on miss / scope mismatch.
+
+    A Core parse trims pages (Lever 1) and Extract-input (Lever 3) before
+    sending to ADE. A Full parse does neither. The cached payload therefore
+    differs structurally between the two scopes — the markdown emitted under
+    Core does not contain the trimmed sections.
+
+    We MUST NOT serve a Core cache hit to a Full request (it would silently
+    hand the user a trimmed parse labelled 'Full'), and vice versa. The cache
+    payload records the scope it was written under; mismatched scope = miss.
+
+    Backward compat: cache entries written before the scope field existed
+    have `scope=None`, which never equals the requested 'core'/'full' value,
+    so they're treated as miss and rebuilt on first re-upload. Old entries
+    are orphaned in storage but harmless — they expire by TTL.
+    """
     try:
         bucket = storage.get_client().storage.from_(storage.BUCKET)
         cached_bytes = bucket.download(_ade_cache_key(sha256))
@@ -102,6 +117,15 @@ def _read_ade_cache(sha256: str) -> dict | None:
         data = json.loads(cached_bytes.decode("utf-8"))
     except Exception as e:
         logger.warning(f"ade cache parse error for {sha256[:12]}: {e}")
+        return None
+
+    # Scope guard — the integrity fix described above.
+    cached_scope = data.get("scope")
+    if cached_scope != requested_scope:
+        logger.info(
+            "ade cache scope-miss sha=%s cached=%s requested=%s",
+            sha256[:12], cached_scope, requested_scope,
+        )
         return None
 
     # TTL check — purely a hygiene gate, not a correctness one. ADE output
@@ -439,10 +463,13 @@ async def process_document(ctx: dict, doc_id: str, user_id: str, file_path: str)
         cached: dict | None = None
         if sha256:
             update("parsing", 8, "Checking parse cache...")
-            cached = await asyncio.to_thread(_read_ade_cache, sha256)
+            cached = await asyncio.to_thread(_read_ade_cache, sha256, parse_scope)
             if cached:
                 cache_hit = True
-                logger.info("ADE cache HIT sha256=%s doc=%s", sha256[:12], doc_id)
+                logger.info(
+                    "ADE cache HIT sha256=%s scope=%s doc=%s",
+                    sha256[:12], parse_scope, doc_id,
+                )
 
         if cache_hit and cached:
             # Cache hit — bypass ADE Parse + ADE Extract entirely.
@@ -587,6 +614,10 @@ async def process_document(ctx: dict, doc_id: str, user_id: str, file_path: str)
             update("extracting", 55, "Financial data extracted.")
 
             # Cache write — best-effort, never fail the parse if storage hiccups.
+            # The `scope` field is what `_read_ade_cache` checks on lookup:
+            # a Core-cached payload is structurally different from a Full one
+            # (Core trimmed pages + Extract input), so serving one in place
+            # of the other would silently corrupt the result.
             if sha256:
                 cache_payload = {
                     "markdown":     markdown,
@@ -594,10 +625,14 @@ async def process_document(ctx: dict, doc_id: str, user_id: str, file_path: str)
                     "grounding":    _to_dict(grounding),
                     "extract_data": extract_dict,
                     "page_count":   page_count,
+                    "scope":        parse_scope,
                     "cached_at":    datetime.utcnow().isoformat(),
                 }
                 await asyncio.to_thread(_write_ade_cache, sha256, cache_payload)
-                logger.info("ADE cache WRITE sha256=%s doc=%s", sha256[:12], doc_id)
+                logger.info(
+                    "ADE cache WRITE sha256=%s scope=%s doc=%s",
+                    sha256[:12], parse_scope, doc_id,
+                )
                 meta_doc = await asyncio.to_thread(db.get_document, doc_id, user_id)
                 prior_meta = (meta_doc or {}).get("metadata") or {}
                 db.update_document(doc_id, {
