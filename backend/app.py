@@ -255,6 +255,48 @@ def _is_jailbreak_attempt(message: str) -> bool:
         return False
     return any(p.search(message) for p in _JAILBREAK_PATTERNS)
 
+
+# ─── Intent classification (server-side, for ops logging) ────────────────────
+# Coarse bucket per question, kept in sync with the question-type taxonomy
+# in the system prompt. Used only for the structured chat-turn log line —
+# the model still does its own classification at answer time. Order matters:
+# more specific shapes are checked before more general ones.
+
+_SYNTHESIS_RE      = re.compile(r"\b(summary|summarize|summarise|overview|main\s+findings?|key\s+findings?|key\s+takeaways?|executive\s+summary|brief\s+me|tell\s+me\s+about\s+this)\b", re.IGNORECASE)
+_REFINEMENT_RE     = re.compile(r"\b(concise|shorter|in\s+\d+\s+lines?|as\s+bullets?|in\s+more\s+detail|expand|in\s+depth|rewrite\s+as)\b", re.IGNORECASE)
+_PREDICTIVE_RE     = re.compile(r"\b(what\s+if|forecast|project|projection|predict|recommend|recommendations?|how\s+(?:can|to|do|should)\s+(?:we|i|the\s+company)|gain\s+\d+\s*%)\b", re.IGNORECASE)
+_VISUALISATION_RE  = re.compile(r"\b(graph|chart|plot|visuali[sz]e|draw)\b", re.IGNORECASE)
+_COMPARISON_RE     = re.compile(r"\b(compare|comparison|difference\s+(?:between|in)|change\s+in|year[- ]over[- ]year|yoy|vs\.?)\b", re.IGNORECASE)
+
+
+def _classify_intent(
+    question: str,
+    *,
+    is_refusal: bool   = False,
+    is_jailbreak: bool = False,
+) -> str:
+    """Return a short intent label for the chat-turn log line. Useful for
+    grep-style ops: 'show me all off_topic turns', 'what % are synthesis'."""
+    if is_jailbreak:
+        return "jailbreak"
+    if is_refusal:
+        return "refusal"
+    if not question:
+        return "empty"
+    if _REFINEMENT_RE.search(question):
+        return "refinement"
+    if _VISUALISATION_RE.search(question):
+        return "visualization"
+    if _PREDICTIVE_RE.search(question):
+        return "predictive"
+    if _COMPARISON_RE.search(question):
+        return "comparison"
+    if _SYNTHESIS_RE.search(question):
+        return "synthesis"
+    if _section_buckets(question):
+        return "section_lookup"
+    return "lookup"
+
 # Section heading + year detection for table grid builder
 _HEADING_RE   = re.compile(r'(?:^|\n)#{1,3}\s+([^\n]+)', re.MULTILINE)
 _YEAR_RE_4    = re.compile(r'\b(19|20)\d{2}\b')
@@ -333,6 +375,11 @@ _SECTION_ALIASES: dict[str, tuple[str, ...]] = {
         "shareholders' equity", "shareholders equity",
         "stockholders' equity", "stockholders equity",
         "share capital", "ordinary shares", "preferred stock",
+        # Short standalone words so questions like 'summary of Assets',
+        # 'list the liabilities', 'shareholders' equity breakdown' all
+        # bucket to balance_sheet without needing the longer canonical
+        # phrasings.
+        "assets", "liabilities", "equity",
     ),
     "changes in equity": (
         "statement of changes in equity", "changes in equity",
@@ -2808,6 +2855,8 @@ async def chat_document(
     body: ChatRequest,
     current_user: dict = Depends(get_current_user),
 ):
+    # Wall-clock start for the structured ops log line at end-of-turn.
+    _turn_start_ts = _time.time()
     message = body.message.strip()
     history = [h.model_dump() for h in body.history]
 
@@ -2853,6 +2902,13 @@ async def chat_document(
         logger.warning(
             "chat: jailbreak attempt user=%s doc=%s msg=%r",
             user_id, doc_id, message[:200],
+        )
+        # Structured log for the jailbreak path so grep'ing logs by intent
+        # (chat: ... intent=jailbreak ...) counts these turns alongside
+        # the normal flow.
+        logger.info(
+            "chat: user=%s doc=%s mode=prefilter intent=jailbreak sources=0 answer_chars=%d latency_ms=0",
+            user_id, doc_id, 0,
         )
         # Personalise the canned line with doc facts if we have them.
         _meta = doc.get("metadata") or {}
@@ -3403,6 +3459,28 @@ async def chat_document(
             )
         except Exception as e:
             logger.warning(f"analyzer chat: persist assistant msg failed: {e}")
+
+        # Phase 5.1 — structured ops log line per chat turn. Lets us answer
+        # 'how often does refusal short-circuit fire', 'what % of chats are
+        # synthesis vs comparison', 'is RAG mode hitting too often' by
+        # grepping the prod log. Intent is the server-side coarse classifier
+        # — not necessarily what the LLM picked, but useful for traffic
+        # patterns.
+        _is_refusal = (
+            bool(_REFUSAL_RE.search(cleaned_answer or ""))
+            and not source_chunks
+        )
+        _intent = _classify_intent(message, is_refusal=_is_refusal)
+        _latency_ms = int((_time.time() - _turn_start_ts) * 1000)
+        logger.info(
+            "chat: user=%s doc=%s mode=%s intent=%s sources=%d answer_chars=%d latency_ms=%d",
+            user_id, doc_id,
+            "full" if use_full_context else "rag",
+            _intent,
+            len(source_chunks),
+            len(cleaned_answer or ""),
+            _latency_ms,
+        )
 
         yield f"data: {json.dumps({'type': 'done'})}\n\n"
 
