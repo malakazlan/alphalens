@@ -1003,40 +1003,128 @@ def _find_grid_for_cell(cell_id: str, grids: dict):
     return None
 
 
-def _get_cross_cells(grid: dict, value_cell_id: str) -> dict:
-    """Given a value cell, return context cell IDs.
+def _is_label_text(text: str) -> bool:
+    """True if `text` looks like a row/section label (non-empty, non-numeric,
+    not just dashes, has letters). Used by the walk-left row-label resolver
+    so we skip past numeric-only cells (note references like '5', blanks,
+    dash placeholders) and land on the actual label cell."""
+    if not text:
+        return False
+    t = text.strip()
+    if not t or len(t) < 3:
+        return False
+    if _DASH_ONLY_RE.match(t):
+        return False
+    # If stripping digits/punctuation leaves nothing, it's a pure-numeric
+    # cell (e.g. "540,207", "(1,234)", "12.5%") — not a label.
+    leftover = re.sub(r"[\d\s,.()\-%$₹£€¥]", "", t)
+    return bool(leftover)
+
+
+def _get_cross_cells(grid: dict, value_cell_id: str, grounding_dict: dict | None = None) -> dict:
+    """Given a value cell, return context cell IDs for chip-label rendering.
 
     Returns:
-      row_label_id   – cell at (same row, label_col)
-      group_label_id – cell at (nearest group-header row above, label_col)
-      col_header_id  – cell at (header_row, same col)
-    All values are None when not applicable (e.g. the value cell IS the label).
+      row_label_id   – the nearest LEFT text cell on the same row.
+      group_label_id – the cell on the nearest group-header row ABOVE whose
+                       bbox column-band aligns with the value cell.
+      col_header_id  – cell at (header_row, same column index).
+    All values are None when not applicable.
+
+    Phase 4 changes (vs. the previous fixed-column approach):
+
+    * Row label is now resolved by walking LEFT from the value cell's
+      column index until a label-shaped text cell is found. The old code
+      always used `row[label_col=0]`, which mis-labels side-by-side
+      tables (e.g. Liabilities|Assets on the same `<tr>`): the right-
+      hand value would inherit the left-hand label. Walking left always
+      lands on the value's actual row label regardless of layout.
+
+    * Group label is now bbox-aware. Among the cells on the nearest
+      group_header row above, pick the one whose horizontal centre is
+      closest to the value cell's horizontal centre (when grounding_dict
+      is supplied). This stops the side-by-side balance-sheet 'TOTAL
+      ASSETS' bottom-line cell from inheriting the left-side 'NON-CURRENT
+      LIABILITIES' group header.
     """
     rows        = grid["rows"]
     header_row  = grid["header_row"]
-    label_col   = grid["label_col"]
     group_rows  = grid["group_header_rows"]
+    cell_texts  = grid.get("_cell_texts", {})
+
+    def _bbox_center_x(cid: str) -> float | None:
+        if not grounding_dict or not cid:
+            return None
+        g = grounding_dict.get(cid)
+        if not g:
+            return None
+        bbox = g.get("bbox") or {}
+        left  = bbox.get("left")
+        right = bbox.get("right")
+        if left is None or right is None:
+            return None
+        return (left + right) / 2.0
 
     for ri, row in enumerate(rows):
         for ci, cid in enumerate(row):
             if cid != value_cell_id:
                 continue
 
-            row_label_id = row[label_col] if ci != label_col and label_col < len(row) else None
+            # ── Row label: walk LEFT in the row ───────────────────────────
+            row_label_id: str | None = None
+            for back_ci in range(ci - 1, -1, -1):
+                back_id = row[back_ci]
+                if not back_id:
+                    continue
+                if _is_label_text(cell_texts.get(back_id, "")):
+                    row_label_id = back_id
+                    break
 
-            col_header_id = None
+            # ── Column header (header row, same column index) ─────────────
+            col_header_id: str | None = None
             if ri != header_row and header_row < len(rows):
                 hrow = rows[header_row]
                 if ci < len(hrow):
                     col_header_id = hrow[ci]
 
-            group_label_id = None
+            # ── Group label: bbox-column-band match within group-header row
+            group_label_id: str | None = None
+            value_cx = _bbox_center_x(value_cell_id)
             for prev_ri in range(ri - 1, -1, -1):
-                if prev_ri in group_rows:
-                    prev_row = rows[prev_ri]
-                    if label_col < len(prev_row):
-                        group_label_id = prev_row[label_col]
-                    break
+                if prev_ri not in group_rows:
+                    continue
+                prev_row = rows[prev_ri]
+                # When grounding is available AND we know the value cell's
+                # x-centre, pick the closest-aligned label-shaped cell in
+                # the group row. Falls back to the leftmost label-shaped
+                # cell when no grounding (preserves legacy behaviour for
+                # plain-text docs and unit tests that pass no grounding).
+                best: tuple[float, str] | None = None
+                for cand_id in prev_row:
+                    if not cand_id:
+                        continue
+                    if not _is_label_text(cell_texts.get(cand_id, "")):
+                        continue
+                    if value_cx is not None:
+                        cand_cx = _bbox_center_x(cand_id)
+                        if cand_cx is None:
+                            continue
+                        dist = abs(cand_cx - value_cx)
+                        # Cap on acceptable distance — > ~0.4 of page
+                        # width means the candidate is in a different
+                        # column band (e.g. liabilities header for an
+                        # assets-side value). Reject.
+                        if dist > 0.4:
+                            continue
+                        if best is None or dist < best[0]:
+                            best = (dist, cand_id)
+                    else:
+                        # No grounding — first label-shaped cell wins.
+                        best = (0.0, cand_id)
+                        break
+                if best is not None:
+                    group_label_id = best[1]
+                break
 
             return {
                 "row_label_id":   row_label_id,
@@ -1548,7 +1636,7 @@ def _find_all_matching_cells(
             if question_tokens and table_grids:
                 grid = _find_grid_for_cell(cell_id, table_grids)
                 if grid is not None:
-                    cross = _get_cross_cells(grid, cell_id)
+                    cross = _get_cross_cells(grid, cell_id, grounding_dict)
                     row_label_id   = cross.get("row_label_id")
                     group_label_id = cross.get("group_label_id")
                     row_label_text = cell_lookup.get(row_label_id or "", "")
@@ -3096,7 +3184,7 @@ async def chat_document(
             year_label: str | None = None
             grid = _find_grid_for_cell(cell_id, table_grids)
             if grid:
-                cross     = _get_cross_cells(grid, cell_id)
+                cross     = _get_cross_cells(grid, cell_id, grounding_dict)
                 year_label = grid["year_label"]
 
             row_label_text   = cell_lookup.get(cross["row_label_id"]   or "", "")
