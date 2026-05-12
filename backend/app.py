@@ -4148,39 +4148,54 @@ async def chat_document(
                 ranked = _rerank_results_by_section(raw_results, q_buckets)
                 results = ranked[:10]
 
-                # Figure-boost: when the user asks about a chart / figure /
-                # graph / plot / trend, the primary embedding search reliably
-                # surfaces TABLE cells (their text is more semantically
-                # similar to financial questions than chart descriptions).
-                # Figure chunks lose the ranking even though they carry the
-                # parsed chart data (axis values, series, captions). Run a
-                # secondary search filtered to chunk_type=figure and prepend
-                # the top hits so the LLM has the chart data to read+cite.
-                if _FIGURE_TRIGGER_RE.search(message or ""):
-                    try:
-                        fig_results = await asyncio.to_thread(
-                            qdrant_store.search,
-                            query_vec, user_id, doc_id, 5,
-                            ["figure"],
-                        )
-                    except Exception as e:
-                        logger.warning(f"figure-boost search failed: {e}")
-                        fig_results = []
-                    if fig_results:
-                        existing_ids = {
-                            (r.payload or {}).get("chunk_id") for r in results
-                        }
-                        added = 0
-                        for fr in fig_results:
-                            fid = (fr.payload or {}).get("chunk_id")
-                            if fid and fid not in existing_ids:
-                                results.append(fr)
-                                added += 1
+                # Figure-boost: ALWAYS run a secondary search restricted to
+                # figure chunks and merge the top hits into context.
+                #
+                # Why unconditionally:
+                #   The primary embedding search ranks table cells higher
+                #   than figure chunks because table-cell text is closer in
+                #   surface form to financial questions. A question like
+                #   "what's the Q3 2025 percentage?" never surfaces the
+                #   figure chunk that contains "Q3'25: ~3.40%" — even
+                #   though the figure is the only place that data exists.
+                #   The user shouldn't need to know which content lives
+                #   in a figure vs a table.
+                #
+                # Why an explicit-trigger bump:
+                #   When the question *names* a figure / chart / graph,
+                #   the user is plainly asking us to read it. Doubling the
+                #   figure top-K (3 → 6) increases recall without
+                #   meaningfully bloating context (figure chunks are
+                #   small). Implicit case keeps the cheaper default.
+                #
+                #   When the doc has no figures, the secondary search
+                #   returns 0 rows and the merge is a no-op.
+                is_explicit_fig_q = bool(_FIGURE_TRIGGER_RE.search(message or ""))
+                fig_top_k = 6 if is_explicit_fig_q else 3
+                try:
+                    fig_results = await asyncio.to_thread(
+                        qdrant_store.search,
+                        query_vec, user_id, doc_id, fig_top_k,
+                        ["figure"],
+                    )
+                except Exception as e:
+                    logger.warning(f"figure-boost search failed: {e}")
+                    fig_results = []
+                if fig_results:
+                    existing_ids = {
+                        (r.payload or {}).get("chunk_id") for r in results
+                    }
+                    added = 0
+                    for fr in fig_results:
+                        fid = (fr.payload or {}).get("chunk_id")
+                        if fid and fid not in existing_ids:
+                            results.append(fr)
+                            added += 1
+                    if added:
                         logger.info(
                             "figure-boost: doc=%s added=%d figure chunk(s) "
-                            "(trigger=%s)",
-                            doc_id, added,
-                            _FIGURE_TRIGGER_RE.search(message).group(0),
+                            "(explicit=%s, top_k=%d)",
+                            doc_id, added, is_explicit_fig_q, fig_top_k,
                         )
 
                 if q_buckets:
