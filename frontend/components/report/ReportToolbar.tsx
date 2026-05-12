@@ -45,9 +45,17 @@ export default function ReportToolbar({
     return () => document.removeEventListener("mousedown", handleClick);
   }, []);
 
-  const doneCount = Object.values(sections).filter((s) => s.status === "done").length;
-  const totalCount = Object.keys(sections).length;
-  const allDone = doneCount === totalCount && totalCount > 0;
+  const vals          = Object.values(sections);
+  const doneCount     = vals.filter((s) => s.status === "done").length;
+  const runningCount  = vals.filter((s) => s.status === "generating").length;
+  const errorCount    = vals.filter((s) => s.status === "error").length;
+  const totalCount    = vals.length;
+  const allDone       = doneCount === totalCount && totalCount > 0;
+  // Coarse progress percentage. Counts a running section as half-done so
+  // the bar advances visibly during parallel generation (the user sees
+  // movement, not a static jump from 0% to 100%).
+  const progressPct = totalCount === 0 ? 0
+    : Math.min(100, Math.round(((doneCount + runningCount * 0.5) / totalCount) * 100));
 
   function handleCopy() {
     onCopy();
@@ -105,9 +113,34 @@ export default function ReportToolbar({
           {filename}
         </span>
         {generating && (
-          <span className="text-[11px] shrink-0" style={{ color: "var(--al-subtle)" }}>
-            {doneCount}/{totalCount} sections
-          </span>
+          <div className="flex items-center gap-2 shrink-0">
+            <span className="text-[11px] tabular-nums" style={{ color: "var(--al-subtle)" }}>
+              {doneCount}/{totalCount} done
+              {runningCount > 0 && (
+                <span className="ml-1" style={{ color: "var(--al-accent)" }}>
+                  · {runningCount} running
+                </span>
+              )}
+              {errorCount > 0 && (
+                <span className="ml-1" style={{ color: "#dc2626" }}>
+                  · {errorCount} failed
+                </span>
+              )}
+            </span>
+            <div
+              className="w-24 h-1 rounded-full overflow-hidden"
+              style={{ background: "var(--al-border)" }}
+              aria-label={`Progress: ${progressPct}%`}
+            >
+              <div
+                className="h-full transition-all duration-500"
+                style={{
+                  width:      `${progressPct}%`,
+                  background: "linear-gradient(90deg, var(--al-accent), #10b981)",
+                }}
+              />
+            </div>
+          </div>
         )}
         {allDone && wordCount > 0 && (
           <span className="text-[11px] shrink-0" style={{ color: "var(--al-subtle)" }}>

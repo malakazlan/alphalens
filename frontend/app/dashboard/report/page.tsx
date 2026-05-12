@@ -1009,13 +1009,14 @@ export default function ReportPage() {
               />
               <div ref={reportBodyRef} className="flex-1 overflow-y-auto">
                 <div className="max-w-3xl mx-auto px-8 py-6">
-                  {sectionOrder.current.map(sid => {
+                  {sectionOrder.current.map((sid, i) => {
                     const sec = store.sections[sid];
                     if (!sec) return null;
                     return (
                       <SectionCard
                         key={sid}
                         section={sec}
+                        index={i + 1}
                         streaming={store.generating}
                         onRegenerate={store.activeReportId ? () => handleRegenerateSection(sid) : undefined}
                       />

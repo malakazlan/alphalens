@@ -132,6 +132,15 @@
 }
 .chat-msg-enter { animation: chatMsgIn 200ms ease-out both; }
 
+/* Report section card slide-in. Larger lift than chat (8px vs 6px)
+   because section cards are visually heavier than chat bubbles —
+   the small jump reads as intentional layout, not jank. */
+@keyframes reportSectionIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.report-section-enter { animation: reportSectionIn 240ms ease-out both; }
+
 /* Chat textarea focus state — accent ring on focus only, neutral at rest.
    Replaces the "outline-none + nothing else" default that made it look
    half-finished. */
