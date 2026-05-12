@@ -1,11 +1,18 @@
 "use client";
+import { useState } from "react";
 import ReportMarkdown from "./ReportMarkdown";
+import SourcesFooter from "./SourcesFooter";
+import VersionHistoryModal from "./VersionHistoryModal";
 import type { SectionState } from "@/lib/stores/report-store";
 
 interface SectionCardProps {
   section:      SectionState;
   index?:       number;            // 1-based display index in the report
+  reportId?:    string;             // when set, audit features (sources + history) are enabled
   onRegenerate?: () => void;
+  // Called after a successful restore from VersionHistoryModal so the
+  // page can update the section content in-place without a refetch.
+  onRestored?:  (sectionId: string, content: string, wordCount: number) => void;
   streaming?:   boolean;            // any section currently mid-stream
 }
 
@@ -80,11 +87,18 @@ function SectionSkeleton() {
   );
 }
 
-export default function SectionCard({ section, index, onRegenerate, streaming }: SectionCardProps) {
+export default function SectionCard({
+  section, index, reportId, onRegenerate, onRestored, streaming,
+}: SectionCardProps) {
   const isError      = section.status === "error";
   const isPending    = section.status === "pending";
   const isGenerating = section.status === "generating";
   const isDone       = section.status === "done";
+
+  // Audit affordances appear only on settled sections of a saved report
+  // (reportId comes from the page once the report row is created).
+  const auditEnabled = !!reportId && (isDone || isError);
+  const [historyOpen, setHistoryOpen] = useState(false);
 
   return (
     <div
@@ -133,21 +147,39 @@ export default function SectionCard({ section, index, onRegenerate, streaming }:
           )}
         </div>
 
-        {/* Regenerate button — visible on hover when section is settled */}
-        {onRegenerate && !streaming && !isPending && !isGenerating && (
-          <button
-            onClick={onRegenerate}
-            className="opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-1 text-[10px] font-medium px-2 py-1 rounded-md shrink-0 ml-2"
-            style={{ color: "var(--al-accent)", background: "var(--al-accent-soft)" }}
-            title="Regenerate this section"
-          >
-            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-              <polyline points="23 4 23 10 17 10" />
-              <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
-            </svg>
-            Redo
-          </button>
-        )}
+        {/* Hover toolbar — Redo + History. Hidden while any section is
+            streaming so the user doesn't trigger a regenerate or modal
+            during fan-out. */}
+        <div className="flex items-center gap-1 shrink-0 ml-2 opacity-0 group-hover:opacity-100 transition-opacity">
+          {auditEnabled && (
+            <button
+              onClick={() => setHistoryOpen(true)}
+              className="flex items-center gap-1 text-[10px] font-medium px-2 py-1 rounded-md"
+              style={{ color: "var(--al-text-secondary)", background: "var(--al-bg-secondary)" }}
+              title="View previous versions of this section"
+            >
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                <circle cx="12" cy="12" r="10" />
+                <polyline points="12 6 12 12 16 14" />
+              </svg>
+              History
+            </button>
+          )}
+          {onRegenerate && !streaming && !isPending && !isGenerating && (
+            <button
+              onClick={onRegenerate}
+              className="flex items-center gap-1 text-[10px] font-medium px-2 py-1 rounded-md"
+              style={{ color: "var(--al-accent)", background: "var(--al-accent-soft)" }}
+              title="Regenerate this section"
+            >
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                <polyline points="23 4 23 10 17 10" />
+                <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
+              </svg>
+              Redo
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Section body */}
@@ -171,6 +203,29 @@ export default function SectionCard({ section, index, onRegenerate, streaming }:
         )}
 
         {isDone && <ReportMarkdown text={section.markdown} />}
+
+        {/* Sources footer — populated by silent capture in commit 3.
+            Hidden until the section reaches a settled state. */}
+        {reportId && (isDone || isError) && (
+          <SourcesFooter
+            reportId={reportId}
+            sectionId={section.id}
+            enabled={isDone}
+          />
+        )}
+
+        {reportId && (
+          <VersionHistoryModal
+            open={historyOpen}
+            onClose={() => setHistoryOpen(false)}
+            reportId={reportId}
+            sectionId={section.id}
+            sectionTitle={section.title}
+            onRestored={({ content, word_count }) => {
+              onRestored?.(section.id, content, word_count);
+            }}
+          />
+        )}
 
         {isError && (
           <div className="flex flex-col items-center gap-3 py-6">

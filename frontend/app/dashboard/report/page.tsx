@@ -1017,8 +1017,20 @@ export default function ReportPage() {
                         key={sid}
                         section={sec}
                         index={i + 1}
+                        reportId={store.activeReportId ?? undefined}
                         streaming={store.generating}
                         onRegenerate={store.activeReportId ? () => handleRegenerateSection(sid) : undefined}
+                        onRestored={(sectionId, content, wordCount) => {
+                          // Roll the live section content back to the
+                          // restored version in-place; matches what the
+                          // backend just wrote to reports.sections.
+                          store.updateSection(sectionId, {
+                            status:    "done",
+                            markdown:  content,
+                            wordCount,
+                            error:     undefined,
+                          });
+                        }}
                       />
                     );
                   })}

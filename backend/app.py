@@ -2966,6 +2966,112 @@ async def regenerate_section(
     )
 
 
+# ─── Report audit + version history endpoints (Phase 3 commit 5) ─────────────
+# Backed by the silent capture wired in commit 3. Both endpoints accept an
+# optional `?section=` filter; without it they return the whole report's
+# trail (used by the future PDF "sources index" page). Ownership is
+# enforced both at the report row and on every audit row via user_id.
+
+@app.get("/api/reports/{report_id}/sources")
+async def report_sources(
+    report_id: str,
+    section: str | None = None,
+    current_user: dict = Depends(get_current_user),
+):
+    user_id = current_user["id"]
+    report = await asyncio.to_thread(db.get_report, report_id, user_id)
+    if not report:
+        raise HTTPException(status_code=404, detail="Report not found")
+    rows = await asyncio.to_thread(
+        reports_repo.list_sources,
+        report_id=report_id, user_id=user_id, section_id=section,
+    )
+    # Surface doc_id alongside the sources so the frontend can build the
+    # cross-feature link to the analyzer without a second round-trip.
+    return {"success": True, "doc_id": report.get("doc_id"), "sources": rows}
+
+
+@app.get("/api/reports/{report_id}/versions")
+async def report_versions(
+    report_id: str,
+    section: str,
+    current_user: dict = Depends(get_current_user),
+):
+    user_id = current_user["id"]
+    report = await asyncio.to_thread(db.get_report, report_id, user_id)
+    if not report:
+        raise HTTPException(status_code=404, detail="Report not found")
+    rows = await asyncio.to_thread(
+        reports_repo.list_versions,
+        report_id=report_id, user_id=user_id, section_id=section,
+    )
+    return {"success": True, "versions": rows}
+
+
+@app.post("/api/reports/{report_id}/sections/{section_id}/restore/{version_id}")
+async def restore_report_version(
+    report_id: str,
+    section_id: str,
+    version_id: str,
+    current_user: dict = Depends(get_current_user),
+):
+    """Restore an earlier version of a section into the live report.
+
+    Doesn't delete any rows. The version table is append-only — the
+    currently-live content is whatever's at the top of the list for that
+    section. Restoring means: copy the named version's content back into
+    the live `reports.sections` JSONB AND write a fresh row in
+    report_versions that snapshots the restore so the trail captures the
+    action. Lets a user 'undo a restore' too — every state change is in
+    the version history.
+    """
+    user_id = current_user["id"]
+    report = await asyncio.to_thread(db.get_report, report_id, user_id)
+    if not report:
+        raise HTTPException(status_code=404, detail="Report not found")
+
+    version = await asyncio.to_thread(
+        reports_repo.get_version, version_id, user_id,
+    )
+    if not version:
+        raise HTTPException(status_code=404, detail="Version not found")
+    if version.get("report_id") != report_id or version.get("section_id") != section_id:
+        raise HTTPException(status_code=400, detail="Version does not belong to this section")
+
+    content    = version["content"]
+    word_count = len(content.split())
+
+    # 1. Update the live report's section payload.
+    await asyncio.to_thread(db.update_report_section, report_id, section_id, {
+        "markdown":   content,
+        "status":     "done",
+        "word_count": word_count,
+    })
+    # 2. Append a new version row to capture the restore action. Carry
+    #    the original version's model + tokens so cost auditing isn't
+    #    confused by what looks like a free regeneration.
+    try:
+        await asyncio.to_thread(
+            reports_repo.insert_version,
+            report_id=report_id, user_id=user_id, section_id=section_id,
+            content=content, model=version.get("model"),
+            tokens_in=version.get("tokens_in"), tokens_out=version.get("tokens_out"),
+        )
+    except Exception as e:
+        logger.warning(f"report_versions restore-snapshot failed: {e}")
+
+    logger.info(
+        "report restore: report=%s section=%s version=%s",
+        report_id, section_id, version_id,
+    )
+    return {
+        "success":    True,
+        "section_id": section_id,
+        "content":    content,
+        "word_count": word_count,
+    }
+
+
 @app.get("/api/report-templates")
 async def get_templates(current_user: dict = Depends(get_current_user)):
     """Return available report templates."""
