@@ -274,10 +274,76 @@ def get_section_config(section_id: str) -> dict:
 
 
 def section_system_prompt(section_id: str) -> str:
-    """Compose the baseline + section-specific system prompt. Kept as a
-    helper so commit 2.3 can wrap it once and pass to the LLM call."""
+    """Compose the baseline + section-specific system prompt for a
+    BUILT-IN section. Custom-template sections (commit 6) use
+    `compose_system_prompt(cfg)` directly with a config dict."""
     cfg = get_section_config(section_id)
-    return f"{cfg['system']}\n\n{_SECTION_BASELINE}"
+    return compose_system_prompt(cfg)
+
+
+def compose_system_prompt(section_config: dict) -> str:
+    """Compose the cross-section baseline + a section's specific prompt.
+
+    Accepts the config DICT directly so callers don't need to round-trip
+    through SECTION_CONFIGS — important for custom templates (commit 6)
+    where the section definition lives in `report_templates_custom.sections`
+    JSONB, not in the built-in dict.
+    """
+    return f"{section_config['system']}\n\n{_SECTION_BASELINE}"
+
+
+def resolve_model_from_config(section_config: dict, default: str = "gpt-4o") -> str:
+    """Return the OpenAI model name from a config dict's `model` hint.
+
+    Companion to `resolve_model(section_id)` — used by custom-template
+    flows where the section isn't keyed in the built-in SECTION_CONFIGS."""
+    hint = section_config.get("model")
+    if hint and hint in MODEL_MAP:
+        return MODEL_MAP[hint]
+    return default
+
+
+def custom_section_to_config(section_def: dict) -> dict:
+    """Convert one section from a custom template's `sections` JSONB
+    array into the internal config shape used by the report generator.
+
+    Inputs (from the API client):
+      id            – stable identifier (UUID or slug)
+      title         – display name; also the source for default rag_query
+      system_prompt – the section-specific instruction block
+      word_target   – approximate word count goal (drives max_tokens)
+      rag_query     – optional override; defaults to title.lower()
+      rag_top_k     – optional; defaults to 10
+      model         – optional 'fast' | 'smart'; defaults to 'smart'
+
+    Output mirrors the SECTION_CONFIGS shape: title, system, extract_keys,
+    rag_query, model, max_tokens, rag_top_k.
+    """
+    title         = (section_def.get("title") or "Untitled Section").strip() or "Untitled Section"
+    system_prompt = (section_def.get("system_prompt") or
+                     "Write this section using the structured financial data "
+                     "and document excerpts provided. Cite exact figures.").strip()
+    word_target   = int(section_def.get("word_target") or 250)
+    word_target   = max(80, min(800, word_target))
+    rag_query     = (section_def.get("rag_query") or title).lower()
+    rag_top_k     = int(section_def.get("rag_top_k") or 10)
+    rag_top_k     = max(3, min(20, rag_top_k))
+    model_hint    = section_def.get("model")
+    if model_hint not in MODEL_MAP:
+        model_hint = "smart"
+    # Token cap = word_target * ~2.2 to allow tables / bullets +
+    # markdown overhead, with a floor of 400 so very-short sections
+    # still have room to emit a heading + 1-2 paragraphs.
+    max_tokens = max(400, int(word_target * 2.2))
+    return {
+        "title":        title,
+        "system":       system_prompt,
+        "extract_keys": None,   # custom sections receive full extract
+        "rag_query":    rag_query,
+        "model":        model_hint,
+        "max_tokens":   max_tokens,
+        "rag_top_k":    rag_top_k,
+    }
 
 
 def build_section_extract(extract: dict, extract_keys: Optional[list[str]]) -> dict:

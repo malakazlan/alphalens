@@ -2,11 +2,15 @@ import { create } from "zustand";
 import { persist, createJSONStorage } from "zustand/middleware";
 
 /* ── Types ────────────────────────────────────────────────────────── */
-export type ReportTemplate =
+// Built-in template ids are a known string literal union; custom templates
+// are user-owned UUIDs from public.report_templates_custom. The store
+// holds the raw string so both flow through the same code paths.
+export type BuiltinTemplate =
   | "full_analysis"
   | "executive_brief"
   | "risk_report"
   | "investor_memo";
+export type ReportTemplate = BuiltinTemplate | (string & {});
 
 export interface SectionState {
   id: string;

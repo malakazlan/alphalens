@@ -22,6 +22,7 @@ from schemas import (
     ConversationCreate, ConversationUpdate, FinBotMessageSend,
     FinBotActiveDocRequest,
     AnalyzerConversationCreate, AnalyzerConversationUpdate,
+    CustomTemplateCreate, CustomTemplateUpdate,
 )
 import finbot_repo
 import analyzer_chat_repo
@@ -2436,8 +2437,44 @@ async def get_extract(doc_id: str, current_user: dict = Depends(get_current_user
 from report_templates import (
     get_template_sections, get_section_config, build_section_extract,
     section_system_prompt, resolve_model,
+    compose_system_prompt, resolve_model_from_config, custom_section_to_config,
     TEMPLATES, SECTION_CONFIGS,
 )
+
+
+def _resolve_template(template_id: str, user_id: str) -> tuple[str, list[str], dict[str, dict]]:
+    """Resolve a template id to (effective_id, section_ids, config_map).
+
+    Two paths:
+      • Built-in id ('full_analysis' etc.) — use TEMPLATES + SECTION_CONFIGS.
+      • Custom UUID — load from reports_repo, convert each section_def to
+        the internal config shape via custom_section_to_config.
+    An unknown id (deleted custom, typo) silently falls back to
+    'full_analysis' so generation never 404s; the effective_id in the
+    return tuple is what actually got used.
+    """
+    if template_id in TEMPLATES:
+        section_ids = list(get_template_sections(template_id))
+        config_map  = {sid: SECTION_CONFIGS[sid] for sid in section_ids}
+        return (template_id, section_ids, config_map)
+    # Try custom (UUID-shaped or not, we just look it up)
+    custom = reports_repo.get_custom_template(template_id, user_id)
+    if custom and isinstance(custom.get("sections"), list) and custom["sections"]:
+        section_ids: list[str] = []
+        config_map:  dict[str, dict] = {}
+        for sec in custom["sections"]:
+            sid = (sec.get("id") or "").strip()
+            if not sid:
+                continue
+            section_ids.append(sid)
+            config_map[sid] = custom_section_to_config(sec)
+        if section_ids:
+            return (template_id, section_ids, config_map)
+    # Fallback
+    fb_id     = "full_analysis"
+    fb_ids    = list(get_template_sections(fb_id))
+    fb_config = {sid: SECTION_CONFIGS[sid] for sid in fb_ids}
+    return (fb_id, fb_ids, fb_config)
 
 
 def _section_rag(
@@ -2526,11 +2563,16 @@ async def generate_report(
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
 
-    template_id = body.template if body.template in TEMPLATES else "full_analysis"
+    user_id = current_user["id"]
+    extract = doc.get("extract_data") or {}
 
-    user_id     = current_user["id"]
-    extract     = doc.get("extract_data") or {}
-    section_ids = get_template_sections(template_id)
+    # Resolve the template — handles BUILT-IN ids ('full_analysis', etc.)
+    # AND custom-template UUIDs. Returns the section_ids in order and a
+    # config_map keyed by section_id (mirrors the SECTION_CONFIGS shape
+    # whether the source is built-in or custom).
+    template_id, section_ids, config_map = await asyncio.to_thread(
+        _resolve_template, body.template, user_id,
+    )
 
     # Create report row upfront so the streaming UI has a target.
     report_id = str(uuid.uuid4())
@@ -2578,7 +2620,7 @@ async def generate_report(
         # cards immediately (queued state) rather than appearing as
         # sections complete.
         for idx, sid in enumerate(section_ids):
-            cfg = get_section_config(sid)
+            cfg = config_map[sid]
             yield f"data: {json.dumps({'type': 'section_start', 'section': sid, 'index': idx, 'title': cfg['title']})}\n\n"
 
         # Aggregate stats for the structured ops log line at end-of-report.
@@ -2594,8 +2636,8 @@ async def generate_report(
 
         async def run_section(idx: int, section_id: str) -> None:
             async with sem:
-                cfg   = get_section_config(section_id)
-                model = resolve_model(section_id)
+                cfg   = config_map[section_id]
+                model = resolve_model_from_config(cfg)
 
                 # Per-section RAG. Returns context + chunk metadata; the
                 # chunks list is captured in stats for commit 3's
@@ -2612,9 +2654,7 @@ async def generate_report(
                     else "No structured extract data for this section."
                 )
 
-                system_msg = (
-                    doc_facts_block + section_system_prompt(section_id)
-                )
+                system_msg = doc_facts_block + compose_system_prompt(cfg)
                 user_msg = (
                     f"Structured financial data extracted from the document "
                     f"(use these exact values; do not recompute):\n```json\n"
@@ -2817,11 +2857,19 @@ async def regenerate_section(
         raise HTTPException(status_code=404, detail="Report not found")
 
     section_id = body.section
-    if section_id not in SECTION_CONFIGS:
+    doc_id  = report["doc_id"]
+    user_id = current_user["id"]
+
+    # Resolve the template that was used when this report was created so
+    # custom templates regenerate against the same section definitions as
+    # the original run. Falls back to full_analysis if the template was
+    # deleted between creation and now.
+    template_id, _section_ids, config_map = await asyncio.to_thread(
+        _resolve_template, report.get("template") or "full_analysis", user_id,
+    )
+    if section_id not in config_map:
         raise HTTPException(status_code=400, detail="Invalid section ID")
 
-    doc_id = report["doc_id"]
-    user_id = current_user["id"]
     doc = await asyncio.to_thread(db.get_document, doc_id, user_id)
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
@@ -2842,8 +2890,8 @@ async def regenerate_section(
 
     async def generate():
         turn_start = _time.time()
-        cfg   = get_section_config(section_id)
-        model = resolve_model(section_id)
+        cfg   = config_map[section_id]
+        model = resolve_model_from_config(cfg)
 
         yield f"data: {json.dumps({'type': 'section_start', 'section': section_id, 'title': cfg['title']})}\n\n"
 
@@ -2861,7 +2909,7 @@ async def regenerate_section(
             else "No structured extract data for this section."
         )
 
-        system_msg = doc_facts_block + section_system_prompt(section_id)
+        system_msg = doc_facts_block + compose_system_prompt(cfg)
         user_msg = (
             f"Structured financial data extracted from the document "
             f"(use these exact values; do not recompute):\n```json\n"
@@ -3074,18 +3122,140 @@ async def restore_report_version(
 
 @app.get("/api/report-templates")
 async def get_templates(current_user: dict = Depends(get_current_user)):
-    """Return available report templates."""
-    templates = []
+    """Return available report templates — built-ins + this user's customs.
+
+    The frontend renders the two groups separately (built-ins first, then a
+    'Your templates' row), so we keep them in one envelope with a `kind`
+    discriminator to avoid two round-trips on the report page mount."""
+    templates: list[dict] = []
     for tid, t in TEMPLATES.items():
         templates.append({
             "id": tid,
+            "kind": "builtin",
             "label": t["label"],
             "description": t["description"],
             "section_count": len(t["sections"]),
             "word_target": t["word_target"],
             "sections": [SECTION_CONFIGS[s]["title"] for s in t["sections"]],
         })
+
+    try:
+        rows = await asyncio.to_thread(
+            reports_repo.list_custom_templates, current_user["id"],
+        )
+    except Exception as e:
+        logger.warning(f"list_custom_templates failed: {e}")
+        rows = []
+
+    for r in rows:
+        secs = r.get("sections") or []
+        titles = [
+            (s.get("title") or "Untitled").strip()
+            for s in secs if isinstance(s, dict)
+        ]
+        word_target = sum(
+            int((s.get("word_target") or 250))
+            for s in secs if isinstance(s, dict)
+        )
+        templates.append({
+            "id":            r["id"],
+            "kind":          "custom",
+            "label":         r.get("name") or "Untitled template",
+            "description":   r.get("description") or "",
+            "section_count": len(titles),
+            "word_target":   word_target,
+            "sections":      titles,
+            "updated_at":    r.get("updated_at"),
+        })
+
     return {"success": True, "templates": templates}
+
+
+# ─── Custom report templates — CRUD ──────────────────────────────────────────
+# Backed by public.report_templates_custom (RLS: owner-only). The list+detail
+# endpoints filter on user_id explicitly anyway so the API is correct even
+# when called with the service-role key. Section ids are accepted verbatim
+# from the client so the audit trail stays stable across regenerations of
+# the same section in the same custom template.
+
+@app.get("/api/report-templates/custom")
+async def list_custom_templates(current_user: dict = Depends(get_current_user)):
+    rows = await asyncio.to_thread(
+        reports_repo.list_custom_templates, current_user["id"],
+    )
+    return {"success": True, "templates": rows}
+
+
+@app.get("/api/report-templates/custom/{template_id}")
+async def get_custom_template(
+    template_id: str,
+    current_user: dict = Depends(get_current_user),
+):
+    row = await asyncio.to_thread(
+        reports_repo.get_custom_template, template_id, current_user["id"],
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="Template not found")
+    return {"success": True, "template": row}
+
+
+@app.post("/api/report-templates/custom")
+@limiter.limit("30/hour")
+async def create_custom_template(
+    request: Request,
+    body:    CustomTemplateCreate,
+    current_user: dict = Depends(get_current_user),
+):
+    sections = [s.model_dump() for s in body.sections]
+    row = await asyncio.to_thread(
+        reports_repo.create_custom_template,
+        user_id=current_user["id"],
+        name=body.name,
+        description=body.description,
+        sections=sections,
+    )
+    logger.info(
+        "custom template created: user=%s id=%s sections=%d",
+        current_user["id"], row["id"], len(sections),
+    )
+    return {"success": True, "template": row}
+
+
+@app.patch("/api/report-templates/custom/{template_id}")
+@limiter.limit("60/hour")
+async def update_custom_template(
+    template_id: str,
+    request:     Request,
+    body:        CustomTemplateUpdate,
+    current_user: dict = Depends(get_current_user),
+):
+    sections = (
+        [s.model_dump() for s in body.sections] if body.sections is not None
+        else None
+    )
+    row = await asyncio.to_thread(
+        reports_repo.update_custom_template,
+        template_id, current_user["id"],
+        name=body.name,
+        description=body.description,
+        sections=sections,
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="Template not found")
+    return {"success": True, "template": row}
+
+
+@app.delete("/api/report-templates/custom/{template_id}")
+async def delete_custom_template(
+    template_id: str,
+    current_user: dict = Depends(get_current_user),
+):
+    ok = await asyncio.to_thread(
+        reports_repo.delete_custom_template, template_id, current_user["id"],
+    )
+    if not ok:
+        raise HTTPException(status_code=404, detail="Template not found")
+    return {"success": True}
 
 
 # ─── Analyzer chat persistence ─────────────────────────────────────────────────

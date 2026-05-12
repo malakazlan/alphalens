@@ -151,9 +151,19 @@ function FileGlyph({ filename }: { filename: string }) {
 }
 
 // ── Page ──────────────────────────────────────────────────────────────────────
+// ── Custom template — shape returned from GET /api/report-templates/custom ──
+interface CustomTemplate {
+  id: string;
+  name: string;
+  description?: string | null;
+  sections: { id: string; title: string; word_target?: number }[];
+  updated_at?: string;
+}
+
 export default function ReportPage() {
   const [docs, setDocs] = useState<Doc[]>([]);
   const [loadingDocs, setLoadingDocs] = useState(true);
+  const [customs, setCustoms] = useState<CustomTemplate[]>([]);
 
   const store = useReportStore();
   const abortRef = useRef<AbortController | null>(null);
@@ -173,7 +183,18 @@ export default function ReportPage() {
     setLoadingDocs(false);
   }, []);
 
+  // Custom templates the user has built. Fetched once on mount; the
+  // /dashboard/templates page redirects back here so a fresh nav re-fetches.
+  const fetchCustoms = useCallback(async () => {
+    try {
+      const res = await fetch("/api/report-templates/custom", { credentials: "include" });
+      const data = await res.json();
+      if (data.success) setCustoms(data.templates ?? []);
+    } catch {}
+  }, []);
+
   useEffect(() => { fetchDocs(); }, [fetchDocs]);
+  useEffect(() => { fetchCustoms(); }, [fetchCustoms]);
 
   const selectedDoc = docs.find(d => d.id === store.selectedDocId) ?? null;
 
@@ -429,8 +450,27 @@ export default function ReportPage() {
   const periods = (["Today", "This week", "This month", "Earlier"] as const).filter(p => groups[p].length > 0);
   const reportsByDoc = (docId: string) => store.reportList.filter(r => r.doc_id === docId).length;
 
-  // Selected template object
-  const tpl = TEMPLATES.find(t => t.id === store.template) ?? TEMPLATES[0];
+  // Selected template object. Built-ins resolve directly; a custom UUID
+  // falls into the second branch, which synthesises a `tpl`-shaped object
+  // so the summary row + selection highlight don't need a second code path.
+  const builtinMatch = TEMPLATES.find(t => t.id === store.template);
+  const customMatch  = builtinMatch ? null : customs.find(c => c.id === store.template);
+  const tpl = builtinMatch ?? (customMatch ? {
+    id:      customMatch.id,
+    n:       "№ —",
+    sub:     "Custom template",
+    title:   customMatch.name,
+    titleEm: "",
+    desc:    customMatch.description || "User-defined report template.",
+    sections: customMatch.sections.length,
+    words:   `~${customMatch.sections.reduce((s, x) => s + (x.word_target ?? 250), 0)}`,
+    mins:    "~?",
+    chips:   customMatch.sections.map(s => s.title),
+    color:   "#0f172a",
+    soft:    "rgba(15,23,42,0.06)",
+    glow:    "15,23,42",
+    icon:    null as React.ReactNode,
+  } : TEMPLATES[0]);
 
   return (
     <div className="flex flex-1 min-h-0">
@@ -711,13 +751,27 @@ export default function ReportPage() {
                 }}>
                   Choose a <span className="landing-gradient-text">template</span>
                 </h2>
-                <span style={{
-                  fontFamily: MONO, fontSize: 11, fontWeight: 600,
-                  letterSpacing: "0.10em", textTransform: "uppercase",
-                  color: "var(--al-subtle)",
-                }}>
-                  § 4 templates
-                </span>
+                <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+                  <span style={{
+                    fontFamily: MONO, fontSize: 11, fontWeight: 600,
+                    letterSpacing: "0.10em", textTransform: "uppercase",
+                    color: "var(--al-subtle)",
+                  }}>
+                    § {TEMPLATES.length + customs.length} templates
+                  </span>
+                  <a
+                    href="/dashboard/templates"
+                    style={{
+                      fontFamily: MONO, fontSize: 11, fontWeight: 600,
+                      letterSpacing: "0.04em",
+                      color: "var(--al-accent)",
+                      textDecoration: "none",
+                    }}
+                    title="Build your own custom report template"
+                  >
+                    + Build custom
+                  </a>
+                </div>
               </div>
 
               {/* ── Template grid ──────────────────────────────────────── */}
@@ -836,6 +890,105 @@ export default function ReportPage() {
                 })}
               </div>
 
+              {/* ── Custom templates row ───────────────────────────────── */}
+              {customs.length > 0 && (
+                <div style={{ marginBottom: 32 }}>
+                  <div style={{
+                    display: "flex", justifyContent: "space-between", alignItems: "baseline",
+                    paddingBottom: 12,
+                    marginBottom: 14,
+                  }}>
+                    <h3 style={{
+                      fontFamily: MONO, fontSize: 11, fontWeight: 600,
+                      letterSpacing: "0.10em", textTransform: "uppercase",
+                      color: "var(--al-subtle)",
+                    }}>
+                      Your templates · {customs.length}
+                    </h3>
+                    <a
+                      href="/dashboard/templates"
+                      style={{
+                        fontSize: 12, fontWeight: 500,
+                        color: "var(--al-text-secondary)", textDecoration: "none",
+                      }}
+                    >
+                      Manage →
+                    </a>
+                  </div>
+                  <div style={{
+                    display: "grid",
+                    gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))",
+                    gap: 12,
+                  }}>
+                    {customs.map(c => {
+                      const sel = store.template === c.id;
+                      const wordTarget = c.sections.reduce((s, x) => s + (x.word_target ?? 250), 0);
+                      return (
+                        <article
+                          key={c.id}
+                          onClick={() => store.setTemplate(c.id)}
+                          style={{
+                            background: sel ? "rgba(15,23,42,0.04)" : "var(--al-card)",
+                            border: sel ? "2px solid var(--al-text)" : "1px solid var(--al-border)",
+                            borderRadius: 14,
+                            padding: sel ? "13px 15px" : "14px 16px",
+                            cursor: "pointer",
+                            transition: "all 180ms ease",
+                          }}
+                          onMouseEnter={e => {
+                            if (!sel) (e.currentTarget as HTMLElement).style.borderColor = "rgba(0,0,0,0.22)";
+                          }}
+                          onMouseLeave={e => {
+                            if (!sel) (e.currentTarget as HTMLElement).style.borderColor = "var(--al-border)";
+                          }}
+                        >
+                          <div style={{
+                            display: "flex", alignItems: "center", justifyContent: "space-between",
+                            marginBottom: 6,
+                          }}>
+                            <span style={{
+                              fontSize: 14, fontWeight: 700,
+                              color: "var(--al-text)", letterSpacing: "-0.015em",
+                              overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                              maxWidth: "70%",
+                            }}>
+                              {c.name}
+                            </span>
+                            <span style={{
+                              fontFamily: MONO, fontSize: 9, fontWeight: 600,
+                              letterSpacing: "0.08em", textTransform: "uppercase",
+                              padding: "2px 6px", borderRadius: 4,
+                              background: "rgba(15,23,42,0.06)",
+                              color: "var(--al-text-secondary)",
+                            }}>
+                              Custom
+                            </span>
+                          </div>
+                          {c.description && (
+                            <p style={{
+                              fontSize: 12, color: "var(--al-text-secondary)",
+                              lineHeight: 1.5, marginBottom: 8,
+                              overflow: "hidden", textOverflow: "ellipsis",
+                              display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical",
+                            }}>
+                              {c.description}
+                            </p>
+                          )}
+                          <div style={{
+                            display: "flex", gap: 10,
+                            fontFamily: MONO, fontSize: 10.5,
+                            color: "var(--al-subtle)",
+                          }}>
+                            <span><b style={{ color: "var(--al-text)", fontWeight: 600 }}>{c.sections.length}</b> sections</span>
+                            <span><b style={{ color: "var(--al-text)", fontWeight: 600 }}>~{wordTarget}</b> words</span>
+                          </div>
+                        </article>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
               {/* ── Generate row ───────────────────────────────────────── */}
               <div style={{
                 background: "var(--al-bg-soft)",
@@ -930,6 +1083,7 @@ export default function ReportPage() {
                   <div style={{ borderTop: "1px solid var(--al-border)" }}>
                     {store.reportList.map(r => {
                       const t = TEMPLATES.find(x => x.id === r.template);
+                      const custom = t ? null : customs.find(c => c.id === r.template);
                       return (
                         <div
                           key={r.id}
@@ -957,8 +1111,12 @@ export default function ReportPage() {
                             color: "var(--al-text)",
                             letterSpacing: "-0.01em",
                           }}>
-                            {t ? <>{t.title} <span style={{ color: t.color }}>{t.titleEm}</span></> : r.template}
-                            <span style={{ color: "var(--al-subtle)", fontWeight: 400, marginLeft: 8 }}>{t?.n}</span>
+                            {t
+                              ? <>{t.title} <span style={{ color: t.color }}>{t.titleEm}</span></>
+                              : (custom?.name ?? r.template)}
+                            <span style={{ color: "var(--al-subtle)", fontWeight: 400, marginLeft: 8 }}>
+                              {t?.n ?? (custom ? "(Custom)" : "")}
+                            </span>
                           </div>
                           <div style={{ fontFamily: MONO, fontSize: 11, color: "var(--al-subtle)", letterSpacing: "0.04em" }}>
                             <b style={{ color: "var(--al-text)", fontWeight: 600 }}>{r.word_count.toLocaleString()}</b> words

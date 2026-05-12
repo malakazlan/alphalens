@@ -56,6 +56,40 @@ class AnalyzerConversationUpdate(BaseModel):
     title: str = Field(..., min_length=1, max_length=120)
 
 
+# ─── Custom report templates (Phase 3 commit 6) ─────────────────────────────
+
+class CustomTemplateSection(BaseModel):
+    """One section of a user-defined report template.
+
+    Persisted as one entry in the JSONB `sections` array on
+    public.report_templates_custom. Validation here is intentionally
+    permissive — empty system_prompt would just produce a generic
+    section, which is the user's problem to fix, not ours."""
+    id:            str = Field(..., min_length=1, max_length=64,
+                               description="Stable section id (uuid or slug). Used by the generator and audit trail.")
+    title:         str = Field(..., min_length=1, max_length=120)
+    system_prompt: str = Field(..., min_length=1, max_length=4000)
+    word_target:   Optional[int] = Field(default=250, ge=50, le=1000)
+    rag_query:     Optional[str] = Field(default=None, max_length=300)
+    rag_top_k:     Optional[int] = Field(default=10, ge=3, le=20)
+    model:         Optional[str] = Field(default="smart", pattern=r"^(fast|smart)$")
+
+
+class CustomTemplateCreate(BaseModel):
+    """Body for POST /api/report-templates/custom."""
+    name:        str = Field(..., min_length=1, max_length=120)
+    description: Optional[str] = Field(default=None, max_length=500)
+    sections:    list[CustomTemplateSection] = Field(..., min_length=1, max_length=15)
+
+
+class CustomTemplateUpdate(BaseModel):
+    """Body for PATCH /api/report-templates/custom/{id}. All fields
+    optional — only the supplied fields are written."""
+    name:        Optional[str]  = Field(default=None, min_length=1, max_length=120)
+    description: Optional[str]  = Field(default=None, max_length=500)
+    sections:    Optional[list[CustomTemplateSection]] = Field(default=None, min_length=1, max_length=15)
+
+
 class ReportGenerateRequest(BaseModel):
     template: str = Field("full_analysis", max_length=64)
 
