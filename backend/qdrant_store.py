@@ -117,10 +117,34 @@ def upsert_chunks(points: list[PointStruct]) -> None:
                 (total + _QDRANT_UPSERT_BATCH - 1) // _QDRANT_UPSERT_BATCH)
 
 
-def search(query_vector: list[float], user_id: str, doc_id: Optional[str] = None, top_k: int = 8) -> list:
+def search(
+    query_vector: list[float],
+    user_id:      str,
+    doc_id:       Optional[str]      = None,
+    top_k:        int                = 8,
+    chunk_types:  Optional[list[str]] = None,
+) -> list:
+    """Vector search over the chunks collection.
+
+    `chunk_types` (optional): restrict results to chunks whose `chunk_type`
+    is in the list (e.g. ['figure'] to retrieve only figure chunks). Uses
+    a Qdrant payload `must` filter; the field isn't indexed so this is a
+    scan over the user/doc-filtered subset — fine for small subsets.
+    """
     must = [FieldCondition(key="user_id", match=MatchValue(value=user_id))]
     if doc_id:
         must.append(FieldCondition(key="doc_id", match=MatchValue(value=doc_id)))
+    if chunk_types:
+        if len(chunk_types) == 1:
+            must.append(FieldCondition(
+                key="chunk_type", match=MatchValue(value=chunk_types[0]),
+            ))
+        else:
+            # MatchAny is the disjunction form.
+            from qdrant_client.http.models import MatchAny
+            must.append(FieldCondition(
+                key="chunk_type", match=MatchAny(any=chunk_types),
+            ))
     response = get_client().query_points(
         collection_name=COLLECTION,
         query=query_vector,

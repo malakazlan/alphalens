@@ -860,8 +860,21 @@ export default function ChatPanel({ docId, parseChunks = [], onChunkSelect }: Ch
       const select = onChunkSelectRef.current;
       const chunks = parseChunksRef.current;
 
+      // Non-cell chip (text / figure). Resolve to the chunk's own overlay
+      // so the doc viewer highlights the whole text passage or figure
+      // box. Was previously a hard bail with select(null) — that's why
+      // text and figure chips never lit anything up.
       if (!chip.cellId) {
-        select(null);
+        const srcId   = chip.source.chunk_id;
+        const overlay = chunks.find(o => o.chunk_id === srcId);
+        if (overlay) {
+          select(overlay.chunk_id, []);
+        } else {
+          // No matching overlay (chunk was filtered out by bbox guard,
+          // or this is a chat-context-only chunk). Clear the highlight
+          // rather than leave stale state.
+          select(null);
+        }
         return;
       }
 

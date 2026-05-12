@@ -228,6 +228,73 @@ _HTML_TAG_RE = re.compile(r"<[^>]+>")
 # robust than heuristically deriving a row label from a grid that may
 # have been parsed messily by ADE.
 _CITATION_RE = re.compile(r"\[\[([^|\]]+)(?:\|([^\]]+))?\]\]")
+
+# Words in a user question that imply they want to read a chart/figure.
+# When this matches, the chat retrieval runs an extra Qdrant pass filtered
+# to chunk_type=figure so the parsed chart data (axis values, series,
+# captions) reliably reaches the LLM. Without this boost the figure chunk
+# is often ranked below table cells whose text is more semantically
+# similar to the question, and the model says "the chart is not present"
+# while the parsed data sits in the index unused.
+_FIGURE_TRIGGER_RE = re.compile(
+    r"\b(chart|charts|graph|graphs|figure|figures|fig\.?|plot|plots|"
+    r"linechart|piechart|barchart|"           # one-word variants the model sees from users
+    r"line\s+graph|line\s+chart|"
+    r"bar\s+chart|bar\s+graph|column\s+chart|"
+    r"pie\s+chart|pie\s+graph|"
+    r"scatter\s+plot|"
+    r"trend|trends|trajectory)\b",
+    re.IGNORECASE,
+)
+
+# Permissive strip pattern. Removes the ENTIRE `[[ ... ]]` block including
+# stacked-citation interiors that contain `]` characters (e.g.
+# `[[id1|x], [id2|y]]`). Non-greedy `.*?` so adjacent independent markers
+# don't get merged into one match. Use this — never `_CITATION_RE` — for
+# `.sub("", ...)` calls that clean prose for downstream processing.
+_CITATION_STRIP_RE = re.compile(r"\[\[.*?\]\]", re.DOTALL)
+
+# Matches the inner separator between stacked citations inside a single
+# `[[...]]` block. The LLM occasionally emits `[[id1|x][id2|y]]` or
+# `[[id1|x], [id2|y]]` instead of two separate markers, and the naive
+# extractor would capture the whole thing as one citation with garbage
+# leaking into the label. This regex splits on the inner boundary so each
+# pair gets parsed independently.
+#
+#   Accepts:  ][   |   ], [   |   ],[   |   ] , [
+#
+_CITATION_STACK_SEP = re.compile(r"\]\s*,?\s*\[")
+
+
+def _split_stacked_citation(content: str) -> list[tuple[str, str]]:
+    """Split a `[[...]]` interior into one or more (id, label) pairs.
+
+    Examples:
+      "0-12"                         -> [("0-12", "")]
+      "0-12|Revenue"                 -> [("0-12", "Revenue")]
+      "0-12|Revenue][0-13|Margin"    -> [("0-12", "Revenue"), ("0-13", "Margin")]
+      "0-12|Revenue], [0-13|Margin"  -> [("0-12", "Revenue"), ("0-13", "Margin")]
+
+    The function is the SINGLE place that knows about stacking, so both
+    the streaming parser and any post-stream extractor stay consistent.
+    """
+    if not content:
+        return []
+    pairs: list[tuple[str, str]] = []
+    for piece in _CITATION_STACK_SEP.split(content):
+        piece = piece.strip()
+        if not piece:
+            continue
+        if "|" in piece:
+            _id, _label = piece.split("|", 1)
+            cid = _id.strip()
+            lbl = _label.strip()
+        else:
+            cid = piece.strip()
+            lbl = ""
+        if cid:
+            pairs.append((cid, lbl))
+    return pairs
 _FULL_CONTEXT_TOKEN_LIMIT = 28000
 # Canonical refusal phrase the model produces when a question can't be
 # answered from the document. Used to suppress citation chips on
@@ -1776,7 +1843,9 @@ def _find_all_matching_cells(
     # Strip [[cell-id]] citations before value extraction — digits inside
     # citation markers (e.g. [[0-800]]) would otherwise be falsely extracted
     # as answer values and produce spurious high-confidence cell matches.
-    clean_answer = _CITATION_RE.sub("", answer_text)
+    # Use the permissive strip so stacked markers (e.g. `[[id1|x], [id2|y]]`)
+    # also get removed cleanly — the strict _CITATION_RE skips those.
+    clean_answer = _CITATION_STRIP_RE.sub("", answer_text)
     answer_values = _extract_answer_values(clean_answer)
 
     # Filter out question qualifiers — these are filters, not answer targets
@@ -4078,6 +4147,42 @@ async def chat_document(
                 )
                 ranked = _rerank_results_by_section(raw_results, q_buckets)
                 results = ranked[:10]
+
+                # Figure-boost: when the user asks about a chart / figure /
+                # graph / plot / trend, the primary embedding search reliably
+                # surfaces TABLE cells (their text is more semantically
+                # similar to financial questions than chart descriptions).
+                # Figure chunks lose the ranking even though they carry the
+                # parsed chart data (axis values, series, captions). Run a
+                # secondary search filtered to chunk_type=figure and prepend
+                # the top hits so the LLM has the chart data to read+cite.
+                if _FIGURE_TRIGGER_RE.search(message or ""):
+                    try:
+                        fig_results = await asyncio.to_thread(
+                            qdrant_store.search,
+                            query_vec, user_id, doc_id, 5,
+                            ["figure"],
+                        )
+                    except Exception as e:
+                        logger.warning(f"figure-boost search failed: {e}")
+                        fig_results = []
+                    if fig_results:
+                        existing_ids = {
+                            (r.payload or {}).get("chunk_id") for r in results
+                        }
+                        added = 0
+                        for fr in fig_results:
+                            fid = (fr.payload or {}).get("chunk_id")
+                            if fid and fid not in existing_ids:
+                                results.append(fr)
+                                added += 1
+                        logger.info(
+                            "figure-boost: doc=%s added=%d figure chunk(s) "
+                            "(trigger=%s)",
+                            doc_id, added,
+                            _FIGURE_TRIGGER_RE.search(message).group(0),
+                        )
+
                 if q_buckets:
                     logger.info(
                         "rag: doc=%s buckets=%s expanded=%s top10_sections=%s",
@@ -4431,23 +4536,21 @@ async def chat_document(
                         # Check if citation is complete
                         bracket_end = pending.find(']]', bracket_start + 2)
                         if bracket_end != -1:
-                            # Complete citation — extract ID and optional
-                            # label (Phase 6 syntax: `[[id|label]]`).
+                            # Complete citation — content may contain ONE
+                            # or MORE id|label pairs. The model occasionally
+                            # stacks like `[[id1|x][id2|y]]` or
+                            # `[[id1|x], [id2|y]]` despite the prompt
+                            # asking for separate `[[ ]]` per citation;
+                            # _split_stacked_citation handles both shapes
+                            # so every cited id makes it into the chip set.
                             content = pending[bracket_start + 2:bracket_end]
-                            if "|" in content:
-                                _id, _label = content.split("|", 1)
-                                cited_id = _id.strip()
-                                lbl = _label.strip()
-                            else:
-                                cited_id = content.strip()
-                                lbl = ""
-                            if cited_id:
-                                cited_ids.append(cited_id)
-                                if lbl and cited_id not in cited_labels:
+                            for cid, lbl in _split_stacked_citation(content):
+                                cited_ids.append(cid)
+                                if lbl and cid not in cited_labels:
                                     # Cap chip-label length defensively;
                                     # the prompt asks for ~60 chars but the
                                     # model occasionally exceeds.
-                                    cited_labels[cited_id] = lbl[:80]
+                                    cited_labels[cid] = lbl[:80]
                             pending = pending[bracket_end + 2:]
                         else:
                             # Citation not complete — wait for more tokens
@@ -4551,7 +4654,7 @@ async def chat_document(
         # "Not available in this document" with arbitrary references is
         # exactly the failure mode the user reported (e.g. "what is
         # science and albert" returning logo/figure citations).
-        clean_full_answer = _CITATION_RE.sub("", full_answer or "")
+        clean_full_answer = _CITATION_STRIP_RE.sub("", full_answer or "")
         if (
             _REFUSAL_RE.search(clean_full_answer)
             and len(_extract_answer_values(clean_full_answer)) == 0
@@ -4632,7 +4735,7 @@ async def chat_document(
         # markers that the streaming strip-buffer hides from the user in
         # real time. Persisting the raw version would re-expose them on
         # reload — exactly the leak the user reported.
-        cleaned_answer = _CITATION_RE.sub("", full_answer)
+        cleaned_answer = _CITATION_STRIP_RE.sub("", full_answer)
         # Tidy whitespace left behind by stripped markers: collapse runs of
         # spaces and remove stray spaces before punctuation.
         cleaned_answer = re.sub(r"[ \t]+(?=[.,;:!?])", "", cleaned_answer)
