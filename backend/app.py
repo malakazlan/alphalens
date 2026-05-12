@@ -25,6 +25,7 @@ from schemas import (
 )
 import finbot_repo
 import analyzer_chat_repo
+import reports_repo
 import db
 import storage_client
 import qdrant_store
@@ -2683,6 +2684,29 @@ async def generate_report(
                         "status":     "done",
                         "word_count": word_count,
                     })
+
+                    # Phase 3 commit 3 — silent audit capture. Best-effort:
+                    # if the audit tables don't exist yet (migration not
+                    # applied) or RLS denies, we log and continue without
+                    # breaking the section response.
+                    try:
+                        await asyncio.to_thread(
+                            reports_repo.insert_version,
+                            report_id=report_id, user_id=user_id, section_id=section_id,
+                            content=section_md, model=model,
+                            tokens_in=section_tokens_in, tokens_out=section_tokens_out,
+                        )
+                    except Exception as e:
+                        logger.warning(f"report_versions insert failed (s={section_id}): {e}")
+                    try:
+                        await asyncio.to_thread(
+                            reports_repo.insert_sources_batch,
+                            report_id=report_id, user_id=user_id, section_id=section_id,
+                            chunks=_chunks_meta,
+                        )
+                    except Exception as e:
+                        logger.warning(f"report_sources insert failed (s={section_id}): {e}")
+
                     await event_q.put({
                         "type": "section_done", "section": section_id,
                         "word_count": word_count, "model": model,
@@ -2803,61 +2827,135 @@ async def regenerate_section(
         raise HTTPException(status_code=404, detail="Document not found")
     extract = doc.get("extract_data") or {}
 
-    async def generate():
-        try:
-            all_chunks = await asyncio.to_thread(qdrant_store.get_chunks_by_doc, doc_id, user_id, 120)
-        except Exception as e:
-            yield f"data: {json.dumps({'type': 'error', 'text': str(e)})}\n\n"
-            return
+    # Doc-facts prefix mirrors generate_report — keeps the prompt-cache
+    # prefix shared across the first generation and any regenerations
+    # of the same doc.
+    meta = doc.get("metadata") or {}
+    doc_facts_bits: list[str] = []
+    if meta.get("doc_type"):     doc_facts_bits.append(f"Document type: {meta['doc_type']}")
+    if meta.get("company_name"): doc_facts_bits.append(f"Company: {meta['company_name']}")
+    if meta.get("fiscal_year"):  doc_facts_bits.append(f"Fiscal year: {meta['fiscal_year']}")
+    if meta.get("currency"):     doc_facts_bits.append(f"Currency: {meta['currency']}")
+    doc_facts_block = (
+        "KNOWN DOCUMENT FACTS:\n" + "\n".join(f"- {b}" for b in doc_facts_bits) + "\n\n"
+    ) if doc_facts_bits else ""
 
-        cfg = get_section_config(section_id)
+    async def generate():
+        turn_start = _time.time()
+        cfg   = get_section_config(section_id)
+        model = resolve_model(section_id)
+
         yield f"data: {json.dumps({'type': 'section_start', 'section': section_id, 'title': cfg['title']})}\n\n"
 
-        section_extract = build_section_extract(extract, cfg["extract_keys"])
-        context_text = _build_section_chunks(all_chunks, cfg["rag_query"], cfg["rag_top_k"])
-        extract_json = json.dumps(section_extract, indent=2) if section_extract else "No data available."
+        # Per-section RAG — same path as generate_report; returns the
+        # chunks that fed this call so we can refresh the audit trail.
+        context_text, chunks_meta = await asyncio.to_thread(
+            _section_rag,
+            user_id=user_id, doc_id=doc_id,
+            rag_query=cfg["rag_query"], top_k=cfg["rag_top_k"],
+        )
 
+        section_extract = build_section_extract(extract, cfg["extract_keys"])
+        extract_json = (
+            json.dumps(section_extract, indent=2) if section_extract
+            else "No structured extract data for this section."
+        )
+
+        system_msg = doc_facts_block + section_system_prompt(section_id)
         user_msg = (
-            f"Structured financial data:\n```json\n{extract_json}\n```\n\n"
-            f"Relevant document excerpts:\n{context_text}\n\n---\n\n"
-            f"Rewrite the **{cfg['title']}** section. "
-            f"Start with ## {cfg['title']}. Be precise, cite specific figures."
+            f"Structured financial data extracted from the document "
+            f"(use these exact values; do not recompute):\n```json\n"
+            f"{extract_json}\n```\n\n"
+            f"Relevant document excerpts (per-section retrieval):\n"
+            f"{context_text or '(none retrieved for this section)'}\n\n"
+            f"---\n\nRewrite the **{cfg['title']}** section. Start with "
+            f"`## {cfg['title']}` as the header."
         )
 
         section_md = ""
+        section_tokens_in  = 0
+        section_tokens_out = 0
         try:
-            stream = _oai.chat.completions.create(
-                model="gpt-4o",
+            stream = await _aoai.chat.completions.create(
+                model=model,
                 messages=[
-                    {"role": "system", "content": cfg["system"]},
-                    {"role": "user", "content": user_msg},
+                    {"role": "system", "content": system_msg},
+                    {"role": "user",   "content": user_msg},
                 ],
                 stream=True,
                 temperature=0.2,
                 max_tokens=cfg["max_tokens"],
+                stream_options={"include_usage": True},
             )
-            for chunk in stream:
+            async for chunk in stream:
                 if await request.is_disconnected():
-                    stream.close()
                     logger.info(f"regenerate-section {section_id}: client disconnected")
                     return
-                delta = chunk.choices[0].delta.content if chunk.choices else None
+                if chunk.usage:
+                    section_tokens_in  = chunk.usage.prompt_tokens     or 0
+                    section_tokens_out = chunk.usage.completion_tokens or 0
+                    continue
+                if not chunk.choices:
+                    continue
+                delta = chunk.choices[0].delta.content
                 if delta:
                     section_md += delta
                     yield f"data: {json.dumps({'type': 'delta', 'section': section_id, 'text': delta})}\n\n"
 
             word_count = len(section_md.split())
             await asyncio.to_thread(db.update_report_section, report_id, section_id, {
-                "markdown": section_md,
-                "status": "done",
+                "markdown":   section_md,
+                "status":     "done",
                 "word_count": word_count,
             })
-            yield f"data: {json.dumps({'type': 'section_done', 'section': section_id, 'word_count': word_count})}\n\n"
-        except Exception as e:
+
+            # Audit capture. Regenerate has one extra step over the first-
+            # time path: drop the prior `report_sources` rows for this
+            # section so the trail reflects the LATEST run. `report_versions`
+            # is append-only — that's the whole point of history.
+            try:
+                await asyncio.to_thread(
+                    reports_repo.delete_sources_for_section,
+                    report_id=report_id, user_id=user_id, section_id=section_id,
+                )
+            except Exception as e:
+                logger.warning(f"report_sources delete failed (s={section_id}): {e}")
+            try:
+                await asyncio.to_thread(
+                    reports_repo.insert_sources_batch,
+                    report_id=report_id, user_id=user_id, section_id=section_id,
+                    chunks=chunks_meta,
+                )
+            except Exception as e:
+                logger.warning(f"report_sources insert failed (s={section_id}): {e}")
+            try:
+                await asyncio.to_thread(
+                    reports_repo.insert_version,
+                    report_id=report_id, user_id=user_id, section_id=section_id,
+                    content=section_md, model=model,
+                    tokens_in=section_tokens_in, tokens_out=section_tokens_out,
+                )
+            except Exception as e:
+                logger.warning(f"report_versions insert failed (s={section_id}): {e}")
+
+            latency_ms = int((_time.time() - turn_start) * 1000)
+            logger.info(
+                "regenerate-section: report=%s section=%s model=%s tokens_in=%d tokens_out=%d words=%d latency_ms=%d",
+                report_id, section_id, model,
+                section_tokens_in, section_tokens_out, word_count, latency_ms,
+            )
+
+            yield f"data: {json.dumps({'type': 'section_done', 'section': section_id, 'word_count': word_count, 'model': model})}\n\n"
+
+        except openai.RateLimitError:
             await asyncio.to_thread(db.update_report_section, report_id, section_id, {
-                "markdown": section_md,
-                "status": "error",
-                "error": str(e),
+                "markdown": section_md, "status": "error", "error": "rate_limit",
+            })
+            yield f"data: {json.dumps({'type': 'section_error', 'section': section_id, 'error': 'Rate limit reached. Please retry this section in a moment.'})}\n\n"
+        except Exception as e:
+            logger.exception(f"regenerate-section {section_id} failed")
+            await asyncio.to_thread(db.update_report_section, report_id, section_id, {
+                "markdown": section_md, "status": "error", "error": str(e),
             })
             yield f"data: {json.dumps({'type': 'section_error', 'section': section_id, 'error': str(e)})}\n\n"
 
