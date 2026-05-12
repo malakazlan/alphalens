@@ -2,6 +2,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import ActionCards from "@/components/analyzer/ActionCards";
+import BulkUploadPanel from "@/components/analyzer/BulkUploadPanel";
 import ProcessingStatus from "@/components/analyzer/ProcessingStatus";
 import IconRail from "@/components/analyzer/IconRail";
 import DocumentRail from "@/components/analyzer/DocumentRail";
@@ -43,6 +44,20 @@ interface Doc {
   metadata?: Record<string, unknown>;
 }
 
+// One row in the bulk-upload panel. `documentId` is null while the file is
+// still uploading client→server; once the server returns, we have an id
+// (even for duplicates — they point to the pre-existing doc) and start
+// polling /status. Terminal statuses: complete, error, rejected, duplicate.
+interface BulkJob {
+  filename:    string;
+  documentId:  string | null;
+  status:      string;       // 'pending' | 'queued' | 'parsing' | ... | 'complete' | 'error' | 'duplicate' | 'rejected'
+  progress:    number;
+  message:     string;
+  isDuplicate: boolean;
+  error?:      string | null;
+}
+
 /**
  * AnalyzerView — the analyzer surface.
  *
@@ -64,6 +79,12 @@ export default function AnalyzerView({ docIdFromUrl }: { docIdFromUrl: string | 
   const [error,              setError]              = useState<string | null>(null);
   const [loadingDocs,        setLoadingDocs]        = useState(true);
   const [signedUrl,          setSignedUrl]          = useState<string>("");
+
+  // Bulk upload batch — one entry per file the user just dropped. Each
+  // row polls its own /status until terminal. Lives in component state
+  // because it's intrinsically multi-doc and short-lived (cleared once
+  // the user closes the panel or navigates away).
+  const [bulkBatch, setBulkBatch] = useState<BulkJob[] | null>(null);
 
   // Chunk overlay state — fetched once per doc, shared between DocViewer & ParsePanel
   const [parseChunks,       setParseChunks]       = useState<ChunkOverlay[]>([]);
@@ -87,8 +108,11 @@ export default function AnalyzerView({ docIdFromUrl }: { docIdFromUrl: string | 
     : null;
 
   // ── Derived: current high-level view ───────────────────────────────────────
-  const view: "workspace" | "uploading" | "processing" | "home" =
+  // Bulk wins over the single-file processing/uploading branches because
+  // its own panel handles both phases (hashing + per-file rows).
+  const view: "workspace" | "uploading" | "processing" | "bulk" | "home" =
     docIdFromUrl    ? "workspace"
+    : bulkBatch     ? "bulk"
     : processingId  ? "processing"
     : isUploading   ? "uploading"
     :                 "home";
@@ -327,6 +351,164 @@ export default function AnalyzerView({ docIdFromUrl }: { docIdFromUrl: string | 
     fetchDocs();
     setProcessingId(null);
   }
+
+  // ── Bulk upload ─────────────────────────────────────────────────────────────
+  // Triggered when the user drops or picks 2+ files on the main dropzone.
+  // We hash every file client-side (sequentially — avoids spinning up 10
+  // Web Crypto subtle.digest() jobs at once on a low-power laptop) so the
+  // server can dedupe before the multipart upload would otherwise wastefully
+  // transfer the bytes. The server still rechecks the hash.
+  async function handleBulkUpload(files: File[], parseScope: "core" | "full" = "core") {
+    setError(null);
+    if (files.length === 0) return;
+
+    // Seed rows immediately so the user gets feedback the moment they drop —
+    // long before sha256 + the multipart roundtrip finish.
+    const seed: BulkJob[] = files.map(f => ({
+      filename:    f.name,
+      documentId:  null,
+      status:      "pending",
+      progress:    0,
+      message:     "Hashing…",
+      isDuplicate: false,
+    }));
+    setBulkBatch(seed);
+    setIsUploading(true);
+
+    let hashes: string[] = [];
+    try {
+      hashes = await Promise.all(files.map(f => sha256File(f)));
+    } catch {
+      setError("Failed to hash files. Please retry.");
+      setIsUploading(false);
+      setBulkBatch(null);
+      return;
+    }
+    setBulkBatch(prev => prev?.map(r => ({ ...r, message: "Uploading…" })) ?? null);
+
+    const form = new FormData();
+    for (const f of files) form.append("files", f);
+    form.append("sha256_hashes", JSON.stringify(hashes));
+    form.append("action", "parse");
+    form.append("parse_scope", parseScope);
+
+    let data: { success?: boolean; error?: string; code?: string; jobs?: { filename: string; status: string; document_id?: string; existing_document_id?: string; error?: string }[] } = {};
+    try {
+      const res = await fetch("/api/documents/bulk-upload", {
+        method: "POST", credentials: "include", body: form,
+      });
+      data = await res.json();
+    } catch {
+      setError("Bulk upload failed. Please retry.");
+      setIsUploading(false);
+      setBulkBatch(null);
+      return;
+    }
+    setIsUploading(false);
+
+    if (!data.success || !Array.isArray(data.jobs)) {
+      setError(data.error ?? "Bulk upload failed");
+      setBulkBatch(null);
+      return;
+    }
+
+    // Hydrate the seed rows with server outcomes. Match on filename — the
+    // backend returns jobs in the same order it received them, so the index
+    // would also work, but filename matches survive any future reordering.
+    setBulkBatch(prev => {
+      if (!prev) return null;
+      return prev.map(row => {
+        const j = data.jobs!.find(x => x.filename === row.filename);
+        if (!j) return { ...row, status: "error", message: "No server response", error: "missing" };
+        if (j.status === "duplicate") {
+          return {
+            ...row,
+            documentId:  j.document_id ?? null,
+            status:      "complete",
+            progress:    100,
+            message:     "Already in your library",
+            isDuplicate: true,
+          };
+        }
+        if (j.status === "error") {
+          return {
+            ...row,
+            documentId: j.document_id ?? null,
+            status:     "error",
+            message:    j.error ?? "Upload failed",
+            error:      j.error,
+          };
+        }
+        return {
+          ...row,
+          documentId: j.document_id ?? null,
+          status:     "queued",
+          message:    "Waiting for processing",
+        };
+      });
+    });
+
+    fetchDocs();
+  }
+
+  // Poll every non-terminal row in the current batch. One interval per
+  // batch, not per row, so a 10-file drop is 10× lighter on /status than
+  // ten ProcessingStatus components would be.
+  useEffect(() => {
+    if (!bulkBatch) return;
+    const isTerminal = (s: string) => s === "complete" || s === "error" || s === "rejected";
+    if (bulkBatch.every(r => isTerminal(r.status) || !r.documentId)) {
+      // Nothing left to poll; refresh docs once in case any just finished.
+      return;
+    }
+    let stopped = false;
+
+    async function tick() {
+      while (!stopped) {
+        const snap = bulkBatch ?? [];
+        const polling = snap.filter(r => r.documentId && !isTerminal(r.status));
+        if (polling.length === 0) return;
+
+        const results = await Promise.all(
+          polling.map(async r => {
+            try {
+              const res = await fetch(`/api/documents/${r.documentId}/status`, { credentials: "include" });
+              if (!res.ok) return null;
+              return { ...(await res.json()), _row: r };
+            } catch { return null; }
+          }),
+        );
+
+        let anyNonTerminal = false;
+        setBulkBatch(prev => {
+          if (!prev) return prev;
+          return prev.map(row => {
+            const hit = results.find(x => x && x._row.filename === row.filename);
+            if (!hit) return row;
+            const status   = hit.status as string;
+            const message  = hit.status_message || row.message;
+            const progress = typeof hit.progress === "number" ? hit.progress : row.progress;
+            if (!isTerminal(status)) anyNonTerminal = true;
+            return { ...row, status, message, progress };
+          });
+        });
+
+        if (!anyNonTerminal) {
+          // All rows are terminal now — refresh the doc list so the rail
+          // shows the newly-complete docs.
+          fetchDocs();
+          return;
+        }
+        await new Promise(r => setTimeout(r, 3000));
+      }
+    }
+
+    tick();
+    return () => { stopped = true; };
+    // We intentionally key on the doc-id signature only — re-runs on
+    // every list mutation would restart the poller mid-cycle.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bulkBatch?.map(r => `${r.documentId}:${r.status}`).join("|")]);
 
   // ── Delete document ──────────────────────────────────────────────────────────
   async function handleDeleteDoc(docId: string) {
@@ -598,6 +780,14 @@ export default function AnalyzerView({ docIdFromUrl }: { docIdFromUrl: string | 
           </div>
         )}
 
+        {view === "bulk" && bulkBatch && (
+          <BulkUploadPanel
+            jobs={bulkBatch}
+            onClose={() => { setBulkBatch(null); fetchDocs(); }}
+            onOpenDoc={(id: string) => router.push(ROUTES.analyzerDoc(id))}
+          />
+        )}
+
         {view === "home" && (
           <div className="max-w-6xl mx-auto w-full">
             {/* ── Header block (eyebrow + title + lede + stats) ─────────────── */}
@@ -661,7 +851,7 @@ export default function AnalyzerView({ docIdFromUrl }: { docIdFromUrl: string | 
             </div>
 
             {/* ── Cards (unchanged) ────────────────────────────────────────── */}
-            <ActionCards onFileSelect={handleFileSelect} />
+            <ActionCards onFileSelect={handleFileSelect} onMultipleFiles={handleBulkUpload} />
 
             {/* ── Tips / best practices (matches design mock marginalia) ──── */}
             <div style={{

@@ -2248,6 +2248,198 @@ async def upload_document(
     })
 
 
+# ─── Bulk upload (Phase 3 commit 7) ──────────────────────────────────────────
+# Up to 10 files per request, 250 MB combined. Each file is independently
+# validated, deduped, stored, and enqueued — so a single bad file does not
+# poison the batch. The response is a list of per-file outcomes the
+# frontend can render as 10 progress rows. Hashes are accepted from the
+# client (matching the single-file path) so the client can pre-flight
+# dedupe before uploading bytes.
+
+BULK_MAX_FILES = 10
+BULK_MAX_BYTES = 250 * 1024 * 1024  # 250 MB combined
+
+
+@app.post("/api/documents/bulk-upload")
+@limiter.limit("20/hour")
+async def bulk_upload_documents(
+    request: Request,
+    current_user: dict = Depends(get_current_user),
+    files:         list[UploadFile] = File(...),
+    sha256_hashes: str  = Form(...),   # JSON array, parallel to `files`
+    action:        str  = Form("parse"),
+    parse_scope:   str  = Form("core"),
+):
+    if not files:
+        return JSONResponse(status_code=400, content={
+            "success": False, "error": "No files provided",
+            "code": "bulk_upload_empty",
+        })
+    if len(files) > BULK_MAX_FILES:
+        return JSONResponse(status_code=400, content={
+            "success": False,
+            "error": f"Too many files (max {BULK_MAX_FILES} per request)",
+            "code":  "bulk_upload_limit_exceeded",
+        })
+
+    try:
+        hashes = json.loads(sha256_hashes)
+        if not isinstance(hashes, list) or len(hashes) != len(files):
+            raise ValueError
+    except (ValueError, json.JSONDecodeError):
+        return JSONResponse(status_code=400, content={
+            "success": False,
+            "error":   "sha256_hashes must be a JSON array parallel to files",
+            "code":    "bulk_upload_invalid_hashes",
+        })
+
+    user_id = current_user["id"]
+    scope   = "full" if parse_scope == "full" else "core"
+
+    # Read every file fully and validate up front so we can short-circuit the
+    # whole batch on a combined-size violation (cheaper than uploading 9
+    # files and then rejecting the 10th).
+    import os
+    bodies: list[tuple[UploadFile, bytes, str]] = []   # (file, bytes, hash)
+    total_bytes = 0
+    for f, h in zip(files, hashes):
+        ext = os.path.splitext(f.filename or "")[-1].lower()
+        if ext not in ALLOWED_EXTENSIONS:
+            return JSONResponse(status_code=400, content={
+                "success": False,
+                "error":   f"File type '{ext}' not supported (file: {f.filename})",
+                "code":    "bulk_upload_invalid_type",
+            })
+        if not isinstance(h, str) or len(h) != 64:
+            return JSONResponse(status_code=400, content={
+                "success": False,
+                "error":   f"Invalid sha256 hash for file: {f.filename}",
+                "code":    "bulk_upload_invalid_hashes",
+            })
+        body = await f.read()
+        if len(body) > MAX_FILE_SIZE:
+            return JSONResponse(status_code=400, content={
+                "success": False,
+                "error":   f"File too large (max 50 MB): {f.filename}",
+                "code":    "bulk_upload_file_too_large",
+            })
+        total_bytes += len(body)
+        if total_bytes > BULK_MAX_BYTES:
+            return JSONResponse(status_code=400, content={
+                "success": False,
+                "error":   f"Combined size exceeds {BULK_MAX_BYTES // (1024 * 1024)} MB",
+                "code":    "bulk_upload_size_exceeded",
+            })
+        bodies.append((f, body, h))
+
+    # Open the ARQ pool once for the whole batch (vs once per file) — saves
+    # ~9 redis round-trips on a 10-file batch.
+    pool = None
+    try:
+        from worker import get_arq_pool
+        pool = await get_arq_pool()
+    except Exception as e:
+        logger.error(f"bulk-upload: failed to open ARQ pool: {e}", exc_info=True)
+
+    jobs: list[dict] = []
+    for f, body, h in bodies:
+        existing = await asyncio.to_thread(db.check_hash, user_id, h)
+        if existing:
+            jobs.append({
+                "filename":             f.filename,
+                "status":               "duplicate",
+                "document_id":          existing["id"],
+                "existing_document_id": existing["id"],
+            })
+            continue
+
+        doc_id = str(uuid.uuid4())
+
+        try:
+            storage_path = await asyncio.to_thread(
+                storage_client.upload_file, user_id, doc_id, body, f.filename,
+            )
+        except Exception as e:
+            logger.error(f"bulk-upload storage failed (file={f.filename}): {e}")
+            jobs.append({
+                "filename": f.filename, "status": "error",
+                "error":    "Storage upload failed",
+            })
+            continue
+
+        doc = {
+            "id":             doc_id,
+            "user_id":        user_id,
+            "filename":       f.filename,
+            "file_path":      storage_path,
+            "sha256_hash":    h,
+            "status":         "queued",
+            "progress":       0,
+            "status_message": "Waiting for processing",
+            "metadata":       {"action": action, "parse_scope": scope, "bulk": True},
+        }
+        try:
+            await asyncio.to_thread(db.insert_document, doc)
+        except Exception as e:
+            logger.error(f"bulk-upload db insert failed (file={f.filename}): {e}")
+            jobs.append({
+                "filename": f.filename, "status": "error",
+                "error":    "Database insert failed",
+            })
+            continue
+
+        # Enqueue. A pool failure marks just this one doc as error rather
+        # than tanking the whole batch — the user can retry per-row from
+        # the analyzer rail.
+        if pool is None:
+            await asyncio.to_thread(db.update_document, doc_id, {
+                "status":         "error",
+                "status_message": "Could not queue for processing — please retry.",
+            })
+            jobs.append({
+                "filename": f.filename, "status": "error",
+                "document_id": doc_id, "error": "Queue unavailable",
+            })
+            continue
+
+        try:
+            await pool.enqueue_job("process_document", doc_id, user_id, storage_path)
+            jobs.append({
+                "filename":    f.filename,
+                "status":      "queued",
+                "document_id": doc_id,
+            })
+        except Exception as e:
+            logger.error(f"bulk-upload enqueue failed (file={f.filename}): {e}", exc_info=True)
+            await asyncio.to_thread(db.update_document, doc_id, {
+                "status":         "error",
+                "status_message": "Could not queue for processing — please retry.",
+            })
+            jobs.append({
+                "filename": f.filename, "status": "error",
+                "document_id": doc_id, "error": "Queue enqueue failed",
+            })
+
+    if pool is not None:
+        try:
+            await pool.aclose()
+        except Exception:
+            pass
+
+    accepted = sum(1 for j in jobs if j["status"] == "queued")
+    duplicates = sum(1 for j in jobs if j["status"] == "duplicate")
+    errors    = sum(1 for j in jobs if j["status"] == "error")
+    logger.info(
+        "bulk-upload: user=%s files=%d accepted=%d duplicates=%d errors=%d total_bytes=%d",
+        user_id, len(files), accepted, duplicates, errors, total_bytes,
+    )
+
+    return JSONResponse(status_code=201, content={
+        "success": True,
+        "jobs":    jobs,
+    })
+
+
 @app.get("/api/documents/{doc_id}/status")
 async def get_document_status(doc_id: str, current_user: dict = Depends(get_current_user)):
     doc = await asyncio.to_thread(db.get_document, doc_id, current_user["id"])

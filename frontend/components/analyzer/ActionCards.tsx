@@ -71,10 +71,16 @@ export type ParseScope = "core" | "full";
 
 interface ActionCardsProps {
   onFileSelect: (file: File, action: string, parseScope: ParseScope) => void;
+  // Optional bulk path — invoked when more than one file is dropped/picked
+  // on the main dropzone. If absent, multi-file selection falls back to
+  // single-file (first file). Feature cards always stay single-file
+  // because their actions are per-document.
+  onMultipleFiles?: (files: File[], parseScope: ParseScope) => void;
+  bulkMax?: number;
   disabled?: boolean;
 }
 
-export default function ActionCards({ onFileSelect, disabled }: ActionCardsProps) {
+export default function ActionCards({ onFileSelect, onMultipleFiles, bulkMax = 10, disabled }: ActionCardsProps) {
   const mainInputRef    = useRef<HTMLInputElement>(null);
   const featureInputRef = useRef<Record<string, HTMLInputElement | null>>({});
   const [dragOver,   setDragOver]   = useState(false);
@@ -88,16 +94,27 @@ export default function ActionCards({ onFileSelect, disabled }: ActionCardsProps
   function pick(file: File, action: string) {
     if (!disabled) onFileSelect(file, action, parseScope);
   }
+  function pickMany(list: FileList | File[]) {
+    if (disabled) return;
+    const files = Array.from(list);
+    if (files.length === 0) return;
+    if (files.length === 1 || !onMultipleFiles) {
+      pick(files[0], "parse");
+      return;
+    }
+    onMultipleFiles(files.slice(0, bulkMax), parseScope);
+  }
   function handleDrop(e: React.DragEvent) {
     e.preventDefault();
     setDragOver(false);
     if (disabled) return;
-    const file = e.dataTransfer.files?.[0];
-    if (file) pick(file, "parse");
+    if (e.dataTransfer.files?.length) pickMany(e.dataTransfer.files);
   }
   function handleMainChange(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    if (file) { pick(file, "parse"); e.target.value = ""; }
+    if (e.target.files?.length) {
+      pickMany(e.target.files);
+      e.target.value = "";
+    }
   }
   function handleFeatureChange(action: string, e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
@@ -194,6 +211,7 @@ export default function ActionCards({ onFileSelect, disabled }: ActionCardsProps
           ref={mainInputRef}
           type="file"
           accept={ACCEPT}
+          multiple={!!onMultipleFiles}
           className="hidden"
           onChange={handleMainChange}
           disabled={disabled}
