@@ -75,6 +75,57 @@ class ReadFigureArgs(BaseModel):
                         description="Figure id, figure number ('Figure 3'), or a search phrase from the figure's title/caption ('capital structure pie chart', 'NIM trend').")
 
 
+class ComparePeriodsArgs(BaseModel):
+    """Args for `compare_periods`.
+
+    Fetches the same line item for two periods and computes the YoY (or
+    QoQ, or any-vs-any) delta in both absolute and percentage terms. The
+    tool emits citations for both source cells.
+    """
+    line_item: str = Field(..., min_length=1, max_length=120,
+                            description="Line item name (synonyms accepted, same vocabulary as lookup_value).")
+    period_a:  str = Field(..., min_length=1, max_length=40,
+                            description="First period label, e.g. '2024', 'Q1 2026'.")
+    period_b:  str = Field(..., min_length=1, max_length=40,
+                            description="Second period label. The delta is computed as period_a − period_b unless the LLM clearly intends the reverse from context.")
+
+
+class DecomposeChangeArgs(BaseModel):
+    """Args for `decompose_change`.
+
+    Given a parent line item that changed between two periods, finds the
+    sibling line items (same section) that ALSO changed between those
+    periods and ranks them by the magnitude of their contribution. Useful
+    for answering 'why did X change'.
+    """
+    parent_line_item: str = Field(..., min_length=1, max_length=120,
+                                   description="The aggregate line item whose change you want to explain (e.g. 'Operating Expenses', 'Total Liabilities', 'Net Income').")
+    period_a: str = Field(..., min_length=1, max_length=40,
+                          description="The more-recent period, e.g. '2024'.")
+    period_b: str = Field(..., min_length=1, max_length=40,
+                          description="The base period to compare against, e.g. '2023'.")
+    top_n:    int = Field(default=8, ge=1, le=20,
+                           description="How many top contributors to return, ranked by absolute delta.")
+
+
+class DetectRedFlagsArgs(BaseModel):
+    """Args for `detect_red_flags`.
+
+    Runs the analyst's forensic checks across the document. Returns a list
+    of triggered flags, each with severity, the rule that fired, the
+    underlying numbers, and citations to the cells/chunks that triggered
+    it. Pure pattern detection — does NOT advise.
+    """
+    category: Optional[Literal[
+        "earnings_quality",
+        "balance_sheet_quality",
+        "liquidity_risk",
+        "audit_signals",
+        "all",
+    ]] = Field(default="all",
+               description="Restrict scan to one category. 'all' (default) runs every check.")
+
+
 class ComputeRatioArgs(BaseModel):
     """Args for `compute_ratio`. Ratio name is from a fixed list — the
     executor maps it to a definition (numerator + denominator line items)

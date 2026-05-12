@@ -31,6 +31,9 @@ from .schemas import (
     ListFiguresArgs,
     ReadFigureArgs,
     ComputeRatioArgs,
+    ComparePeriodsArgs,
+    DecomposeChangeArgs,
+    DetectRedFlagsArgs,
 )
 
 logger = logging.getLogger(__name__)
@@ -71,6 +74,36 @@ _NUM_RE  = re.compile(r"[-+]?\$?\(?[\d,]+(?:\.\d+)?\)?%?")
 def _normalise(s: str) -> str:
     """Lowercase + collapse whitespace + strip. Stable comparison key."""
     return re.sub(r"\s+", " ", (s or "").lower().strip())
+
+
+def _parse_amount(s: str) -> float | None:
+    """Parse a financial-statement value string to a float.
+
+    Handles:
+      - thousands separators (1,234,567)
+      - currency prefixes ($ £ € ¥ ₹)
+      - parenthetical negatives ((880,843) = -880843)
+      - trailing percent signs (12.5% → 12.5)
+      - leading sign (+ / -)
+    Returns None when the string isn't numeric.
+
+    Shared by every tool that needs numeric arithmetic over cell values
+    so the parsing rules stay consistent — diverging interpretations
+    of "(123)" would silently corrupt every comparison and ratio.
+    """
+    s = (s or "").strip()
+    if not s:
+        return None
+    neg = s.startswith("(") and s.endswith(")")
+    s = s.strip("()")
+    s = re.sub(r"[\s,]", "", s)
+    s = re.sub(r"^[\$£€¥₹]", "", s)
+    s = s.rstrip("%")
+    try:
+        v = float(s)
+        return -v if neg else v
+    except ValueError:
+        return None
 
 
 def _tokens(s: str) -> set[str]:
@@ -174,11 +207,43 @@ _LINE_ITEM_SYNONYMS: dict[str, list[str]] = {
 
 
 def _expand_aliases(line_item: str) -> list[str]:
-    """Return all known surface forms for a line-item name."""
+    """Return all known surface forms for a line-item name.
+
+    Resolution order — specificity matters here:
+      1. EXACT match against any alias — if the user / agent typed
+         'cash from operations', the bucket whose alias list literally
+         contains 'cash from operations' wins, even though shorter
+         aliases in OTHER buckets (e.g. 'cash' in the cash bucket) are
+         substring-overlapping.
+      2. Longest-alias substring fallback — for partial / synonym
+         matches. Pick the canonical bucket whose LONGEST matching
+         alias is the longest overall (i.e. the most specific). Stops
+         'cash from operations' resolving to the 'cash' bucket because
+         'cash' is a 4-char substring while 'cash from operations'
+         exact-matches and 'cash generated from operations' is a
+         19-char substring of itself.
+    Returns [line_item] verbatim when no canonical match found.
+    """
     key = _normalise(line_item)
+
+    # Pass 1: exact-match wins.
     for canon, aliases in _LINE_ITEM_SYNONYMS.items():
-        if key in aliases or any(key in a or a in key for a in aliases):
+        if any(_normalise(a) == key for a in aliases):
             return aliases
+
+    # Pass 2: longest-alias substring fallback.
+    best_canon: str | None = None
+    best_match_len = 0
+    for canon, aliases in _LINE_ITEM_SYNONYMS.items():
+        for a in aliases:
+            na = _normalise(a)
+            if (na in key or key in na):
+                length = min(len(na), len(key))
+                if length > best_match_len:
+                    best_match_len = length
+                    best_canon = canon
+    if best_canon is not None:
+        return list(_LINE_ITEM_SYNONYMS[best_canon])
     return [line_item]
 
 
@@ -210,8 +275,11 @@ def lookup_value(ctx: DocContext, args: LookupValueArgs) -> ToolResult:
         if _normalise(text or "") == _normalise(row_label):
             continue
         rl_norm = _normalise(row_label)
-        # match if any alias appears in the row label
-        if not any(_normalise(a) in rl_norm or rl_norm in _normalise(a) for a in aliases):
+        # Match if any alias is a substring of the row label OR exactly equal
+        # to it. Strictly one-directional: a row label like "Cash" must NOT
+        # match the alias "cash from operations" — that's how the wrong cells
+        # leaked into the accrual-quality red-flag detector.
+        if not any(_normalise(a) == rl_norm or _normalise(a) in rl_norm for a in aliases):
             continue
         # column header / period
         col_header = _col_header_for_cell(ctx, cid)
@@ -518,21 +586,8 @@ def compute_ratio(ctx: DocContext, args: ComputeRatioArgs) -> ToolResult:
             latency_ms=int((time.time() - t0) * 1000),
         )
 
-    def _num(s: str) -> float | None:
-        s = (s or "").strip()
-        if not s:
-            return None
-        # Parenthetical = negative
-        neg = s.startswith("(") and s.endswith(")")
-        s = s.strip("()").replace(",", "").replace("$", "").replace("£", "").replace("€", "").replace("%", "")
-        try:
-            v = float(s)
-            return -v if neg else v
-        except ValueError:
-            return None
-
-    n_val = _num(nums[0]["value"])
-    d_val = _num(dens[0]["value"])
+    n_val = _parse_amount(nums[0]["value"])
+    d_val = _parse_amount(dens[0]["value"])
     if n_val is None or d_val is None or d_val == 0:
         return ToolResult(
             tool_name="compute_ratio",
@@ -566,13 +621,563 @@ def compute_ratio(ctx: DocContext, args: ComputeRatioArgs) -> ToolResult:
     )
 
 
+# ────────────────────────────────────────────────────────────────────────────
+# TOOL 6 — compare_periods
+# ────────────────────────────────────────────────────────────────────────────
+def compare_periods(ctx: DocContext, args: ComparePeriodsArgs) -> ToolResult:
+    """Compare one line item across two periods. Returns absolute delta +
+    percentage delta + the two cells as citations.
+
+    Implementation note:
+        Re-uses `lookup_value` for each side. When multiple matches come
+        back for a period (rare but happens with consolidated/segment
+        breakouts of the same line name), we pick the first one — the
+        same one the user would see in a vanilla lookup — to keep the
+        comparison deterministic and consistent with what the analyst
+        already saw on screen.
+    """
+    t0 = time.time()
+    citations: list[CitationRef] = []
+
+    def _fetch_one(period: str) -> dict | None:
+        r = lookup_value(ctx, LookupValueArgs(line_item=args.line_item, period=period))
+        citations.extend(r.citations)
+        ms = r.payload.get("matches") or []
+        # Prefer the row whose period EXACTLY equals the user-asked period.
+        target = _normalise(period)
+        for m in ms:
+            if _normalise(m.get("period") or "") == target:
+                return m
+        return ms[0] if ms else None
+
+    a = _fetch_one(args.period_a)
+    b = _fetch_one(args.period_b)
+    if not a or not b:
+        missing = []
+        if not a: missing.append(args.period_a)
+        if not b: missing.append(args.period_b)
+        return ToolResult(
+            tool_name="compare_periods",
+            ok=False,
+            summary=f"Could not find '{args.line_item}' for period(s): {', '.join(missing)}",
+            payload={"line_item": args.line_item, "missing": missing},
+            citations=citations,
+            error="missing_periods",
+            latency_ms=int((time.time() - t0) * 1000),
+        )
+
+    va = _parse_amount(a["value"])
+    vb = _parse_amount(b["value"])
+    if va is None or vb is None:
+        return ToolResult(
+            tool_name="compare_periods",
+            ok=False,
+            summary=f"Non-numeric value for '{args.line_item}'",
+            payload={"a": a, "b": b},
+            citations=citations,
+            error="non_numeric",
+            latency_ms=int((time.time() - t0) * 1000),
+        )
+
+    absolute = round(va - vb, 4)
+    # Percentage change from period_b to period_a. Undefined when the base
+    # is zero — return None rather than +/- infinity. Pattern follows
+    # GAAP/IFRS analyst conventions where "n/m" (not meaningful) is used.
+    pct = round((absolute / vb) * 100, 2) if vb != 0 else None
+    direction = "increase" if absolute > 0 else "decrease" if absolute < 0 else "unchanged"
+
+    return ToolResult(
+        tool_name="compare_periods",
+        ok=True,
+        summary=(
+            f"{args.line_item}: {args.period_b} → {args.period_a} = "
+            f"{vb} → {va}  ({direction} {absolute:+,.0f}"
+            + (f", {pct:+.2f}%" if pct is not None else ", n/m")
+            + ")"
+        ),
+        payload={
+            "line_item":      args.line_item,
+            "period_a":       a.get("period") or args.period_a,
+            "period_b":       b.get("period") or args.period_b,
+            "value_a":        va,
+            "value_b":        vb,
+            "absolute_delta": absolute,
+            "percent_delta":  pct,         # may be None when base is zero
+            "direction":      direction,
+            "cell_a":         a["cell_id"],
+            "cell_b":         b["cell_id"],
+        },
+        citations=citations[:6],
+        latency_ms=int((time.time() - t0) * 1000),
+    )
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# TOOL 7 — decompose_change
+# ────────────────────────────────────────────────────────────────────────────
+def decompose_change(ctx: DocContext, args: DecomposeChangeArgs) -> ToolResult:
+    """Explain a change in an aggregate by ranking sibling line items.
+
+    The 'sibling' definition is: any line item that lives in the SAME
+    section_header as the parent, has values in both requested periods,
+    and is not the parent itself. For each sibling we compute the delta;
+    the result is ranked by absolute magnitude.
+
+    Why this approximates an analyst's mental model:
+        Real chart-of-accounts hierarchies aren't in the parsed
+        document — there's no machine-readable "Operating Expenses ⊃
+        SG&A + R&D + ...". But the section header IS in every parsed
+        chunk, and in practice the line items that roll into a parent
+        live under the same section. Restricting siblings to same-section
+        avoids the false-positive of attributing a change in Income
+        Statement Revenue to a change in Balance Sheet PPE.
+
+    The tool does NOT claim that the siblings sum to the parent's delta
+    (some line items are netted in the parent in non-obvious ways) — it
+    surfaces the largest movers as candidates the analyst should examine.
+    """
+    t0 = time.time()
+    parent_norm = _normalise(args.parent_line_item)
+    citations: list[CitationRef] = []
+
+    # First, locate the parent — we need its section, and we want to
+    # exclude it from the ranking.
+    parent_lookup = lookup_value(
+        ctx, LookupValueArgs(line_item=args.parent_line_item, period=args.period_a),
+    )
+    parent_matches = parent_lookup.payload.get("matches") or []
+    if not parent_matches:
+        return ToolResult(
+            tool_name="decompose_change",
+            ok=False,
+            summary=f"Parent line item '{args.parent_line_item}' not found in {args.period_a}",
+            citations=parent_lookup.citations,
+            error="parent_not_found",
+            latency_ms=int((time.time() - t0) * 1000),
+        )
+    parent_section = parent_matches[0].get("section") or ""
+    if not parent_section:
+        return ToolResult(
+            tool_name="decompose_change",
+            ok=False,
+            summary=f"Parent '{args.parent_line_item}' has no section header — cannot identify siblings",
+            citations=parent_lookup.citations,
+            error="no_parent_section",
+            latency_ms=int((time.time() - t0) * 1000),
+        )
+    citations.extend(parent_lookup.citations)
+
+    # Walk every cell in the same section. For each unique row label,
+    # find a value cell in period_a and period_b. Compute delta.
+    target_a = _normalise(args.period_a)
+    target_b = _normalise(args.period_b)
+    parent_section_norm = _normalise(parent_section)
+
+    # Group cells by row label within the target section.
+    by_row: dict[str, dict[str, dict]] = {}  # {row_label: {period: cell_dict}}
+    for cid, sec in ctx.cell_section_map.items():
+        if _normalise(sec) != parent_section_norm:
+            continue
+        if _is_header_cell(ctx, cid):
+            continue
+        text = (ctx.cell_lookup.get(cid) or "").strip()
+        if not text:
+            continue
+        row_label = _row_label_for_cell(ctx, cid)
+        if not row_label:
+            continue
+        if _normalise(text) == _normalise(row_label):
+            continue
+        if _normalise(row_label) == parent_norm:
+            continue  # skip the parent itself
+        col = _normalise(_col_header_for_cell(ctx, cid))
+        bucket = by_row.setdefault(_normalise(row_label), {"_row_label": row_label})
+        if target_a in col or col in target_a:
+            bucket["a"] = {"cell_id": cid, "value": text, "period": _col_header_for_cell(ctx, cid)}
+        elif target_b in col or col in target_b:
+            bucket["b"] = {"cell_id": cid, "value": text, "period": _col_header_for_cell(ctx, cid)}
+
+    # Compute deltas where we have both periods.
+    contributors: list[dict] = []
+    for key, info in by_row.items():
+        a = info.get("a"); b = info.get("b")
+        if not a or not b:
+            continue
+        va = _parse_amount(a["value"]); vb = _parse_amount(b["value"])
+        if va is None or vb is None:
+            continue
+        absolute = va - vb
+        if absolute == 0:
+            continue
+        pct = round((absolute / vb) * 100, 2) if vb != 0 else None
+        contributors.append({
+            "row_label":      info["_row_label"],
+            "value_a":        va,
+            "value_b":        vb,
+            "absolute_delta": round(absolute, 4),
+            "percent_delta":  pct,
+            "cell_a":         a["cell_id"],
+            "cell_b":         b["cell_id"],
+        })
+        cit_a = _make_citation(ctx, a["cell_id"], label=f"{info['_row_label']} {args.period_a}")
+        cit_b = _make_citation(ctx, b["cell_id"], label=f"{info['_row_label']} {args.period_b}")
+        if cit_a: citations.append(cit_a)
+        if cit_b: citations.append(cit_b)
+
+    contributors.sort(key=lambda c: abs(c["absolute_delta"]), reverse=True)
+    contributors = contributors[:args.top_n]
+
+    return ToolResult(
+        tool_name="decompose_change",
+        ok=True,
+        summary=(
+            f"Found {len(contributors)} sibling line item(s) in section "
+            f"'{parent_section}' with movement between {args.period_b} and {args.period_a}"
+        ),
+        payload={
+            "parent":   args.parent_line_item,
+            "section":  parent_section,
+            "period_a": args.period_a,
+            "period_b": args.period_b,
+            "contributors": contributors,
+        },
+        citations=citations[:30],
+        latency_ms=int((time.time() - t0) * 1000),
+    )
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# TOOL 8 — detect_red_flags
+# ────────────────────────────────────────────────────────────────────────────
+# Each check is a small function: (ctx) → list[dict] of flag entries. The
+# top-level `detect_red_flags` runs the subset matching the requested
+# category and merges the results. Pure detection; the agent decides
+# how to present them.
+
+def _flag_dict(
+    *,
+    name:     str,
+    category: str,
+    severity: str,
+    explanation: str,
+    citations: list[CitationRef],
+    measurements: dict[str, Any] | None = None,
+) -> dict:
+    return {
+        "name":     name,
+        "category": category,
+        "severity": severity,                # "high" | "medium" | "low"
+        "explanation": explanation,
+        "measurements": measurements or {},
+        "citation_chunk_ids": [c.chunk_id for c in citations],
+    }
+
+
+def _flag_accrual_divergence(ctx: DocContext, sink: list) -> list[CitationRef]:
+    """High-severity flag: net income up, operating cash flow down (or vice
+    versa). Classic earnings-quality red flag (Sloan accruals factor).
+    Two-period delta of NI vs OCF — if the signs diverge or the magnitude
+    gap is large, flag.
+    """
+    cits: list[CitationRef] = []
+    # Find two periods for both NI and OCF.
+    ni  = lookup_value(ctx, LookupValueArgs(line_item="net income"))
+    ocf = lookup_value(ctx, LookupValueArgs(line_item="cash from operations"))
+    cits.extend(ni.citations + ocf.citations)
+    ni_matches  = ni.payload.get("matches") or []
+    ocf_matches = ocf.payload.get("matches") or []
+    if len(ni_matches) < 2 or len(ocf_matches) < 2:
+        return cits
+    # Use the two most-recent periods (matches are already ordered by
+    # whatever order cell_lookup iterates — accept any two).
+    ni_a = _parse_amount(ni_matches[0]["value"])
+    ni_b = _parse_amount(ni_matches[1]["value"])
+    ocf_a = _parse_amount(ocf_matches[0]["value"])
+    ocf_b = _parse_amount(ocf_matches[1]["value"])
+    if None in (ni_a, ni_b, ocf_a, ocf_b):
+        return cits
+    ni_delta  = ni_a - ni_b
+    ocf_delta = ocf_a - ocf_b
+    # Sign divergence is the strongest signal.
+    if ni_delta * ocf_delta < 0:
+        flag_cits = []
+        for m in (ni_matches[:2] + ocf_matches[:2]):
+            c = _make_citation(ctx, m["cell_id"], label=m["row_label"])
+            if c: flag_cits.append(c)
+        sink.append(_flag_dict(
+            name="Net income / operating cash flow divergence",
+            category="earnings_quality",
+            severity="high",
+            explanation=(
+                f"Net income moved {ni_delta:+,.0f} while operating cash flow moved "
+                f"{ocf_delta:+,.0f} — opposite directions. Earnings-quality "
+                f"divergence; high accruals or working-capital effects suggest "
+                f"earnings may not be cash-backed."
+            ),
+            citations=flag_cits,
+            measurements={"ni_delta": ni_delta, "ocf_delta": ocf_delta},
+        ))
+        cits.extend(flag_cits)
+    return cits
+
+
+def _flag_ar_outpacing_revenue(ctx: DocContext, sink: list) -> list[CitationRef]:
+    """Receivables growing materially faster than revenue is a classic
+    'pull-forward' / channel-stuffing flag (Beneish DSRI cousin)."""
+    cits: list[CitationRef] = []
+    rev = lookup_value(ctx, LookupValueArgs(line_item="revenue"))
+    ar_lookup = lookup_value(ctx, LookupValueArgs(line_item="accounts receivable"))
+    cits.extend(rev.citations + ar_lookup.citations)
+    rev_m = rev.payload.get("matches") or []
+    ar_m  = ar_lookup.payload.get("matches") or []
+    if len(rev_m) < 2 or len(ar_m) < 2:
+        return cits
+    rev_a, rev_b = _parse_amount(rev_m[0]["value"]), _parse_amount(rev_m[1]["value"])
+    ar_a,  ar_b  = _parse_amount(ar_m[0]["value"]),  _parse_amount(ar_m[1]["value"])
+    if None in (rev_a, rev_b, ar_a, ar_b) or rev_b == 0 or ar_b == 0:
+        return cits
+    rev_growth = (rev_a - rev_b) / rev_b * 100
+    ar_growth  = (ar_a  - ar_b)  / ar_b  * 100
+    # 5pp threshold: AR materially outpacing revenue. Chosen because <5pp
+    # is within the noise of timing and customer mix; >5pp warrants flag.
+    if ar_growth - rev_growth > 5.0:
+        flag_cits = []
+        for m in (rev_m[:2] + ar_m[:2]):
+            c = _make_citation(ctx, m["cell_id"], label=m["row_label"])
+            if c: flag_cits.append(c)
+        sink.append(_flag_dict(
+            name="Accounts receivable growing faster than revenue",
+            category="earnings_quality",
+            severity="medium",
+            explanation=(
+                f"Receivables grew {ar_growth:+.1f}% vs revenue growth of "
+                f"{rev_growth:+.1f}% — a {ar_growth - rev_growth:+.1f}pp gap. "
+                f"Indicates loosening credit terms, pulled-forward sales, or "
+                f"deteriorating collections; check days-sales-outstanding."
+            ),
+            citations=flag_cits,
+            measurements={"revenue_growth_pct": rev_growth, "ar_growth_pct": ar_growth},
+        ))
+        cits.extend(flag_cits)
+    return cits
+
+
+def _flag_goodwill_concentration(ctx: DocContext, sink: list) -> list[CitationRef]:
+    """Goodwill > 20% of total assets — impairment-test sensitivity."""
+    cits: list[CitationRef] = []
+    gw = lookup_value(ctx, LookupValueArgs(line_item="goodwill"))
+    ta = lookup_value(ctx, LookupValueArgs(line_item="total assets"))
+    cits.extend(gw.citations + ta.citations)
+    gw_m = gw.payload.get("matches") or []
+    ta_m = ta.payload.get("matches") or []
+    if not gw_m or not ta_m:
+        return cits
+    gv = _parse_amount(gw_m[0]["value"])
+    tv = _parse_amount(ta_m[0]["value"])
+    if gv is None or tv is None or tv == 0:
+        return cits
+    pct = gv / tv * 100
+    if pct > 20.0:
+        flag_cits = []
+        for m in (gw_m[:1] + ta_m[:1]):
+            c = _make_citation(ctx, m["cell_id"], label=m["row_label"])
+            if c: flag_cits.append(c)
+        sink.append(_flag_dict(
+            name="Goodwill concentration > 20% of total assets",
+            category="balance_sheet_quality",
+            severity="medium",
+            explanation=(
+                f"Goodwill is {pct:.1f}% of total assets ({gv:,.0f} / {tv:,.0f}). "
+                f"Significant impairment risk in a downturn; verify the goodwill "
+                f"impairment-test disclosure in Critical Audit Matters."
+            ),
+            citations=flag_cits,
+            measurements={"goodwill": gv, "total_assets": tv, "pct_of_assets": pct},
+        ))
+        cits.extend(flag_cits)
+    return cits
+
+
+def _flag_negative_working_capital(ctx: DocContext, sink: list) -> list[CitationRef]:
+    """Current liabilities > current assets = liquidity risk (unless this
+    is a business model that legitimately runs negative WC like Walmart)."""
+    cits: list[CitationRef] = []
+    ca = lookup_value(ctx, LookupValueArgs(line_item="current assets"))
+    cl = lookup_value(ctx, LookupValueArgs(line_item="current liabilities"))
+    cits.extend(ca.citations + cl.citations)
+    ca_m = ca.payload.get("matches") or []
+    cl_m = cl.payload.get("matches") or []
+    if not ca_m or not cl_m:
+        return cits
+    cav = _parse_amount(ca_m[0]["value"]); clv = _parse_amount(cl_m[0]["value"])
+    if cav is None or clv is None:
+        return cits
+    if cav < clv:
+        flag_cits = []
+        for m in (ca_m[:1] + cl_m[:1]):
+            c = _make_citation(ctx, m["cell_id"], label=m["row_label"])
+            if c: flag_cits.append(c)
+        sink.append(_flag_dict(
+            name="Negative working capital",
+            category="liquidity_risk",
+            severity="medium",
+            explanation=(
+                f"Current liabilities ({clv:,.0f}) exceed current assets "
+                f"({cav:,.0f}). Deficit of {clv - cav:,.0f}. May indicate "
+                f"short-term liquidity pressure unless the business model "
+                f"legitimately runs negative WC (retail, fast-cycle services)."
+            ),
+            citations=flag_cits,
+            measurements={"current_assets": cav, "current_liabilities": clv, "deficit": clv - cav},
+        ))
+        cits.extend(flag_cits)
+    return cits
+
+
+# Phrase-based text scans. Each pattern looks for unambiguous regulator-
+# / auditor-grade language. Matching is case-insensitive on plain text.
+_TEXT_RED_FLAG_PATTERNS: list[tuple[str, str, str, str, str]] = [
+    # (category, severity, name, regex, explanation_template)
+    ("audit_signals",         "high",   "Going-concern language",
+        r"\b(going\s+concern|substantial\s+doubt|material\s+uncertainty\s+related\s+to\s+(its\s+)?ability\s+to\s+continue)\b",
+        "Auditor / management language flags going-concern risk. Read the full passage in context."),
+    ("audit_signals",         "high",   "Material weakness in internal controls",
+        r"\bmaterial\s+weakness(es)?\b",
+        "Material weakness in internal control disclosed — possible misstatement risk."),
+    ("audit_signals",         "medium", "Restatement of prior financials",
+        r"\b(restated|restatement|prior-period\s+adjustment)\b",
+        "Prior financial statements restated — historical figures cannot be compared at face value."),
+    ("balance_sheet_quality", "medium", "Related-party transactions",
+        r"\b(related[- ]part(y|ies)|key\s+management\s+personnel\s+transactions)\b",
+        "Related-party transactions disclosed — verify amounts, terms, and recurring nature."),
+    ("balance_sheet_quality", "medium", "Off-balance-sheet arrangement",
+        r"\b(off[- ]balance[- ]sheet|variable\s+interest\s+entity|VIE)\b",
+        "Off-balance-sheet exposure disclosed — may not appear in headline leverage ratios."),
+    ("earnings_quality",       "medium", "Non-recurring / one-time gain language",
+        r"\b(one[- ]time\s+gain|non[- ]recurring|extraordinary\s+item|gain\s+on\s+sale)\b",
+        "Non-recurring item language — verify whether prior-period comparisons are like-for-like."),
+]
+
+
+def _flag_text_patterns(ctx: DocContext, sink: list) -> list[CitationRef]:
+    """Scan text chunks for known regulator/auditor red-flag phrases."""
+    cits: list[CitationRef] = []
+    for ch in ctx.qdrant_chunks:
+        ctype = (ch.get("chunk_type") or "").lower()
+        if "text" not in ctype and ctype not in ("title", "key_value"):
+            continue
+        body = _flatten(ch.get("markdown") or "")
+        if not body:
+            continue
+        for cat, sev, name, pattern, expl in _TEXT_RED_FLAG_PATTERNS:
+            if re.search(pattern, body, re.IGNORECASE):
+                cit = _make_citation(ctx, ch.get("chunk_id") or "", label=name)
+                clist = [cit] if cit else []
+                sink.append(_flag_dict(
+                    name=name, category=cat, severity=sev,
+                    explanation=expl + f" Source page {int(ch.get('page', 0) or 0) + 1}.",
+                    citations=clist,
+                ))
+                if cit:
+                    cits.append(cit)
+                # one flag per chunk per pattern — avoid spamming the same hit
+                break
+    return cits
+
+
+# Category → list of detector functions.
+_RED_FLAG_DETECTORS: dict[str, list[Any]] = {
+    "earnings_quality":       [_flag_accrual_divergence, _flag_ar_outpacing_revenue],
+    "balance_sheet_quality":  [_flag_goodwill_concentration],
+    "liquidity_risk":         [_flag_negative_working_capital],
+    "audit_signals":          [],   # handled by _flag_text_patterns below
+}
+
+
+def detect_red_flags(ctx: DocContext, args: DetectRedFlagsArgs) -> ToolResult:
+    """Scan the document for analyst-grade red flags. Returns a list of
+    triggered flags with severity + explanation + supporting cells.
+
+    The flags are derived from the same data the agent already has access
+    to — running this proactively is cheaper than asking the agent to
+    cobble together five separate lookup_value + compute_ratio calls. The
+    agent should call this when the user asks anything about quality of
+    earnings, audit concerns, going concern, accounting risk, or any
+    open-ended 'what should I worry about' style question.
+    """
+    t0 = time.time()
+    flags: list[dict] = []
+    citations: list[CitationRef] = []
+
+    categories = (
+        ("earnings_quality", "balance_sheet_quality", "liquidity_risk", "audit_signals")
+        if (args.category or "all") == "all"
+        else (args.category,)
+    )
+    for cat in categories:
+        for detector in _RED_FLAG_DETECTORS.get(cat, []):
+            try:
+                cits = detector(ctx, flags)
+                citations.extend(cits)
+            except Exception as e:
+                logger.warning(f"red-flag detector {detector.__name__} raised: {e}")
+        if cat == "audit_signals" or args.category == "all":
+            # audit_signals = pattern-based text scan; also run when 'all'
+            try:
+                cits = _flag_text_patterns(ctx, flags)
+                citations.extend(cits)
+            except Exception as e:
+                logger.warning(f"text-pattern scan raised: {e}")
+
+    # Dedupe flags by (name) — text scans can fire the same pattern
+    # across multiple chunks; keep the first hit.
+    seen_names: set[str] = set()
+    deduped: list[dict] = []
+    for f in flags:
+        key = f["name"]
+        if key in seen_names:
+            continue
+        seen_names.add(key)
+        deduped.append(f)
+
+    severity_rank = {"high": 0, "medium": 1, "low": 2}
+    deduped.sort(key=lambda f: severity_rank.get(f["severity"], 9))
+
+    # Dedupe citations by chunk_id
+    seen_cits: set[str] = set()
+    cit_out: list[CitationRef] = []
+    for c in citations:
+        if c.chunk_id and c.chunk_id not in seen_cits:
+            seen_cits.add(c.chunk_id)
+            cit_out.append(c)
+
+    return ToolResult(
+        tool_name="detect_red_flags",
+        ok=True,
+        summary=(
+            f"Found {len(deduped)} flag(s)"
+            + (f" in category '{args.category}'" if args.category and args.category != "all" else "")
+            + (" — none triggered" if not deduped else "")
+        ),
+        payload={
+            "category": args.category or "all",
+            "flags": deduped,
+        },
+        citations=cit_out[:30],
+        latency_ms=int((time.time() - t0) * 1000),
+    )
+
+
 # ─── Tool registry (name → callable + args model) ───────────────────────────
 TOOL_REGISTRY: dict[str, tuple[Any, Any]] = {
-    "lookup_value":    (lookup_value,    LookupValueArgs),
-    "get_section":     (get_section,     GetSectionArgs),
-    "list_figures":    (list_figures,    ListFiguresArgs),
-    "read_figure":     (read_figure,     ReadFigureArgs),
-    "compute_ratio":   (compute_ratio,   ComputeRatioArgs),
+    "lookup_value":      (lookup_value,      LookupValueArgs),
+    "get_section":       (get_section,       GetSectionArgs),
+    "list_figures":      (list_figures,      ListFiguresArgs),
+    "read_figure":       (read_figure,       ReadFigureArgs),
+    "compute_ratio":     (compute_ratio,     ComputeRatioArgs),
+    "compare_periods":   (compare_periods,   ComparePeriodsArgs),
+    "decompose_change":  (decompose_change,  DecomposeChangeArgs),
+    "detect_red_flags":  (detect_red_flags,  DetectRedFlagsArgs),
 }
 
 
