@@ -1987,6 +1987,47 @@ def _find_all_matching_cells(
     matched_cells_3 = [(cid, txt, sc) for cid, txt, sc in matched_cells_3 if sc >= 60]
     matched_cells = matched_cells_3
 
+    # ── Phase 1.5: LLM-cited NON-CELL chunks (figure + text) — runs ALWAYS ──
+    # Figure and text chunks don't have a single discrete value to match
+    # against the answer prose, so they can't go through Phase 1's value-
+    # matcher. They also can't be quarantined to Phase 3 (which only fires
+    # when nothing else matches), because real answers regularly mix table
+    # cells with a figure or text-paragraph citation: "Total liabilities of
+    # $2.7B [[cell|TL]] … per Figure 3 [[figure|Capital structure chart]]".
+    #
+    # Admission rules:
+    #   - LLM must have cited the chunk (it's in llm_cited_ids).
+    #   - Chunk must exist in grounding_dict (sanity).
+    #   - Chunk type must NOT be cell — cells go through Phase 1/2.
+    #   - Polarity gate: cell_section / row_label aren't typically populated
+    #     for figures, but if they are and contradict the question, reject.
+    # No value-match gate — the prompt's mandatory-figure-citation rule
+    # plus the answer-level grounding verifier downstream are the safety net.
+    for cid in llm_cited_ids:
+        if cid in seen_ids:
+            continue
+        g = grounding_dict.get(cid)
+        if not g:
+            continue
+        g_type = (g.get("type", "") or "").lower()
+        if "cell" in g_type:
+            continue  # cells handled by Phase 1/2
+        if cid in header_cells:
+            continue
+        cell_section_p15 = cell_section_map.get(cid, "") if cell_section_map else ""
+        # Figures/text rarely have a polarity, so this almost always passes.
+        # It only rejects when the chunk's section text contradicts the
+        # question's polarity outright (e.g. an "ASSETS" section text chunk
+        # cited for a liabilities question).
+        if not _polarity_compatible(question_text, cell_section_p15, "", ""):
+            continue
+        seen_ids.add(cid)
+        chunk_text = cell_lookup.get(cid, "")  # may be empty for non-table chunks; safe
+        # Use score 75 — slightly below the strongest Phase 1 cell match (100)
+        # but above the Phase 1 minimum (60) so figure chips don't always
+        # sink to the bottom of the visual list.
+        matched_cells.append((cid, chunk_text, 75))
+
     # ── Phase 2: LLM-cited IDs as fallback (only if Phase 1 found nothing) ──
     # Mirrors Phase 1's gate stack — header / year-only / row-label / polarity
     # ALL apply here too. Asymmetric gating (Phase 1 strict, Phase 2 lax) was
@@ -4182,15 +4223,35 @@ async def chat_document(
 
             "8a. READ EXISTING FIGURE / CHART (in the document)\n"
             "    Triggers: 'what does the chart show', 'tell me about the graph on\n"
-            "    page X', 'describe the bar chart', 'what does Figure N say', 'summarise\n"
-            "    the chart', any question about a SPECIFIC figure that exists in the\n"
-            "    document context. Look for chunks tagged as figure — they contain\n"
-            "    fully-parsed chart data (axis labels, series, values, captions).\n"
+            "    page X', 'describe the bar chart', 'what does Figure N say', 'trend\n"
+            "    of the chart', 'summarise the chart', 'piechart', any question about\n"
+            "    a SPECIFIC figure that exists in the document context. Look for\n"
+            "    chunks tagged as figure — they contain the parsed chart content.\n\n"
+
+            "    Figure chunks come in two formats:\n"
+            "      (i)  Plain transcription, e.g. 'bar chart Title: Quarterly Net\n"
+            "           Revenue Y-axis: Revenue X-axis: Quarter Data: - Q1\\'24:\n"
+            "           $1842 - Q2\\'24: $1898 - ...'\n"
+            "      (ii) Wrapped description, e.g. '<::A bar chart showing nine\n"
+            "           quarters of growth from \\$1,842 to \\$2,348...: bar chart::>'\n"
+            "    Both are AUTHORITATIVE. Read inside the wrapper exactly as if it\n"
+            "    were plain text. Never report that 'the chart data is not provided'\n"
+            "    when a figure chunk is in context — that is wrong, the data is in\n"
+            "    the wrapper.\n\n"
+
             "    Behaviour: read the figure chunk's content as authoritative source.\n"
             "    Answer with the chart's title, what it measures (axes), the data\n"
-            "    series (period → value pairs), and the trend. Cite the figure chunk\n"
-            "    using its chunk id. DO NOT refuse, DO NOT say 'we don't render charts'\n"
-            "    — the data is in the context, read it.\n\n"
+            "    series (period → value pairs), and the trend. DO NOT refuse, DO NOT\n"
+            "    say 'we don't render charts' — the data is in the context, read it.\n\n"
+
+            "    MANDATORY CITATION: when you mention a figure, chart, or graph by\n"
+            "    name (e.g. 'Figure 3', 'the bar chart', 'the capital structure\n"
+            "    chart'), or describe its content / trend in your answer, you MUST\n"
+            "    emit a citation marker for that figure chunk. The figure chunk's\n"
+            "    id is the chunk_id attached to that figure in the context.\n"
+            "    Format: `[[figure-chunk-id|Figure N — short caption]]`. This rule\n"
+            "    is non-negotiable; an answer that names a figure without citing\n"
+            "    its chunk is a citation error.\n\n"
 
             "8b. GENERATE A NEW CHART (we can't render)\n"
             "    Triggers: 'draw a chart of X', 'plot X for me', 'generate a graph',\n"
@@ -4278,7 +4339,13 @@ async def chat_document(
             "     fabricate a label.\n"
             "  6. If you cannot identify a single chunk in the context that\n"
             "     supports a value you want to write, do not write that value at\n"
-            "     all (per Rule 0 above).\n\n"
+            "     all (per Rule 0 above).\n"
+            "  7. FIGURES + TEXT-PARAGRAPH SUPPORT — citations are not just for\n"
+            "     numbers. If your answer describes a figure/chart, cite the\n"
+            "     figure chunk. If your answer quotes or summarises a narrative\n"
+            "     passage (officer certification, audit opinion, accounting\n"
+            "     policy, risk discussion), cite the text chunk it came from.\n"
+            "     Every substantive claim — number OR statement — needs a chip.\n\n"
 
             "SECTION AWARENESS: every citation in your answer must come from the\n"
             "section that matches the question. Liabilities Qs → liabilities cells.\n"

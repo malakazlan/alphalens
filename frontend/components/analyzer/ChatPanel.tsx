@@ -437,16 +437,40 @@ const MessageRow = memo(function MessageRow({
                 : chip.source.chunk_type === "table"     ? ".table"
                 : chip.source.chunk_type === "figure"    ? ".figure"
                 :                                          ".text";
+              // Per-chunk-type colour theming. Three families so users can
+              // visually triage by source-kind without reading the chip:
+              //   table/table_cell -> blue   (structured data, Stripe-feel)
+              //   figure           -> violet (visual / chart content)
+              //   text/other       -> amber  (narrative passages)
+              const isTable  = chip.source.chunk_type === "table_cell" || chip.source.chunk_type === "table";
+              const isFigure = chip.source.chunk_type === "figure";
+              const tone =
+                isTable  ? { accent: "#2193FD", tint: "rgba(33,147,253,0.06)",  glyphBg: "rgba(33,147,253,0.10)",  border: "rgba(33,147,253,0.35)" }
+              : isFigure ? { accent: "#7C3AED", tint: "rgba(124,58,237,0.06)",  glyphBg: "rgba(124,58,237,0.10)",  border: "rgba(124,58,237,0.35)" }
+              :            { accent: "#D97706", tint: "rgba(217,119,6,0.06)",   glyphBg: "rgba(217,119,6,0.10)",   border: "rgba(217,119,6,0.35)"  };
               return (
                 <button
                   key={`${msg.id}-${i}`}
                   onClick={() => onChipClick(chip, msg.id, i)}
                   className="w-full text-left px-3 py-2 rounded-xl transition-all flex items-center gap-2"
                   style={{
-                    border:     `1.5px solid ${isActive ? "#2193FD" : "var(--al-border)"}`,
-                    background: isActive ? "rgba(33,147,253,0.06)" : "var(--al-bg-soft)",
+                    border:     `1.5px solid ${isActive ? tone.accent : tone.border}`,
+                    background: isActive ? tone.tint : "var(--al-bg-soft)",
                   }}
                 >
+                  {/* Type glyph — single character that reinforces the colour */}
+                  <span
+                    className="shrink-0 inline-flex items-center justify-center font-bold tabular-nums"
+                    style={{
+                      width: 18, height: 18, borderRadius: 5,
+                      background: tone.glyphBg, color: tone.accent,
+                      fontSize: 10,
+                    }}
+                    aria-hidden
+                  >
+                    {isTable ? "T" : isFigure ? "F" : "¶"}
+                  </span>
+
                   {/* Location */}
                   <span className="shrink-0" style={{ color: "var(--al-subtle)", fontSize: 11 }}>
                     Page {chip.source.page + 1}{locType}
@@ -456,12 +480,12 @@ const MessageRow = memo(function MessageRow({
                   <span className="shrink-0" style={{ color: "var(--al-border)", fontSize: 12 }}>|</span>
 
                   {/* Semantic label */}
-                  <span className="flex-1 truncate font-medium" style={{ color: "#2193FD", fontSize: 12 }}>
+                  <span className="flex-1 truncate font-medium" style={{ color: tone.accent, fontSize: 12 }}>
                     {chip.label}
                   </span>
 
                   {/* Arrow */}
-                  <span className="shrink-0" style={{ color: "#2193FD", opacity: isActive ? 1 : 0.65, fontSize: 13 }}>→</span>
+                  <span className="shrink-0" style={{ color: tone.accent, opacity: isActive ? 1 : 0.65, fontSize: 13 }}>→</span>
                 </button>
               );
             })}
