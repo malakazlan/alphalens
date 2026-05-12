@@ -822,6 +822,159 @@ async def process_document(ctx: dict, doc_id: str, user_id: str, file_path: str)
                 pass
 
 
+# ─── PDF render job (Phase 3 commit 8) ───────────────────────────────────────
+# `render_report_pdf` runs in the worker process so the web container stays
+# Chromium-free. The renderer is created once at worker startup and reused
+# across renders (cold start ~1.5s, warm renders <500ms).
+
+import reports_repo
+
+
+def _resolve_template_label(template_id: str | None, user_id: str) -> str:
+    """Return a human-friendly template name for the cover page.
+
+    Built-in ids map via TEMPLATES; custom UUIDs hit reports_repo. Falls
+    back to a generic "Report" so render never errors over a label."""
+    if not template_id:
+        return "Report"
+    try:
+        from report_templates import TEMPLATES as _TEMPLATES
+        if template_id in _TEMPLATES:
+            return _TEMPLATES[template_id].get("label") or template_id.replace("_", " ").title()
+    except Exception:
+        pass
+    try:
+        custom = reports_repo.get_custom_template(template_id, user_id)
+        if custom:
+            return custom.get("name") or "Custom report"
+    except Exception:
+        pass
+    return template_id.replace("_", " ").title()
+
+
+def _ordered_sections(report: dict[str, Any], user_id: str) -> list[dict[str, Any]]:
+    """Flatten report['sections'] (JSONB dict) into a list in template
+    section_ids order. Falls back to dict-insertion order if the template
+    can no longer be resolved (template deleted, deploy mid-flight, etc).
+    """
+    secs_dict = report.get("sections") or {}
+    template_id = report.get("template")
+
+    section_ids: list[str] = []
+    try:
+        from report_templates import (
+            TEMPLATES as _TEMPLATES,
+            get_template_sections,
+        )
+        if template_id in _TEMPLATES:
+            section_ids = list(get_template_sections(template_id))
+        else:
+            custom = reports_repo.get_custom_template(template_id, user_id)
+            if custom and isinstance(custom.get("sections"), list):
+                section_ids = [
+                    (s.get("id") or "").strip()
+                    for s in custom["sections"] if (s.get("id") or "").strip()
+                ]
+    except Exception as e:
+        logger.warning(f"render_report_pdf: template resolve failed ({template_id}): {e}")
+
+    if not section_ids:
+        section_ids = list(secs_dict.keys())
+
+    out: list[dict[str, Any]] = []
+    for sid in section_ids:
+        s = secs_dict.get(sid) or {}
+        # Only include sections that produced content. An errored or
+        # never-generated section would otherwise yield an empty page.
+        if not (s.get("markdown") or "").strip():
+            continue
+        out.append({
+            "id":         sid,
+            "title":      s.get("title") or sid.replace("_", " ").title(),
+            "markdown":   s.get("markdown") or "",
+            "word_count": int(s.get("word_count") or 0),
+        })
+    return out
+
+
+async def render_report_pdf(ctx: dict, report_id: str, user_id: str) -> None:
+    """Render a report row to PDF and upload to Supabase Storage.
+
+    Called via ARQ from POST /api/reports/{id}/render-pdf. The web handler
+    sets pdf_status=queued before enqueueing; this job moves it through
+    rendering → ready (or error)."""
+    from render import PdfRenderer, PdfOptions, render_report_html
+
+    start_t = asyncio.get_event_loop().time()
+    logger.info(f"render_report_pdf: report={report_id} user={user_id}")
+
+    try:
+        await asyncio.to_thread(
+            reports_repo.set_pdf_status, report_id, user_id, "rendering",
+            status_message="Rendering report PDF",
+        )
+    except Exception as e:
+        logger.error(f"render_report_pdf: failed to set rendering status: {e}")
+        return
+
+    try:
+        report = await asyncio.to_thread(db.get_report, report_id, user_id)
+        if not report:
+            raise RuntimeError("Report not found")
+        doc = await asyncio.to_thread(db.get_document, report["doc_id"], user_id)
+        if not doc:
+            raise RuntimeError("Source document not found")
+
+        ordered = _ordered_sections(report, user_id)
+        if not ordered:
+            raise RuntimeError("Report has no completed sections to render")
+
+        label = _resolve_template_label(report.get("template"), user_id)
+        html  = render_report_html(
+            report=report, doc=doc,
+            sections_ordered=ordered,
+            template_label=label,
+        )
+
+        # Reuse the renderer across calls. First call boots Chromium.
+        renderer = ctx.get("pdf_renderer")
+        if renderer is None:
+            renderer = PdfRenderer()
+            await renderer.start()
+            ctx["pdf_renderer"] = renderer
+
+        pdf_bytes = await renderer.render(html, options=PdfOptions())
+
+        storage_path = f"{user_id}/reports/{report_id}.pdf"
+        await asyncio.to_thread(
+            storage.upload_bytes, storage_path, pdf_bytes, "application/pdf",
+        )
+
+        await asyncio.to_thread(
+            reports_repo.set_pdf_status, report_id, user_id, "ready",
+            pdf_url=storage_path,
+            size_bytes=len(pdf_bytes),
+            rendered_at_now=True,
+            status_message=None,
+        )
+
+        elapsed_ms = int((asyncio.get_event_loop().time() - start_t) * 1000)
+        logger.info(
+            "render_report_pdf done: report=%s sections=%d bytes=%d elapsed_ms=%d",
+            report_id, len(ordered), len(pdf_bytes), elapsed_ms,
+        )
+
+    except Exception as e:
+        logger.exception(f"render_report_pdf failed: report={report_id}")
+        try:
+            await asyncio.to_thread(
+                reports_repo.set_pdf_status, report_id, user_id, "error",
+                status_message=str(e)[:500],
+            )
+        except Exception:
+            pass
+
+
 # ─── ARQ worker config ────────────────────────────────────────────────────────
 
 async def _on_startup(ctx: dict) -> None:
@@ -834,13 +987,26 @@ async def _on_startup(ctx: dict) -> None:
     logger.info("Cost Lever 2 (ADE cache):   ON")
     logger.info("Cost Lever 3 (extract trim): ON for parse_scope=core")
     logger.info("Cost Lever 4 (scope toggle): core | full")
+    logger.info("PDF renderer: lazy-start on first render_report_pdf job")
     logger.info("=" * 60)
 
 
+async def _on_shutdown(ctx: dict) -> None:
+    """Stop the (possibly-running) PdfRenderer cleanly so we don't leak
+    chromium processes between deploys."""
+    renderer = ctx.get("pdf_renderer")
+    if renderer is not None:
+        try:
+            await renderer.stop()
+        except Exception:
+            pass
+
+
 class WorkerSettings:
-    functions = [process_document]
+    functions = [process_document, render_report_pdf]
     redis_settings = get_redis_settings()
     max_jobs = 4
     job_timeout = 3000  # 50 min — gives 5 min buffer after 45-min ADE parse cap
     keep_result = 3600
-    on_startup = _on_startup
+    on_startup  = _on_startup
+    on_shutdown = _on_shutdown

@@ -41,6 +41,13 @@ arq>=0.25.0
 xhtml2pdf==0.2.16
 python-bidi==0.4.2
 
+# PDF Report Generation v2 (Phase 3 — Chromium-based)
+# `playwright install chromium` must be run after pip install (see Dockerfile.worker).
+# Web container does NOT need Chromium — only the worker renders PDFs.
+playwright>=1.40.0
+Jinja2>=3.1.0
+markdown>=3.5
+
 # Rate Limiting
 slowapi>=0.1.9
 

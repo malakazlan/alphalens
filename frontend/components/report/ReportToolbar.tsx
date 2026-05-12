@@ -1,5 +1,5 @@
 "use client";
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import type { SectionState } from "@/lib/stores/report-store";
 
 const TEMPLATE_LABELS: Record<string, string> = {
@@ -9,9 +9,14 @@ const TEMPLATE_LABELS: Record<string, string> = {
   investor_memo: "Investor Memo",
 };
 
+// PDF render lifecycle on the server: idle → queued → rendering → ready | error.
+// We mirror that exactly so the button copy reflects the real state.
+type PdfStatus = "idle" | "queued" | "rendering" | "ready" | "error";
+
 interface ReportToolbarProps {
   filename: string;
   template: string;
+  reportId?: string | null;
   generating: boolean;
   sections: Record<string, SectionState>;
   wordCount: number;
@@ -23,6 +28,7 @@ interface ReportToolbarProps {
 export default function ReportToolbar({
   filename,
   template,
+  reportId,
   generating,
   sections,
   wordCount,
@@ -33,6 +39,91 @@ export default function ReportToolbar({
   const [exportOpen, setExportOpen] = useState(false);
   const [copied, setCopied] = useState(false);
   const exportRef = useRef<HTMLDivElement>(null);
+
+  // ── PDF export state ────────────────────────────────────────────────────────
+  // Polling runs while pdfStatus is queued|rendering. We also do a one-shot
+  // status fetch when the dropdown opens so a stale 'ready' (e.g. user
+  // rendered yesterday) shows up without a fresh click.
+  const [pdfStatus, setPdfStatus]   = useState<PdfStatus>("idle");
+  const [pdfError,  setPdfError]    = useState<string | null>(null);
+  const pdfPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const stopPdfPoll = useCallback(() => {
+    if (pdfPollRef.current) {
+      clearInterval(pdfPollRef.current);
+      pdfPollRef.current = null;
+    }
+  }, []);
+
+  const fetchPdfStatus = useCallback(async () => {
+    if (!reportId) return;
+    try {
+      const res  = await fetch(`/api/reports/${reportId}/pdf-status`, { credentials: "include" });
+      const data = await res.json();
+      if (data.success) {
+        const s = (data.status as PdfStatus) ?? "idle";
+        setPdfStatus(s);
+        setPdfError(s === "error" ? (data.message ?? "Render failed") : null);
+        if (s === "ready" || s === "error" || s === "idle") stopPdfPoll();
+      }
+    } catch {}
+  }, [reportId, stopPdfPoll]);
+
+  // Refresh status when dropdown opens so the user sees the real state.
+  useEffect(() => {
+    if (exportOpen && reportId) fetchPdfStatus();
+  }, [exportOpen, reportId, fetchPdfStatus]);
+
+  // Stop polling when unmounting (e.g. switching docs/reports).
+  useEffect(() => () => stopPdfPoll(), [stopPdfPoll]);
+
+  async function handleRenderPdf() {
+    if (!reportId) return;
+    setPdfError(null);
+    setPdfStatus("queued");
+    try {
+      const res  = await fetch(`/api/reports/${reportId}/render-pdf`, {
+        method: "POST", credentials: "include",
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        setPdfStatus("error");
+        setPdfError(data.detail ?? data.error ?? "Render request failed");
+        return;
+      }
+      // Begin polling.
+      stopPdfPoll();
+      pdfPollRef.current = setInterval(fetchPdfStatus, 2000);
+    } catch {
+      setPdfStatus("error");
+      setPdfError("Network error. Please retry.");
+    }
+  }
+
+  async function handleDownloadPdf() {
+    if (!reportId) return;
+    try {
+      const res  = await fetch(`/api/reports/${reportId}/pdf-url`, { credentials: "include" });
+      const data = await res.json();
+      if (!res.ok || !data.success || !data.url) {
+        setPdfError(data.detail ?? "Download URL unavailable");
+        return;
+      }
+      // Use a real anchor so the browser respects the Content-Disposition
+      // from Supabase Storage (signed URL serves with proper headers).
+      const a = document.createElement("a");
+      a.href     = data.url;
+      a.download = `${filename.replace(/\.[^.]+$/, "")}_report.pdf`;
+      a.rel      = "noopener";
+      a.target   = "_blank";
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setExportOpen(false);
+    } catch {
+      setPdfError("Download failed. Please retry.");
+    }
+  }
 
   // Close dropdown on outside click
   useEffect(() => {
@@ -176,9 +267,58 @@ export default function ReportToolbar({
                 style={{
                   background: "var(--al-card)",
                   borderColor: "var(--al-border)",
-                  minWidth: 160,
+                  minWidth: 200,
                 }}
               >
+                {/* PDF export — only enabled when we know the report id */}
+                {reportId && (
+                  <>
+                    {pdfStatus === "ready" ? (
+                      <button
+                        onClick={handleDownloadPdf}
+                        className="w-full flex items-center gap-2 px-3 py-2 text-xs text-left transition-colors hover:bg-[rgba(0,0,0,0.03)]"
+                        style={{ color: "var(--al-accent)", fontWeight: 600 }}
+                      >
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                          <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/>
+                          <polyline points="14 2 14 8 20 8" fill="none"/>
+                          <line x1="12" y1="13" x2="12" y2="19"/>
+                          <polyline points="9 16 12 19 15 16"/>
+                        </svg>
+                        Download PDF
+                      </button>
+                    ) : (
+                      <button
+                        onClick={handleRenderPdf}
+                        disabled={pdfStatus === "queued" || pdfStatus === "rendering"}
+                        className="w-full flex items-center gap-2 px-3 py-2 text-xs text-left transition-colors hover:bg-[rgba(0,0,0,0.03)] disabled:opacity-60 disabled:cursor-not-allowed"
+                        style={{ color: "var(--al-text)" }}
+                      >
+                        {pdfStatus === "queued" || pdfStatus === "rendering" ? (
+                          <span
+                            className="w-3 h-3 border-2 border-t-transparent rounded-full animate-spin shrink-0"
+                            style={{ borderColor: "var(--al-accent-light)", borderTopColor: "var(--al-accent)" }}
+                          />
+                        ) : (
+                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                            <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/>
+                            <polyline points="14 2 14 8 20 8" fill="none"/>
+                          </svg>
+                        )}
+                        {pdfStatus === "queued"    ? "Queued…"
+                          : pdfStatus === "rendering" ? "Rendering…"
+                          : pdfStatus === "error"    ? "Retry PDF render"
+                          :                             "Export as PDF"}
+                      </button>
+                    )}
+                    {pdfError && (
+                      <div className="px-3 py-1.5 text-[10px]" style={{ color: "#dc2626" }}>
+                        {pdfError}
+                      </div>
+                    )}
+                    <div className="my-1 mx-2 h-px" style={{ background: "var(--al-border)" }} />
+                  </>
+                )}
                 <button
                   onClick={handleCopy}
                   className="w-full flex items-center gap-2 px-3 py-2 text-xs text-left transition-colors hover:bg-[rgba(0,0,0,0.03)]"

@@ -1,0 +1,47 @@
+# AlphaLens worker image — Python deps + Chromium for PDF rendering.
+# Built from the same base as the web image; the only delta is the
+# `playwright install --with-deps chromium` step, which pulls Chromium
+# and its native libs (~300 MB). Renderer instance is created lazily on
+# the first render_report_pdf job (see backend/worker.py).
+#
+# Build context is the repo root so backend/ is reachable.
+
+FROM python:3.11-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      curl \
+      build-essential \
+      pkg-config \
+      libcairo2-dev \
+      libgirepository1.0-dev \
+ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY backend/requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Install Chromium for Playwright. `--with-deps` brings in the apt
+# packages Chromium needs (libnss3, libatk1.0, etc.). PLAYWRIGHT_BROWSERS_PATH
+# above puts the binaries in a stable system location so they're not lost
+# when we drop privileges to the `app` user below.
+RUN python -m playwright install --with-deps chromium \
+ && chmod -R a+r /ms-playwright
+
+COPY backend/ ./
+
+RUN groupadd --system app \
+ && useradd --system --gid app --home-dir /app --shell /usr/sbin/nologin app \
+ && chown -R app:app /app
+USER app
+
+# Worker has no HTTP surface; uvicorn never runs here. Override via the
+# compose `command:` if needed (e.g. for local debugging).
+CMD ["arq", "worker.WorkerSettings"]

@@ -1,4 +1,7 @@
-# AlphaLens backend image — used by both alphalens-web and alphalens-worker.
+# AlphaLens web image — FastAPI process only.
+# The worker image (deploy/Dockerfile.worker) extends from this base and
+# adds Chromium for PDF rendering. Keeping the web image Chromium-free
+# saves ~300 MB on every deploy of the web tier.
 # Build context is the repo root so backend/ is reachable.
 
 FROM python:3.11-slim

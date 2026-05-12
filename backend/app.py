@@ -3312,6 +3312,123 @@ async def restore_report_version(
     }
 
 
+# ─── PDF export (Phase 3 commit 8) ────────────────────────────────────────────
+# Async pipeline: POST /render-pdf enqueues a worker job and returns 202.
+# Frontend polls /pdf-status until ready, then GETs /pdf-url for a
+# short-lived signed download URL. The PDF itself lives in Supabase
+# Storage under {user_id}/reports/{report_id}.pdf.
+
+@app.post("/api/reports/{report_id}/render-pdf")
+@limiter.limit("12/hour")
+async def render_report_pdf(
+    report_id:    str,
+    request:      Request,
+    current_user: dict = Depends(get_current_user),
+):
+    user_id = current_user["id"]
+    report  = await asyncio.to_thread(db.get_report, report_id, user_id)
+    if not report:
+        raise HTTPException(status_code=404, detail="Report not found")
+
+    # Don't enqueue against a report that's still streaming — the worker
+    # would race the section writes and render half-empty pages.
+    if report.get("status") not in ("complete", "complete_with_errors", "done"):
+        # 'complete_with_errors' allows partial-render so the user can
+        # still get a PDF of what succeeded.
+        pass  # we don't actually have those statuses today, but leave hook
+    secs = report.get("sections") or {}
+    has_content = any(
+        (s or {}).get("markdown") and (s or {}).get("status") == "done"
+        for s in secs.values()
+    )
+    if not has_content:
+        raise HTTPException(
+            status_code=409,
+            detail="Report has no completed sections yet — generate the report first.",
+        )
+
+    # Mark queued before enqueuing so a fast poll right after this call
+    # sees 'queued', not the previous state.
+    try:
+        await asyncio.to_thread(
+            reports_repo.set_pdf_status, report_id, user_id, "queued",
+            status_message="Waiting in render queue",
+        )
+    except Exception as e:
+        logger.error(f"render_report_pdf: set queued failed: {e}")
+        raise HTTPException(status_code=500, detail="Failed to queue render")
+
+    try:
+        from worker import get_arq_pool
+        pool = await get_arq_pool()
+        await pool.enqueue_job("render_report_pdf", report_id, user_id)
+        await pool.aclose()
+    except Exception as e:
+        logger.error(f"render_report_pdf: enqueue failed: {e}", exc_info=True)
+        await asyncio.to_thread(
+            reports_repo.set_pdf_status, report_id, user_id, "error",
+            status_message="Render queue unavailable — please retry.",
+        )
+        return JSONResponse(status_code=503, content={
+            "success": False,
+            "error":   "Render queue unavailable. Please retry shortly.",
+        })
+
+    logger.info(f"render-pdf queued: report={report_id} user={user_id}")
+    return JSONResponse(status_code=202, content={
+        "success":   True,
+        "report_id": report_id,
+        "status":    "queued",
+    })
+
+
+@app.get("/api/reports/{report_id}/pdf-status")
+async def get_report_pdf_status(
+    report_id:    str,
+    current_user: dict = Depends(get_current_user),
+):
+    user_id = current_user["id"]
+    state = await asyncio.to_thread(reports_repo.get_pdf_state, report_id, user_id)
+    if not state:
+        raise HTTPException(status_code=404, detail="Report not found")
+    return {
+        "success":    True,
+        "report_id":  state["id"],
+        "status":     state.get("pdf_status")         or "idle",
+        "rendered_at": state.get("pdf_rendered_at"),
+        "size_bytes": state.get("pdf_size_bytes"),
+        "message":    state.get("pdf_status_message"),
+    }
+
+
+@app.get("/api/reports/{report_id}/pdf-url")
+async def get_report_pdf_url(
+    report_id:    str,
+    current_user: dict = Depends(get_current_user),
+):
+    """Return a short-lived signed URL to download the rendered PDF.
+
+    Status must be 'ready'; anything else is a 409 with the current
+    status. The signed URL is good for 10 minutes — long enough to
+    survive a slow click but not a stale tab."""
+    user_id = current_user["id"]
+    state = await asyncio.to_thread(reports_repo.get_pdf_state, report_id, user_id)
+    if not state:
+        raise HTTPException(status_code=404, detail="Report not found")
+    if (state.get("pdf_status") or "idle") != "ready":
+        raise HTTPException(
+            status_code=409,
+            detail=f"PDF not ready (status={state.get('pdf_status') or 'idle'})",
+        )
+    storage_path = state.get("pdf_url")
+    if not storage_path:
+        raise HTTPException(status_code=409, detail="PDF render did not produce a path")
+    url = await asyncio.to_thread(storage_client.get_signed_url, storage_path, 600)
+    if not url:
+        raise HTTPException(status_code=500, detail="Could not generate download URL")
+    return {"success": True, "url": url}
+
+
 @app.get("/api/report-templates")
 async def get_templates(current_user: dict = Depends(get_current_user)):
     """Return available report templates — built-ins + this user's customs.

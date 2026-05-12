@@ -1149,6 +1149,7 @@ export default function ReportPage() {
             <ReportToolbar
               filename={selectedDoc.filename}
               template={store.template}
+              reportId={store.activeReportId}
               generating={store.generating}
               sections={store.sections}
               wordCount={totalWords}

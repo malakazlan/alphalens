@@ -17,8 +17,8 @@ services:
   alphalens-web:
     build:
       context: ..
-      dockerfile: deploy/Dockerfile
-    image: alphalens:latest
+      dockerfile: deploy/Dockerfile.web
+    image: alphalens-web:latest
     container_name: alphalens_web
     restart: unless-stopped
     env_file:
@@ -47,7 +47,10 @@ services:
         max-file: "5"
 
   alphalens-worker:
-    image: alphalens:latest
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.worker
+    image: alphalens-worker:latest
     container_name: alphalens_worker
     restart: unless-stopped
     depends_on:
