@@ -4118,6 +4118,87 @@ async def chat_document(
         derived = _build_derived(doc_id, full_markdown, grounding_dict, all_chunks)
         full_ctx = derived["full_context"]
 
+        # ─── Branch — finance-analyst agent (feature-flagged) ──────────────
+        # When ANALYZER_AGENT_ENABLED, route this turn through the
+        # tool-calling agent in backend/analyzer_agent. The agent reuses
+        # all the prep work above (grounding, chunks, table grids,
+        # section map) — no extra fetches. Citations come from each tool
+        # result and feed the existing chip UI on the frontend.
+        # When disabled (default), the existing V2.6 single-LLM-call
+        # path runs unchanged.
+        if settings.ANALYZER_AGENT_ENABLED:
+            import analyzer_agent as _aa
+            ctx = _aa.build_doc_context(
+                doc_id=doc_id,
+                user_id=user_id,
+                cell_lookup=derived["cell_lookup"],
+                grounding_dict=grounding_dict,
+                qdrant_chunks=[
+                    {
+                        "chunk_id":   p.get("chunk_id"),
+                        "chunk_type": p.get("chunk_type"),
+                        "page":       p.get("page", 0),
+                        "markdown":   p.get("markdown", ""),
+                        "bbox":       p.get("bbox") or {},
+                        "section_header": p.get("section_header", ""),
+                    }
+                    for p in all_chunks
+                ],
+                table_grids=derived["table_grids"],
+                cell_section_map=derived["cell_section_map"],
+                doc_metadata=doc.get("metadata") or {},
+                extract=doc.get("extract_data") or {},
+            )
+
+            # Build prior turns (the agent expects {role, content} dicts).
+            agent_history = [
+                {"role": h["role"], "content": h["content"]}
+                for h in history
+                if h.get("role") in ("user", "assistant") and h.get("content")
+            ]
+
+            agent_answer_parts: list[str] = []
+            agent_sources: list[dict] = []
+            try:
+                async for event in _aa.handle_chat_turn(
+                    question=message,
+                    history=agent_history,
+                    doc_ctx=ctx,
+                    aoai_client=_aoai,
+                ):
+                    # Buffer the answer text so we can persist + log the
+                    # final string. Forward every event verbatim to SSE.
+                    if event.get("type") == "delta" and event.get("text"):
+                        agent_answer_parts.append(event["text"])
+                    elif event.get("type") == "sources":
+                        agent_sources = event.get("chunks") or []
+                    yield f"data: {json.dumps(event)}\n\n"
+            except Exception as e:
+                logger.exception("analyzer agent failed")
+                yield f"data: {json.dumps({'type': 'error', 'text': str(e)})}\n\n"
+                return
+
+            # Persist the assistant turn for conversation history.
+            final_answer = "".join(agent_answer_parts).strip()
+            try:
+                await asyncio.to_thread(
+                    analyzer_chat_repo.append_message,
+                    conversation_id, user_id, "assistant",
+                    final_answer, agent_sources,
+                )
+            except Exception as e:
+                logger.warning(f"analyzer chat (agent): persist failed: {e}")
+
+            logger.info(
+                "chat (agent): user=%s doc=%s sources=%d answer_chars=%d latency_ms=%d",
+                user_id, doc_id,
+                len(agent_sources),
+                len(final_answer),
+                int((_time.time() - _turn_start_ts) * 1000),
+            )
+            return
+
+        # ─── V2.6 path (default — existing single-LLM-call flow) ──────────
         context = None
         results = []  # Qdrant results, only populated in RAG mode
         use_full_context = False

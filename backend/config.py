@@ -46,6 +46,15 @@ class Settings(BaseSettings):
     SENTRY_TRACES_SAMPLE_RATE: float = 0.1
     SENTRY_RELEASE: Optional[str] = None
 
+    # Analyzer expert agent (Phase 4-style — tool-calling financial analyst).
+    # When False, /chat falls back to the V2.6 single-LLM-call path that's
+    # in production today. When True, the chat routes through
+    # backend.analyzer_agent which gives the model finance-specific tools
+    # (lookup_value, get_section, compute_ratio, read_figure, etc.) and a
+    # CFA-grade reasoning system prompt. Default False so a misconfigured
+    # deploy never silently degrades a known-good chat flow.
+    ANALYZER_AGENT_ENABLED: bool = False
+
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 
 
