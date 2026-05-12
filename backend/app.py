@@ -4118,15 +4118,26 @@ async def chat_document(
         derived = _build_derived(doc_id, full_markdown, grounding_dict, all_chunks)
         full_ctx = derived["full_context"]
 
-        # ─── Branch — finance-analyst agent (feature-flagged) ──────────────
-        # When ANALYZER_AGENT_ENABLED, route this turn through the
-        # tool-calling agent in backend/analyzer_agent. The agent reuses
-        # all the prep work above (grounding, chunks, table grids,
-        # section map) — no extra fetches. Citations come from each tool
-        # result and feed the existing chip UI on the frontend.
-        # When disabled (default), the existing V2.6 single-LLM-call
-        # path runs unchanged.
-        if settings.ANALYZER_AGENT_ENABLED:
+        # ─── Branch — finance-analyst agent (user-toggled) ─────────────────
+        # Two gates: the user must have flipped the 'Analyst' toggle on
+        # in the UI (body.analyst_mode=True) AND ops must have enabled
+        # the agent at the env level (ANALYZER_AGENT_ENABLED=true). Both
+        # must be true.
+        #
+        # Why user-controlled rather than server-side routing:
+        #   The agent costs ~2-3× the latency of V2.6 for simple Qs
+        #   ("what's revenue?") because it adds tool-call rounds. For
+        #   summaries / lookups / section pulls, V2.6 is faster AND
+        #   produces better synthesis (it sees the whole doc context
+        #   in one LLM call). The agent earns its latency only for
+        #   forensic / decomposition / multi-step analytical questions.
+        #   Letting the user explicitly opt in via a UI toggle (like
+        #   ChatGPT's tool-toggle pattern) avoids both mis-classifying
+        #   intent server-side and surprising the user with slow turns.
+        #
+        # When disabled (the default for a turn), the V2.6 single-LLM-
+        # call path runs unchanged. Same chip UI either way.
+        if body.analyst_mode and settings.ANALYZER_AGENT_ENABLED:
             import analyzer_agent as _aa
             ctx = _aa.build_doc_context(
                 doc_id=doc_id,

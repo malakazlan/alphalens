@@ -43,6 +43,14 @@ class ChatRequest(BaseModel):
     # omitted, the chat endpoint falls back to get_or_create_conversation
     # (most-recent for this user+doc, create one if none exist).
     conversation_id: Optional[str] = None
+    # When True, the user has toggled the 'Analyst' mode on in the UI.
+    # The chat handler routes this turn through the finance-analyst
+    # agent (backend/analyzer_agent) — tool-calling, deeper reasoning,
+    # higher latency. False (default) runs the V2.6 single-LLM-call
+    # retrieval+citation path, fast and proven for summaries / lookups.
+    # The server-side ANALYZER_AGENT_ENABLED env flag still gates it as
+    # a safety net — if ops disables the agent, this field is ignored.
+    analyst_mode: bool = False
 
 
 class AnalyzerConversationCreate(BaseModel):

@@ -708,7 +708,26 @@ The right pane is a PDF viewer (pdfjs-dist) with overlay rectangles on each chun
 
 The V2.6 chat (§4.5) is a single-LLM-call architecture: retrieve chunks, hand them to GPT, stream the answer, gate the citations. It works well for direct questions. It struggled with analyst-grade reasoning: *"why did income drop?"*, *"how do I improve interest margin?"*, *"what should I worry about in this filing?"* — questions where the value comes from cross-statement linking, ratio computation, and forensic pattern detection that no amount of retrieval will produce on its own.
 
-V2.7 replaces the single-call architecture with a **tool-calling agent**. Same chat endpoint, same chip UI, same DocViewer click-through. What changes is *how* the model arrives at the answer — it now investigates.
+V2.7 adds a **tool-calling agent as an opt-in mode**. Same chat endpoint, same chip UI, same DocViewer click-through. The two surfaces coexist:
+
+- **V2.6 chat** (default) — fast retrieval + citation; the right tool for summaries, lookups, section pulls.
+- **V2.7 agent** (user toggles "Analyst" in the chat composer) — tool-calling investigation; the right tool for decomposition, comparison, forensics, ratio computation.
+
+The user picks per-turn via the **Analyst toggle** in the chat composer. When ON, the next message routes through the agent; when OFF, V2.6 runs unchanged. The toggle persists per-doc in `sessionStorage` so the user's choice survives navigation.
+
+#### 4.7.0 Why user-toggled, not server-routed
+
+I initially had the agent fire for every chat turn behind a server flag. That made simple Qs slower and worse — a summary question would call tools that returned no rows ("the document doesn't contain a summary section") instead of letting V2.6 synthesise from the full document context.
+
+Alternative considered: classify the user's intent server-side and route automatically — agent for "why did X drop", V2.6 for "summarise". This mis-classifies edge cases either way, and silently changes the user's experience without their consent.
+
+The UI toggle matches what every major AI product does (ChatGPT's tool toggles, Claude's project switches, Perplexity's mode picker). The user gets an explicit, discoverable control: *"this question needs the deeper analyst — I'll wait the extra few seconds."* No server-side guessing, no surprise latency, no mis-classification.
+
+Implementation:
+- `ChatRequest.analyst_mode: bool = False` on the wire.
+- Server route only invokes the agent when `body.analyst_mode is True AND settings.ANALYZER_AGENT_ENABLED is True` (ops gate remains as a kill-switch).
+- Frontend `ChatPanel` has an "Analyst" button next to the textarea. Active-state styling — border + glow in the accent colour, "Analyst" label visible. Disabled mid-stream.
+- The toggle state persists in `sessionStorage` keyed by `docId`.
 
 #### 4.7.1 Architecture
 

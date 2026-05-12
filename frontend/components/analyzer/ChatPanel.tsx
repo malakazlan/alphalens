@@ -537,6 +537,25 @@ export default function ChatPanel({ docId, parseChunks = [], onChunkSelect }: Ch
   const [currentConvId,  setCurrentConvId]  = useState<string | null>(null);
   const [menuOpen,       setMenuOpen]       = useState(false);
 
+  // Analyst-mode toggle. When ON, the next chat turn routes through the
+  // tool-calling finance-analyst agent (slower, deeper analysis). When
+  // OFF (default), the V2.6 retrieval+citation path runs — fast, proven
+  // for summaries / lookups / section pulls. Persisted in sessionStorage
+  // keyed by docId so the user's choice survives navigation within the
+  // same browser tab.
+  const [analystMode, setAnalystMode] = useState<boolean>(() => {
+    if (typeof window === "undefined") return false;
+    try {
+      return sessionStorage.getItem(`al-analyst-mode-${docId}`) === "1";
+    } catch { return false; }
+  });
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      sessionStorage.setItem(`al-analyst-mode-${docId}`, analystMode ? "1" : "0");
+    } catch {}
+  }, [analystMode, docId]);
+
   const bottomRef   = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const abortRef    = useRef<AbortController | null>(null);
@@ -777,6 +796,7 @@ export default function ChatPanel({ docId, parseChunks = [], onChunkSelect }: Ch
           message:         userContent,
           history,
           conversation_id: currentConvId,
+          analyst_mode:    analystMode,
         }),
         signal:      abortRef.current.signal,
       });
@@ -1092,6 +1112,37 @@ export default function ChatPanel({ docId, parseChunks = [], onChunkSelect }: Ch
       <div className="p-3 border-t shrink-0"
         style={{ borderColor: "var(--al-border)", background: "var(--al-bg-soft)" }}>
         <div className="flex gap-2 items-end">
+          {/* Analyst-mode toggle. When ON, the next message routes through
+              the tool-calling finance-analyst agent (deeper reasoning,
+              higher latency). When OFF, the normal V2.6 chat runs. */}
+          <button
+            onClick={() => setAnalystMode(v => !v)}
+            disabled={streaming}
+            aria-pressed={analystMode}
+            aria-label={analystMode ? "Analyst mode on" : "Analyst mode off"}
+            title={analystMode
+              ? "Analyst mode is ON — next message uses the finance-analyst agent (slower, deeper)"
+              : "Click to enable Analyst mode — for forensic, decomposition, or strategy questions"}
+            className="h-10 px-3 rounded-xl flex items-center gap-1.5 text-xs font-semibold transition-all shrink-0"
+            style={{
+              background: analystMode ? "var(--al-accent)" : "var(--al-card)",
+              color:      analystMode ? "#fff"             : "var(--al-text-secondary)",
+              border:     `1.5px solid ${analystMode ? "var(--al-accent)" : "var(--al-border)"}`,
+              boxShadow:  analystMode ? "0 2px 8px var(--al-accent-glow)" : "none",
+              cursor:     streaming ? "not-allowed" : "pointer",
+              opacity:    streaming ? 0.5 : 1,
+            }}
+          >
+            {/* Analyst glyph — a stylised graph+magnifying-glass */}
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
+              stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M3 3v18h18" />
+              <path d="M7 14l3-3 3 3 5-5" />
+              <circle cx="18" cy="9" r="1.2" />
+            </svg>
+            Analyst
+          </button>
+
           <textarea
             ref={textareaRef}
             rows={1}
@@ -1101,11 +1152,15 @@ export default function ChatPanel({ docId, parseChunks = [], onChunkSelect }: Ch
               if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void handleSend(); }
             }}
             disabled={streaming}
-            placeholder={streaming ? "Generating…" : "Ask about this document"}
+            placeholder={
+              streaming     ? "Generating…"
+              : analystMode ? "Ask the Analyst — forensic, decomposition, ratios…"
+              :               "Ask about this document"
+            }
             className="chat-textarea flex-1 resize-none px-3.5 py-2.5 rounded-xl text-sm outline-none transition-all"
             style={{
               background: "var(--al-card)",
-              border:     "1.5px solid var(--al-border)",
+              border:     `1.5px solid ${analystMode ? "var(--al-accent)" : "var(--al-border)"}`,
               color:      "var(--al-text)",
               minHeight:  "40px",
               maxHeight:  "120px",
@@ -1159,7 +1214,9 @@ export default function ChatPanel({ docId, parseChunks = [], onChunkSelect }: Ch
           <p className="text-[11px]" style={{ color: "var(--al-subtle)" }}>
             {streaming
               ? "Analyzing… click ■ to stop."
-              : <><kbd className="chat-kbd">Enter</kbd> to send · <kbd className="chat-kbd">Shift+Enter</kbd> for new line</>}
+              : analystMode
+                ? <>Analyst mode — slower, deeper reasoning · <kbd className="chat-kbd">Enter</kbd> to send</>
+                : <><kbd className="chat-kbd">Enter</kbd> to send · <kbd className="chat-kbd">Shift+Enter</kbd> for new line</>}
           </p>
           {input.length > 1500 && (
             <span className="text-[11px]" style={{ color: input.length > 1900 ? "#dc2626" : "var(--al-subtle)" }}>
