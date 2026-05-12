@@ -341,56 +341,93 @@ def lookup_value(ctx: DocContext, args: LookupValueArgs) -> ToolResult:
     """Find the value of a specific line item, optionally for a specific
     period. Returns one or more matching cells with their row labels and
     column headers.
+
+    Disambiguation contract:
+        When MULTIPLE row labels in the doc match the query (e.g. doc has
+        both 'Net interest income' AND 'Net interest income (expense) on
+        derivatives' — both contain the alias 'net interest income'), we
+        rank rows by specificity and keep only the most-specific tier of
+        matches. Ranking:
+          tier 0  row label exactly equals an alias                 (best)
+          tier 1  row label equals the user's query string verbatim
+          tier 2  row label has 0 extra tokens beyond the matched alias
+          tier 3  row label has ≥1 extra token (more specific row)
+        Cells from a higher tier displace those from a lower tier — so
+        'net interest income' resolves to the canonical row, never the
+        derivative-specific elaboration.
     """
     t0 = time.time()
     aliases = _expand_aliases(args.line_item)
+    alias_norms = [_normalise(a) for a in aliases]
+    query_norm  = _normalise(args.line_item)
     target_period = _normalise(args.period) if args.period else None
 
-    matches: list[dict[str, Any]] = []
-    citations: list[CitationRef] = []
+    # Collect candidates with their specificity tier, then filter.
+    candidates: list[tuple[int, dict[str, Any]]] = []
+    citation_for: dict[str, CitationRef] = {}     # cell_id → citation
     for cid, text in ctx.cell_lookup.items():
-        # Skip header-row cells (they're column labels like "2024", not data).
         if _is_header_cell(ctx, cid):
             continue
-        # Skip cells with no resolvable row label — the value isn't
-        # attributable to a line item; don't surface it.
         row_label = _row_label_for_cell(ctx, cid)
         if not row_label:
             continue
-        # Skip if THIS cell is the row label cell (column-0 of its row);
-        # the row label of column-0 IS the same string we're comparing.
         if _normalise(text or "") == _normalise(row_label):
             continue
         rl_norm = _normalise(row_label)
-        # Match if any alias is a substring of the row label OR exactly equal
-        # to it. Strictly one-directional: a row label like "Cash" must NOT
-        # match the alias "cash from operations" — that's how the wrong cells
-        # leaked into the accrual-quality red-flag detector.
-        if not any(_normalise(a) == rl_norm or _normalise(a) in rl_norm for a in aliases):
+
+        # Find the alias that matched (one-directional: alias ⊆ row_label).
+        matched_alias = None
+        for an in alias_norms:
+            if an == rl_norm or an in rl_norm:
+                matched_alias = an
+                break
+        if matched_alias is None:
             continue
-        # column header / period
+
+        # Specificity tier — lower is better (kept).
+        if rl_norm == query_norm:
+            tier = 1                                        # exact query match
+        elif rl_norm == matched_alias:
+            tier = 0                                        # exact alias match (canonical)
+        else:
+            # Token-count delta — how many extra words does this row label
+            # carry beyond the matched alias?
+            rl_tokens    = set(rl_norm.split())
+            alias_tokens = set(matched_alias.split())
+            extra = len(rl_tokens - alias_tokens)
+            tier = 2 if extra == 0 else 3
+
         col_header = _col_header_for_cell(ctx, cid)
         if target_period:
             ch_norm = _normalise(col_header)
             if target_period not in ch_norm and ch_norm not in target_period:
                 continue
-        # value text — skip empty/label cells
+
         v = (text or "").strip()
         if not v or _normalise(v) == _normalise(row_label):
             continue
-        matches.append({
-            "cell_id":       cid,
-            "row_label":     row_label,
-            "period":        col_header or None,
-            "value":         v,
-            "section":       ctx.cell_section_map.get(cid, ""),
-        })
+
+        candidates.append((tier, {
+            "cell_id":   cid,
+            "row_label": row_label,
+            "period":    col_header or None,
+            "value":     v,
+            "section":   ctx.cell_section_map.get(cid, ""),
+        }))
         cit = _make_citation(ctx, cid, label=f"{row_label} {col_header or ''}".strip())
         if cit:
-            citations.append(cit)
+            citation_for[cid] = cit
+
+    # Keep only the most-specific tier present. Avoids mixing the
+    # canonical 'Net interest income' row with the derivative-specific
+    # 'Net interest income (expense) on derivatives' row.
+    matches: list[dict[str, Any]] = []
+    if candidates:
+        best_tier = min(t for t, _ in candidates)
+        matches = [c for t, c in candidates if t == best_tier]
 
     matches = matches[:20]  # cap payload
-    citations = citations[:20]
+    citations = [citation_for[m["cell_id"]] for m in matches if m["cell_id"] in citation_for][:20]
 
     ok = len(matches) > 0
     summary = (
