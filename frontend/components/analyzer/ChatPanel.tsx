@@ -29,11 +29,26 @@ interface SourceChunk {
   year_label?:       string | null;
 }
 
+// A single tool call the Analyst agent made for this turn. Streamed
+// in real time as `{type: "tool", name, summary, ok}` SSE events from
+// backend/analyzer_agent/orchestrator.py. Presence of any entry here
+// is the canonical signal that the message came from the V2.7 agent
+// path — V2.6 chat never emits these events.
+interface AgentToolCall {
+  name:    string;     // tool name, e.g. "lookup_value" / "compute_ratio"
+  summary: string;     // one-line outcome, set by the tool itself
+  ok:      boolean;    // tool ran successfully (false = surfaced as warning)
+}
+
 interface Message {
   id:        string;
   role:      "user" | "assistant";
   content:   string;
   sources?:  SourceChunk[];
+  // Runtime-only: tool events streamed during the current session.
+  // Empty / undefined on rehydration from server (we don't persist the
+  // trace yet — runtime visibility is enough to verify which path ran).
+  agentTools?: AgentToolCall[];
   streaming?: boolean;
 }
 
@@ -371,6 +386,15 @@ const MessageRow = memo(function MessageRow({
     } catch { /* clipboard blocked — fail silently */ }
   }
 
+  // Analyst-mode evidence. The agent emits one tool SSE event per tool
+  // call; the SSE handler appends each to msg.agentTools in real time.
+  // Presence of any entry is the canonical signal the message came from
+  // V2.7 (V2.6 chat never emits these events). The trail defaults to
+  // expanded while streaming so the user can watch the agent work; once
+  // the answer arrives they can collapse with the toggle.
+  const hasAgentTrail = !isUser && (msg.agentTools?.length ?? 0) > 0;
+  const [trailOpen, setTrailOpen] = useState(true);
+
   return (
     <div className={`chat-msg-enter flex ${isUser ? "justify-end" : "justify-start"}`}>
       <div style={{ maxWidth: isUser ? "88%" : "92%" }} className="group">
@@ -393,6 +417,75 @@ const MessageRow = memo(function MessageRow({
             borderBottomLeftRadius: 4,
           }}
         >
+          {/* Analyst-mode trail. Only renders when the agent emitted at
+              least one tool event. Shows a pill (the proof this turn used
+              the agent path) + a list of the tool calls in order. Sits
+              ABOVE the answer text so the user sees the agent's
+              reasoning before its conclusion. */}
+          {hasAgentTrail && (
+            <div
+              className="mb-2 rounded-lg overflow-hidden"
+              style={{
+                background: "rgba(5,150,105,0.06)",
+                border:     "1px solid rgba(5,150,105,0.20)",
+              }}
+            >
+              <button
+                onClick={() => setTrailOpen(v => !v)}
+                className="w-full flex items-center justify-between px-2.5 py-1.5 text-[11px] font-semibold transition-colors hover:bg-[rgba(5,150,105,0.04)]"
+                style={{ color: "var(--al-accent)" }}
+                aria-expanded={trailOpen}
+              >
+                <span className="flex items-center gap-1.5">
+                  {/* The same analyst glyph as the composer toggle */}
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none"
+                    stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"
+                    aria-hidden="true">
+                    <path d="M3 3v18h18" />
+                    <path d="M7 14l3-3 3 3 5-5" />
+                    <circle cx="18" cy="9" r="1.2" />
+                  </svg>
+                  Analyst · {msg.agentTools!.length} tool call{msg.agentTools!.length === 1 ? "" : "s"}
+                </span>
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none"
+                  stroke="currentColor" strokeWidth="2.5"
+                  style={{ transform: trailOpen ? "rotate(180deg)" : "rotate(0)", transition: "transform 150ms" }}
+                  aria-hidden="true">
+                  <polyline points="6 9 12 15 18 9" />
+                </svg>
+              </button>
+              {trailOpen && (
+                <ul
+                  className="px-2.5 pb-2 pt-0.5 space-y-0.5 text-[11px] leading-snug"
+                  style={{ color: "var(--al-text-secondary)" }}
+                >
+                  {msg.agentTools!.map((t, i) => (
+                    <li key={i} className="flex items-start gap-1.5">
+                      <span
+                        aria-hidden="true"
+                        className="shrink-0 inline-block rounded-full"
+                        style={{
+                          width: 6, height: 6, marginTop: 6,
+                          background: t.ok ? "var(--al-accent)" : "#d97706",
+                        }}
+                      />
+                      <span style={{ flex: 1, minWidth: 0 }}>
+                        <code
+                          style={{
+                            fontFamily: "var(--al-mono, ui-monospace, monospace)",
+                            color:      "var(--al-accent)",
+                            fontSize:   "10.5px",
+                          }}
+                        >{t.name}</code>
+                        {t.summary ? <span className="opacity-80"> · {t.summary}</span> : null}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
+
           {isUser
             ? (msg.content || null)
             : msg.content
@@ -508,11 +601,15 @@ const MessageRow = memo(function MessageRow({
   );
 }, (prev, next) => {
   // Custom equality — return true to SKIP re-render.
-  if (prev.msg.id        !== next.msg.id)        return false;
-  if (prev.msg.role      !== next.msg.role)      return false;
-  if (prev.msg.content   !== next.msg.content)   return false;
-  if (prev.msg.streaming !== next.msg.streaming) return false;
-  if (prev.msg.sources   !== next.msg.sources)   return false;
+  if (prev.msg.id         !== next.msg.id)         return false;
+  if (prev.msg.role       !== next.msg.role)       return false;
+  if (prev.msg.content    !== next.msg.content)    return false;
+  if (prev.msg.streaming  !== next.msg.streaming)  return false;
+  if (prev.msg.sources    !== next.msg.sources)    return false;
+  // Re-render when the agent's tool trail grows (one event per call).
+  // Reference inequality is enough because the SSE handler always
+  // produces a new array via `[...prev, call]`.
+  if (prev.msg.agentTools !== next.msg.agentTools) return false;
   // activeChip only matters for this specific row.
   const prevIsActive = prev.activeChip?.msgId === prev.msg.id;
   const nextIsActive = next.activeChip?.msgId === next.msg.id;
@@ -821,6 +918,23 @@ export default function ChatPanel({ docId, parseChunks = [], onChunkSelect }: Ch
             const event = JSON.parse(line.slice(6));
             if (event.type === "delta") {
               queueDelta(event.text);
+            } else if (event.type === "tool") {
+              // V2.7 agent path — one event per tool call. Append to the
+              // current assistant message's agentTools trail so the user
+              // sees "Looking up revenue…", "Computing debt-to-equity…"
+              // appear in real time as the agent works. V2.6 path never
+              // emits these events, so an empty trail = V2.6.
+              drainPending();
+              const call: AgentToolCall = {
+                name:    String(event.name    ?? "tool"),
+                summary: String(event.summary ?? ""),
+                ok:      event.ok !== false,
+              };
+              setMessages(prev => prev.map(m =>
+                m.id === aiMsgId
+                  ? { ...m, agentTools: [...(m.agentTools ?? []), call] }
+                  : m
+              ));
             } else if (event.type === "sources") {
               drainPending();
               setMessages(prev => prev.map(m =>
