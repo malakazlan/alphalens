@@ -28,8 +28,119 @@ def _safe(val):
         return val if val else None
 
 
+# ─── Ticker normalisation ────────────────────────────────────────────────────
+# yfinance treats some natural-language asset names as stock tickers, which is
+# almost never what the user means. Worst offender: "GOLD" is Barrick Gold
+# Corp (~$42), but every user typing "gold price" wants the spot/futures
+# price (~$3000, ticker GC=F). Same trap applies to silver, oil, crypto,
+# major indices.
+#
+# This map is applied at the boundary of every tool that takes a `ticker`
+# argument. The model is free to pass `GOLD` or `gold` or `bitcoin`; the
+# tool resolves to the right Yahoo symbol before the API call.
+#
+# Order of precedence inside the map: most specific aliases first
+# (e.g. "brent" → BZ=F before "oil" → CL=F) — we lowercase + exact-match
+# so order isn't strictly required, but we still keep the table readable.
+_TICKER_ALIASES: dict[str, str] = {
+    # Precious metals (continuous futures contracts)
+    "gold":        "GC=F",
+    "xau":         "GC=F",
+    "xauusd":      "GC=F",
+    "silver":      "SI=F",
+    "xag":         "SI=F",
+    "xagusd":      "SI=F",
+    "platinum":    "PL=F",
+    "palladium":   "PA=F",
+    # Energy
+    "oil":         "CL=F",   # WTI Crude continuous
+    "crude":       "CL=F",
+    "crude oil":   "CL=F",
+    "wti":         "CL=F",
+    "brent":       "BZ=F",
+    "brent crude": "BZ=F",
+    "natural gas": "NG=F",
+    "nat gas":     "NG=F",
+    "natgas":      "NG=F",
+    "gasoline":    "RB=F",
+    "heating oil": "HO=F",
+    # Industrial metals + ags
+    "copper":      "HG=F",
+    "corn":        "ZC=F",
+    "wheat":       "ZW=F",
+    "soybeans":    "ZS=F",
+    "soybean":     "ZS=F",
+    "sugar":       "SB=F",
+    "coffee":      "KC=F",
+    "cocoa":       "CC=F",
+    # Crypto (Yahoo uses TICKER-USD)
+    "bitcoin":     "BTC-USD",
+    "btc":         "BTC-USD",
+    "ethereum":    "ETH-USD",
+    "eth":         "ETH-USD",
+    "solana":      "SOL-USD",
+    "sol":         "SOL-USD",
+    "xrp":         "XRP-USD",
+    "ripple":      "XRP-USD",
+    "dogecoin":    "DOGE-USD",
+    "doge":        "DOGE-USD",
+    "cardano":     "ADA-USD",
+    "ada":         "ADA-USD",
+    # Major indices (the "actual" index symbol, not an ETF)
+    "s&p":         "^GSPC",
+    "s&p 500":     "^GSPC",
+    "sp500":       "^GSPC",
+    "spx":         "^GSPC",
+    "dow":         "^DJI",
+    "dow jones":   "^DJI",
+    "djia":        "^DJI",
+    "nasdaq":      "^IXIC",
+    "nasdaq 100":  "^NDX",
+    "russell":     "^RUT",
+    "russell 2000":"^RUT",
+    "vix":         "^VIX",
+    "ftse":        "^FTSE",
+    "ftse 100":    "^FTSE",
+    "nikkei":      "^N225",
+    "dax":         "^GDAXI",
+    "hang seng":   "^HSI",
+}
+
+
+def _normalise_ticker(ticker: str) -> str:
+    """Map a user-supplied symbol to the correct Yahoo Finance ticker.
+
+    Rules:
+      1. Lowercased exact lookup in `_TICKER_ALIASES` — wins if present.
+         This catches both bare commodity names ("gold") AND the LLM's
+         upper-case convention ("GOLD"), since we lowercase first.
+      2. Otherwise, pass through unchanged (upper-cased only if it was
+         already a normal ticker — preserving casing for futures like
+         `GC=F` and crypto like `BTC-USD`).
+
+    Why upper-case `GOLD` resolves to spot gold not Barrick:
+      Real Barrick queries reach us as "Barrick Gold" or "ABX" (TSX) or
+      "GOLD" only inside a portfolio context where ticker is unambiguous.
+      Anyone typing "gold rate / gold price / GOLD" almost always means
+      the metal. The Barrick case is the long-tail exception; we'd rather
+      get the spot price right for 99% than the stock for 1%.
+    """
+    if not ticker:
+        return ticker
+    raw = ticker.strip()
+    key = raw.lower()
+    if key in _TICKER_ALIASES:
+        return _TICKER_ALIASES[key]
+    # Preserve original casing for symbols that legitimately use it
+    # (futures end with `=F`, crypto with `-USD`).
+    if "=" in raw or "-" in raw or raw.startswith("^"):
+        return raw
+    return raw.upper()
+
+
 def get_quote(ticker: str) -> dict:
     """Current price, change, volume, market cap."""
+    ticker = _normalise_ticker(ticker)
     try:
         t = yf.Ticker(ticker.upper())
         info = t.info
@@ -59,6 +170,7 @@ def get_quote(ticker: str) -> dict:
 
 def get_fundamentals(ticker: str) -> dict:
     """Key financial ratios and fundamentals."""
+    ticker = _normalise_ticker(ticker)
     try:
         t = yf.Ticker(ticker.upper())
         info = t.info
@@ -90,6 +202,7 @@ def get_fundamentals(ticker: str) -> dict:
 
 def get_price_history(ticker: str, period: str = "1mo") -> dict:
     """OHLCV history. period: 1d,5d,1mo,3mo,6mo,1y,2y,5y."""
+    ticker = _normalise_ticker(ticker)
     try:
         t = yf.Ticker(ticker.upper())
         hist = t.history(period=period)
@@ -121,6 +234,7 @@ def get_price_history(ticker: str, period: str = "1mo") -> dict:
 
 def get_news(ticker: str) -> dict:
     """Recent news headlines for a ticker. Supports both old and new yfinance API."""
+    ticker = _normalise_ticker(ticker)
     try:
         t = yf.Ticker(ticker.upper())
         raw_news = t.news or []
@@ -161,6 +275,7 @@ def get_news(ticker: str) -> dict:
 
 def compare_stocks(tickers: list[str]) -> dict:
     """Side-by-side comparison of key metrics for multiple tickers."""
+    tickers = [_normalise_ticker(t) for t in tickers]
     results = []
     for ticker in tickers[:5]:
         try:
@@ -266,6 +381,7 @@ def get_portfolio_pnl(user_id: str) -> dict:
 # ── Earnings calendar ────────────────────────────────────────────────────────
 def get_earnings_calendar(ticker: str) -> dict:
     """Next earnings date + EPS / revenue estimates if yfinance has them."""
+    ticker = _normalise_ticker(ticker)
     try:
         t = yf.Ticker(ticker.upper())
         cal = t.calendar or {}
@@ -313,6 +429,7 @@ def get_earnings_calendar(ticker: str) -> dict:
 # ── Dividends ────────────────────────────────────────────────────────────────
 def get_dividends(ticker: str) -> dict:
     """Dividend yield, last 5 payments, last-12-months total."""
+    ticker = _normalise_ticker(ticker)
     try:
         t = yf.Ticker(ticker.upper())
         info = t.info
@@ -348,6 +465,7 @@ def get_dividends(ticker: str) -> dict:
 # ── Insider trades (Finnhub) ─────────────────────────────────────────────────
 def get_insider_trades(ticker: str) -> dict:
     """Recent insider transactions via Finnhub. Returns last 90 days."""
+    ticker = _normalise_ticker(ticker)
     api_key = settings.FINNHUB_API_KEY
     if not api_key:
         return {"error": "Finnhub API key not configured", "ticker": ticker.upper()}
@@ -459,6 +577,7 @@ def get_technical_indicators(ticker: str, indicators: list[str] | None = None) -
 
     Supported: rsi (14), macd (12/26/9), sma50, sma200, ema20.
     No external math deps — pure pandas (already a yfinance transitive)."""
+    ticker = _normalise_ticker(ticker)
     indicators = [i.lower() for i in (indicators or ["rsi", "macd", "sma50", "sma200"])]
     try:
         t = yf.Ticker(ticker.upper())
@@ -533,6 +652,7 @@ def get_options_chain(ticker: str, expiry: str | None = None) -> dict:
 
     Returns at most 7 strikes either side of the current price to keep
     LLM context manageable."""
+    ticker = _normalise_ticker(ticker)
     try:
         t = yf.Ticker(ticker.upper())
         expiries = list(t.options or [])
@@ -758,6 +878,7 @@ def render_chart(chart_type: str, ticker: str, period: str = "6mo") -> dict:
     """Build a chart spec the frontend can render with recharts.
 
     Currently supports: chart_type='price_line' — daily close-price series."""
+    ticker = _normalise_ticker(ticker)
     chart_type = (chart_type or "").lower()
     if chart_type != "price_line":
         return {"error": f"Unsupported chart_type '{chart_type}'. Supported: price_line."}
@@ -804,6 +925,7 @@ def add_to_watchlist(
     note: str | None = None,
 ) -> dict:
     """Save a ticker to the user's watchlist. Returns the new (or existing) row."""
+    ticker = _normalise_ticker(ticker)
     try:
         # Best-effort idempotency: if already on watchlist, return existing.
         existing = [w for w in finbot_repo.list_watchlist(user_id)
