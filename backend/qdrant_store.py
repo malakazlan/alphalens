@@ -150,7 +150,13 @@ def get_chunks_by_doc(doc_id: str, user_id: str, limit: int = 500) -> list:
 
 
 def get_chunk_overlays_by_doc(doc_id: str, user_id: str, limit: int = 500) -> list:
-    """Return lightweight overlay data only — no markdown. Used for PDF overlay rendering."""
+    """Return lightweight overlay data only — no markdown. Used for PDF overlay rendering.
+
+    Filters out chunks without a usable bbox. Empty-bbox chunks are still
+    legitimate retrieval context (ADE sometimes returns text without a box)
+    but cannot be drawn — sending them produces invisible/NaN-sized boxes
+    in the viewer.
+    """
     must = [
         FieldCondition(key="doc_id", match=MatchValue(value=doc_id)),
         FieldCondition(key="user_id", match=MatchValue(value=user_id)),
@@ -162,7 +168,18 @@ def get_chunk_overlays_by_doc(doc_id: str, user_id: str, limit: int = 500) -> li
         with_payload=PayloadSelectorInclude(include=["chunk_id", "chunk_type", "page", "bbox"]),
         with_vectors=False,
     )
-    chunks = [r.payload for r in results if r.payload]
+    chunks: list[dict] = []
+    for r in results:
+        p = r.payload
+        if not p:
+            continue
+        bb = p.get("bbox") or {}
+        if not (
+            isinstance(bb, dict)
+            and "left" in bb and "top" in bb and "right" in bb and "bottom" in bb
+        ):
+            continue
+        chunks.append(p)
     chunks.sort(key=lambda c: (c.get("page", 0), c.get("chunk_type", "")))
     return chunks
 

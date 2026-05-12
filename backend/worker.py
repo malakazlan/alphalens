@@ -729,16 +729,49 @@ async def process_document(ctx: dict, doc_id: str, user_id: str, file_path: str)
                 current_section = plain
 
             page = 0
-            bbox = {}
+            bbox: dict = {}
             if cgrounding:
                 if hasattr(cgrounding, "page"):
                     page = cgrounding.page
                     box = cgrounding.box
-                    bbox = {"left": box.left, "top": box.top, "right": box.right, "bottom": box.bottom}
+                    if box is not None and all(
+                        hasattr(box, k) for k in ("left", "top", "right", "bottom")
+                    ):
+                        bbox = {
+                            "left":   float(box.left),
+                            "top":    float(box.top),
+                            "right":  float(box.right),
+                            "bottom": float(box.bottom),
+                        }
                 elif isinstance(cgrounding, dict):
                     page = cgrounding.get("page", 0)
-                    box = cgrounding.get("box", {})
-                    bbox = box if isinstance(box, dict) else {}
+                    raw  = cgrounding.get("box") or {}
+                    if isinstance(raw, dict) and all(
+                        k in raw for k in ("left", "top", "right", "bottom")
+                    ):
+                        bbox = {
+                            "left":   float(raw["left"]),
+                            "top":    float(raw["top"]),
+                            "right":  float(raw["right"]),
+                            "bottom": float(raw["bottom"]),
+                        }
+
+            # Bbox sanity gate. A chunk without a usable bounding box can't be
+            # drawn in the document viewer — but it's still legitimate context
+            # for the LLM (the markdown is meaningful). We keep it for
+            # retrieval and let the overlay endpoint skip it instead of
+            # rendering ghost rectangles. Empty bbox = explicitly invisible.
+            if bbox:
+                l, t, r, b = bbox["left"], bbox["top"], bbox["right"], bbox["bottom"]
+                # Reject malformed boxes (negative / inverted / outside [0,1]).
+                # ADE returns normalised coords so any leak outside that range
+                # is a parser bug we should not propagate to the frontend.
+                if not (0.0 <= l < r <= 1.0 and 0.0 <= t < b <= 1.0):
+                    logger.warning(
+                        "drop malformed bbox: doc=%s chunk=%s page=%s bbox=%s",
+                        doc_id, chunk_id, page, bbox,
+                    )
+                    bbox = {}
 
             enriched_chunks.append({
                 "chunk_id": chunk_id,

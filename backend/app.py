@@ -1588,6 +1588,100 @@ def _extract_section_keywords(text: str) -> set:
     return _section_buckets(text)
 
 
+# ─── Polarity gate (finer-grained than section buckets) ─────────────────────
+# Balance-sheet sub-polarity. The `_SECTION_ALIASES` map lumps assets,
+# liabilities, and equity under the same canonical bucket ("balance sheet"),
+# which lets a "current liabilities" question match a cell from the assets
+# side of the same statement. The polarity gate is a strict additional
+# check that runs on top of bucket scoping:
+#
+#   - "current liabilities" → polarity = "liabilities"
+#   - cell row label "Accounts receivable, gross" → polarity = "assets"
+#   - mismatch → reject regardless of value/token match.
+#
+# Only fires when BOTH sides have a non-empty polarity. Asymmetric polarity
+# (question has none, or cell has none) is a pass — we don't want to over-
+# reject when row labels are generic.
+#
+# Cash-flow direction (operating / investing / financing) follows the same
+# pattern as a future extension; balance-sheet polarity is the highest-impact
+# discrimination today.
+
+_POLARITY_LIABILITIES = (
+    "liabilities", "liability", "current liabilities",
+    "non-current liabilities", "noncurrent liabilities",
+    "long-term debt", "long term debt", "short-term debt", "short term debt",
+    "borrowings", "payables", "payable", "accrued", "owed",
+    "accounts payable", "deferred income tax liabilities",
+    "operating lease liabilities", "pension obligations",
+    "warranty obligations", "environmental remediation",
+)
+_POLARITY_ASSETS = (
+    "assets", "asset", "current assets", "non-current assets",
+    "noncurrent assets", "property plant and equipment",
+    "property, plant and equipment", "ppe",
+    "receivables", "receivable", "accounts receivable",
+    "inventory", "inventories", "investment securities",
+    "cash and cash equivalents", "loans at amortized",
+    "loans at amortised", "deferred income tax assets",
+    "deferred tax assets", "intangible assets",
+    "right of use assets", "right-of-use assets",
+    "deposits in margin", "loans and advances",
+    "accumulated depreciation",  # contra-asset, behaviourally on the asset side
+)
+_POLARITY_EQUITY = (
+    "equity", "shareholders' equity", "shareholders equity",
+    "stockholders' equity", "stockholders equity",
+    "members' equity", "members equity",
+    "retained earnings", "share capital", "paid-in capital",
+    "paid in capital", "reserves", "treasury stock",
+    "common stock", "preferred stock",
+)
+
+
+def _polarity(text: str) -> str | None:
+    """Classify a piece of balance-sheet-related text as assets / liabilities
+    / equity. Returns None when no polarity can be determined (e.g. cash-flow,
+    income-statement, generic notes text). Longest-alias-first inside each
+    bucket so 'current liabilities' matches before 'current'.
+    """
+    if not text:
+        return None
+    t = text.lower()
+    # Order matters slightly: check the most-specific polarities first.
+    # "deferred income tax liabilities" must beat the "liabilities" alias
+    # for "deferred income tax assets" — already handled by separate lists.
+    for alias in sorted(_POLARITY_LIABILITIES, key=len, reverse=True):
+        if alias in t:
+            return "liabilities"
+    for alias in sorted(_POLARITY_ASSETS, key=len, reverse=True):
+        if alias in t:
+            return "assets"
+    for alias in sorted(_POLARITY_EQUITY, key=len, reverse=True):
+        if alias in t:
+            return "equity"
+    return None
+
+
+def _polarity_compatible(question_text: str, cell_section: str, row_label: str, group_label: str) -> bool:
+    """True when the cell's polarity does not contradict the question's.
+
+    Question and cell both need a non-empty polarity for this to reject.
+    Otherwise (one side unclassifiable), pass through — we only reject on
+    proven contradiction, not on absence of evidence."""
+    q_pol = _polarity(question_text)
+    if q_pol is None:
+        return True
+    # Cell polarity = the strongest signal among section, group label, row label.
+    # Section first because it's the wide canonical context; row label second
+    # because it's the most specific cell-level label.
+    for source in (cell_section, group_label, row_label):
+        cell_pol = _polarity(source)
+        if cell_pol is not None:
+            return cell_pol == q_pol
+    return True
+
+
 def _find_parent_table(cell_id: str, grounding_dict: dict, table_index: list) -> int:
     """Find which table instance a cell belongs to. Returns index or -1."""
     for idx, tbl in enumerate(table_index):
@@ -1759,14 +1853,28 @@ def _find_all_matching_cells(
 
         for orig_val, norm_val in answer_values:
             score = 0
-            # Exact normalised match
+            # Exact normalised match — strongest signal.
             if cell_norm == norm_val:
                 score = 100
-            # Cell contains the value (e.g. cell "Rs. 143,990" contains "143990")
-            elif len(norm_val) >= 3 and norm_val in cell_norm:
+            # Cell contains the value as a prefix/suffix-bounded substring.
+            # Without the length guard the substring rule lets the answer
+            # value $48,420 match an unrelated cell $498,420 — because
+            # the digit string "48420" is contained in "498420". Cap the
+            # excess at 1 extra char (covers currency prefix or trailing
+            # asterisk; rejects bigger-value swallowing).
+            elif (
+                len(norm_val) >= 3
+                and norm_val in cell_norm
+                and len(cell_norm) - len(norm_val) <= 1
+            ):
                 score = 90
-            # Value contains the cell text (e.g. answer "Friday, October 10, 2025")
-            elif len(cell_norm) >= 5 and cell_norm in norm_val:
+            # Value contains the cell text (e.g. answer "Friday, October 10, 2025"
+            # → cell "October 10"). Same length-difference guard for symmetry.
+            elif (
+                len(cell_norm) >= 5
+                and cell_norm in norm_val
+                and len(norm_val) - len(cell_norm) <= 2
+            ):
                 score = 80
 
             if score == 0:
@@ -1776,6 +1884,9 @@ def _find_all_matching_cells(
             # specific tokens AND the cell sits inside a known grid (so we
             # actually know its row label). Cells without grid context are
             # passed through — they're typically text chunks, not table data.
+            row_label_text = ""
+            grp_label_text = ""
+            cell_section   = cell_section_map.get(cell_id, "") if cell_section_map else ""
             if question_tokens and table_grids:
                 grid = _find_grid_for_cell(cell_id, table_grids)
                 if grid is not None:
@@ -1795,6 +1906,15 @@ def _find_all_matching_cells(
                     # whose row label was directly asked about.
                     if label_tokens & question_tokens:
                         score += 20
+
+            # Polarity gate. Strictly enforces assets-vs-liabilities-vs-equity
+            # discrimination on top of the bucket-level section gate. Catches
+            # the "$48,620 substring of $498,420 in an assets cell" leak that
+            # token overlap alone misses because answer prose introduces both
+            # sides of the balance sheet (e.g. "Deferred income tax assets"
+            # cell vs answer's "Deferred income tax liabilities" entry).
+            if not _polarity_compatible(question_text, cell_section, row_label_text, grp_label_text):
+                continue
 
             seen_ids.add(cell_id)
             matched_cells.append((cell_id, cell_text, score, norm_val))
@@ -1868,9 +1988,11 @@ def _find_all_matching_cells(
     matched_cells = matched_cells_3
 
     # ── Phase 2: LLM-cited IDs as fallback (only if Phase 1 found nothing) ──
-    # Even here we apply the structural-invalid gate — if GPT cited a header
-    # cell, we still don't surface it as a citation chip. Adjacent-cell
-    # rescue path is similarly gated.
+    # Mirrors Phase 1's gate stack — header / year-only / row-label / polarity
+    # ALL apply here too. Asymmetric gating (Phase 1 strict, Phase 2 lax) was
+    # the structural reason wrong chips slipped through: the LLM would cite
+    # an off-topic cell, Phase 1 would correctly reject it, and Phase 2 would
+    # then accept it because its gates were a strict subset.
     if not matched_cells:
         for cid in llm_cited_ids:
             if cid in seen_ids:
@@ -1882,18 +2004,50 @@ def _find_all_matching_cells(
             cell_text = cell_lookup.get(cid, "")
             if _is_year_only_cell_text(cell_text):
                 continue
+
+            # Pull row-label + section context once so all downstream gates
+            # see the same picture.
+            cell_section_p2  = cell_section_map.get(cid, "") if cell_section_map else ""
+            row_label_p2     = ""
+            grp_label_p2     = ""
+            if table_grids:
+                grid_p2 = _find_grid_for_cell(cid, table_grids)
+                if grid_p2 is not None:
+                    cross_p2 = _get_cross_cells(grid_p2, cid, grounding_dict, cell_lookup)
+                    row_label_p2 = cell_lookup.get(cross_p2.get("row_label_id") or "", "")
+                    grp_label_p2 = cell_lookup.get(cross_p2.get("group_label_id") or "", "")
+
+            # Row-label gate. Same logic as Phase 1: row label must share at
+            # least one content token with the question or the answer.
+            if question_tokens and (row_label_p2 or grp_label_p2):
+                label_tokens_p2 = _tokenise(row_label_p2) | _tokenise(grp_label_p2)
+                if label_tokens_p2 and not (label_tokens_p2 & relevance_tokens):
+                    continue
+
+            # Polarity gate (assets vs liabilities vs equity). Same as Phase 1.
+            if not _polarity_compatible(question_text, cell_section_p2, row_label_p2, grp_label_p2):
+                continue
+
             if cell_text.strip():
                 # 2.3 — answer-value sanity gate. When the answer text
                 # carries extractable values, the LLM-cited cell MUST
-                # contain one of them. Stops the matcher from accepting
-                # a citation to a row label or section heading just
-                # because the model decorated its answer with that ID.
+                # contain one of them. Uses the same tightened substring
+                # rule as Phase 1 so a $48,420 answer value can't grab a
+                # $498,420 cell via digit-soup containment.
                 if answer_values:
                     cell_norm = _normalise_for_match(cell_text)
                     has_value = any(
                         cell_norm == nv
-                        or (len(nv) >= 3 and nv in cell_norm)
-                        or (len(cell_norm) >= 5 and cell_norm in nv)
+                        or (
+                            len(nv) >= 3
+                            and nv in cell_norm
+                            and len(cell_norm) - len(nv) <= 1
+                        )
+                        or (
+                            len(cell_norm) >= 5
+                            and cell_norm in nv
+                            and len(nv) - len(cell_norm) <= 2
+                        )
                         for _, nv in answer_values
                     )
                     if not has_value:
@@ -4026,12 +4180,27 @@ async def chat_document(
             "   IS in the document: show the relevant historical trend, list the line\n"
             "   items the user could influence, and note this is contextual not predictive.\n\n"
 
-            "8. VISUALISATION REQUEST\n"
-            "   Triggers: 'graph', 'chart', 'plot', 'show me a graph of', 'what would the\n"
-            "   chart look like'.\n"
-            "   Behaviour: this surface does not render charts. Provide the underlying\n"
-            "   data series as a markdown table (period vs. value) so the user can plot it\n"
-            "   themselves, plus a one-line description of the trend.\n\n"
+            "8a. READ EXISTING FIGURE / CHART (in the document)\n"
+            "    Triggers: 'what does the chart show', 'tell me about the graph on\n"
+            "    page X', 'describe the bar chart', 'what does Figure N say', 'summarise\n"
+            "    the chart', any question about a SPECIFIC figure that exists in the\n"
+            "    document context. Look for chunks tagged as figure — they contain\n"
+            "    fully-parsed chart data (axis labels, series, values, captions).\n"
+            "    Behaviour: read the figure chunk's content as authoritative source.\n"
+            "    Answer with the chart's title, what it measures (axes), the data\n"
+            "    series (period → value pairs), and the trend. Cite the figure chunk\n"
+            "    using its chunk id. DO NOT refuse, DO NOT say 'we don't render charts'\n"
+            "    — the data is in the context, read it.\n\n"
+
+            "8b. GENERATE A NEW CHART (we can't render)\n"
+            "    Triggers: 'draw a chart of X', 'plot X for me', 'generate a graph',\n"
+            "    'show me a graph of X' (where X is a custom series the user is\n"
+            "    constructing). Only fires when the user wants AlphaLens to PRODUCE a\n"
+            "    visualisation that doesn't already exist in the document.\n"
+            "    Behaviour: explain briefly that AlphaLens does not render charts.\n"
+            "    Provide the underlying data series as a markdown table (period vs.\n"
+            "    value) so the user can plot it themselves, plus a one-line trend\n"
+            "    description.\n\n"
 
             "9. OFF-TOPIC / OUT-OF-DOMAIN\n"
             "   Triggers: questions unrelated to financial documents (general\n"
@@ -4051,27 +4220,70 @@ async def chat_document(
             "- Parenthetical values like (880,843) are negative — label as losses/expenses.\n"
             "- When a section has multiple year-tables (e.g. Statement of Changes in\n"
             "  Equity with separate 2018 and 2019 tables), include figures from ALL\n"
-            "  year-tables unless the user names a single year. Label each with its year.\n"
-            "- Never invent figures. If a SPECIFIC value is missing, say so for that one\n"
-            "  value, but still answer with whatever IS available.\n\n"
+            "  year-tables unless the user names a single year. Label each with its year.\n\n"
 
-            "CITATION: append the cell ID AND a short human-readable label in\n"
-            "double brackets immediately after every figure you cite. The label\n"
+            "═══════════════════════════════════════════════════════════════════════\n"
+            "RULE 0 — GROUNDING (NON-NEGOTIABLE)\n"
+            "═══════════════════════════════════════════════════════════════════════\n"
+            "Every numeric value, percentage, monetary amount, date, fiscal year,\n"
+            "proper noun (company / fund / subsidiary name), and named line item in\n"
+            "your answer MUST appear verbatim in the document context above. If a\n"
+            "value the user asks about is NOT in the context, you have two options\n"
+            "and ONLY these two:\n"
+            "  (a) State that the document does not contain that value, and offer\n"
+            "      the closest related figures that ARE in the context.\n"
+            "  (b) Refuse the specific value and continue with the rest of the answer.\n"
+            "You may NEVER invent, estimate, infer-by-pattern, extrapolate, or\n"
+            "transcribe a value from your general knowledge. A user asking about\n"
+            "'the 499 table' or 'the borrowings number' does not authorise you to\n"
+            "produce figures that resemble what they asked about. If the document\n"
+            "shows a fund with a balance of `8`, the balance is `8` — not `1,499,499`\n"
+            "or any other plausible-looking number.\n"
+            "Violation of this rule is the single worst failure mode of this system.\n"
+            "If you are unsure whether a value is grounded, refuse it.\n\n"
+
+            "═══════════════════════════════════════════════════════════════════════\n"
+            "CITATION — STRICT ATTRIBUTION\n"
+            "═══════════════════════════════════════════════════════════════════════\n"
+            "Append the cell or chunk ID AND a short human-readable label in double\n"
+            "brackets immediately after every figure or claim you cite. The label\n"
             "must be the row name, line-item name, or concept that the value\n"
-            "represents — copy the exact wording from the document context where\n"
-            "possible (e.g. 'Property, plant and equipment', 'Total Assets',\n"
-            "'Net cash from operating activities'). Truncate to ~60 characters.\n"
-            "Use `cell-id|label` inside the brackets:\n"
-            "  Table cell:  1,529,797 [[0-12|Total Revenue]]\n"
-            "  Text chunk:  noted in audit [[uuid|Audit committee findings]]\n"
-            "If the value has no clear row label in the document, omit the\n"
-            "|label part and emit just [[cell-id]] — the system will fall back\n"
-            "to its own label derivation.\n"
-            "Do not cite the same ID twice. Cite every unique figure you mention.\n\n"
+            "represents — copy the exact wording from the document context\n"
+            "(e.g. 'Property, plant and equipment', 'Total Assets',\n"
+            "'Net cash from operating activities', 'Figure 1 — Quarterly Net\n"
+            "Revenue'). Truncate to ~60 characters.\n\n"
 
-            "SECTION AWARENESS: always cite from the section that matches the question\n"
-            "(e.g. 'Statement of Financial Position', 'Statement of Changes in Equity',\n"
-            "'Cash Flows')."
+            "Format: `cell-id|label` or `chunk-id|label` inside `[[ ]]`:\n"
+            "  Single value from a table:\n"
+            "      Revenue grew to $1,529,797 [[0-12|Net Revenue 2024]]\n"
+            "  Figure / chart content:\n"
+            "      The chart shows nine quarters of growth from\n"
+            "      $1,842 to $2,348 [[fig-uuid|Figure 1 — Quarterly Net Revenue]]\n"
+            "  Text passage:\n"
+            "      The auditor noted material weakness [[txt-uuid|Audit findings]]\n\n"
+
+            "STRICT ATTRIBUTION RULES:\n"
+            "  1. Cite ONLY chunks that literally contain the value or statement you\n"
+            "     just wrote. Do NOT cite chunks just because they live in the same\n"
+            "     section or page as relevant content.\n"
+            "  2. When the user asks about liabilities, do NOT cite asset rows even\n"
+            "     if they happen to contain numbers that match a value you wrote.\n"
+            "     The cited row's LINE-ITEM NAME must be on-topic for the question.\n"
+            "  3. When the user asks about a section (e.g. Cash Flows), every chip\n"
+            "     must come from that section. Cells from other statements that\n"
+            "     happen to share a number are off-topic and must NOT be cited.\n"
+            "  4. Never cite the same ID twice in one answer.\n"
+            "  5. If a value has no clean row label, omit the label part and emit\n"
+            "     just `[[id]]` — the chip resolver will derive one. Do not\n"
+            "     fabricate a label.\n"
+            "  6. If you cannot identify a single chunk in the context that\n"
+            "     supports a value you want to write, do not write that value at\n"
+            "     all (per Rule 0 above).\n\n"
+
+            "SECTION AWARENESS: every citation in your answer must come from the\n"
+            "section that matches the question. Liabilities Qs → liabilities cells.\n"
+            "Cash-flow Qs → cash-flow cells. Equity Qs → equity cells. Mixing\n"
+            "sections is a citation error even if the numbers happen to match."
         )
         # Known document facts — gives the model an anchor for OFF-TOPIC
         # refusals and SUMMARY answers. Pulled from the `metadata` column
@@ -4283,6 +4495,59 @@ async def chat_document(
                     len(source_chunks), doc_id,
                 )
             source_chunks = []
+
+        # ── Post-generation grounding verifier ─────────────────────────────
+        # Last line of defence against false-positive chips. The gate stack
+        # in `_find_all_matching_cells` operates on retrieval-time evidence
+        # (row label, section polarity, value similarity); this verifier
+        # operates on the FINAL answer prose. The rule is simple and strict:
+        #
+        #   A chip survives only if the cell's value appears literally in
+        #   the answer the user is about to read.
+        #
+        # Catches:
+        #   - LLM-cited cells where the LLM decorated the answer with an
+        #     `[[id]]` marker but the cell's value isn't mentioned anywhere.
+        #   - Phase-1 matches where a cell's value substring-matched an
+        #     unrelated answer value (e.g. cell $284,180 cited for a question
+        #     where the answer only mentions $312,442).
+        #
+        # Skipped for text/figure chunks — they don't have a single value
+        # to verify; the row-label gates already protect them.
+        if source_chunks:
+            answer_value_set = {nv for _, nv in _extract_answer_values(clean_full_answer)}
+            if answer_value_set:
+                survivors: list[dict] = []
+                dropped: list[str] = []
+                for ch in source_chunks:
+                    ctype = (ch.get("chunk_type") or "").lower()
+                    # Only cell-shaped chips carry a single discrete value.
+                    # Text + figure chunks are pre-validated by row-label gate.
+                    if "cell" not in ctype:
+                        survivors.append(ch)
+                        continue
+                    cell_text = ch.get("markdown") or ""
+                    cell_norm = _normalise_for_match(cell_text)
+                    if not cell_norm:
+                        survivors.append(ch)  # empty cell — handled elsewhere
+                        continue
+                    # Cell value must be exactly one of the answer values,
+                    # OR the answer value must equal the cell value. No
+                    # substring leniency here — that's how the false
+                    # positives slipped in upstream.
+                    if cell_norm in answer_value_set:
+                        survivors.append(ch)
+                    else:
+                        dropped.append(ch.get("chunk_id", "?"))
+                if dropped:
+                    logger.info(
+                        "chat: grounding verifier dropped %d chip(s) for doc=%s "
+                        "(answer values: %d, dropped ids: %s)",
+                        len(dropped), doc_id, len(answer_value_set),
+                        ",".join(dropped[:5]),
+                    )
+                source_chunks = survivors
+
         # Deliberate omission: NO "fall back to top-3 RAG results when
         # matcher returned nothing" path. That was the source of misleading
         # chips on edge-case prompts. An empty chip list is the honest

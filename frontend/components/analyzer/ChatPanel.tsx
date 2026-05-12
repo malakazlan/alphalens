@@ -68,6 +68,44 @@ const STARTER_PROMPTS: { icon: string; label: string; prompt: string }[] = [
   { icon: "⇄", label: "Compare year-over-year", prompt: "Compare the most recent two years of revenue." },
 ];
 
+// ── Figure label extractor ────────────────────────────────────────────────────
+// ADE figure chunks carry a structured description in markdown — usually a
+// "Title: …" header and a "Figure N: …" caption. Pull out the human-friendly
+// pieces so the chip reads "Figure 1 — Quarterly Net Revenue" instead of
+// "bar chart Title: Quarterly…" (the raw first line).
+function extractFigureLabel(markdown: string): string {
+  if (!markdown) return "Figure";
+  // Strip HTML, descriptor wrapping (<::desc: kind::>), and excess whitespace.
+  const flat = markdown
+    .replace(/<[^>]+>/g, " ")
+    .replace(/<::|::>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  // Pattern 1: explicit "Figure N: caption"
+  const figMatch = flat.match(/Figure\s+(\d+)\s*[:\-—]\s*([^.]{2,80})/i);
+  if (figMatch) {
+    const num = figMatch[1];
+    const cap = figMatch[2].trim();
+    return `Figure ${num} — ${cap}`;
+  }
+
+  // Pattern 2: "Title: <title>" (ADE's chart parse format)
+  const titleMatch = flat.match(/Title:\s*([^.]{2,80})/i);
+  if (titleMatch) {
+    return titleMatch[1].trim();
+  }
+
+  // Pattern 3: leading "bar chart" / "line chart" / "pie chart" + nearby words
+  const chartKind = flat.match(/\b(bar chart|line chart|pie chart|column chart|scatter plot|chart|graph)\b/i);
+  if (chartKind) {
+    return chartKind[1][0].toUpperCase() + chartKind[1].slice(1);
+  }
+
+  // Fallback: first 60 chars of flattened description.
+  return flat.slice(0, 60) || "Figure";
+}
+
 // ── Chip label builder ────────────────────────────────────────────────────────
 
 function buildChipLabel(chunk: SourceChunk): string {
@@ -128,8 +166,18 @@ function resolveChips(sources: SourceChunk[]): ResolvedChip[] {
     const isTable = isCell || chunk.chunk_type === "table";
 
     if (!isTable) {
-      const raw   = chunk.markdown.replace(/<[^>]+>/g, "").trim();
-      const label = (chunk.section_header || raw.split("\n")[0]).slice(0, 60) || chunk.chunk_type;
+      // Figure chunks: derive a clean "Figure N — caption" label from the
+      // chart's parsed description. LLM-provided label still wins when
+      // present (it usually reads better than the auto-extracted one).
+      let label: string;
+      if (chunk.llm_label && chunk.llm_label.trim()) {
+        label = chunk.llm_label.trim();
+      } else if (chunk.chunk_type === "figure") {
+        label = extractFigureLabel(chunk.markdown);
+      } else {
+        const raw = chunk.markdown.replace(/<[^>]+>/g, "").trim();
+        label = (chunk.section_header || raw.split("\n")[0]).slice(0, 60) || chunk.chunk_type;
+      }
       textChips.push({ source: chunk, cellId: null, label, secondaryCellIds: [] });
       continue;
     }
@@ -387,6 +435,7 @@ const MessageRow = memo(function MessageRow({
               const locType =
                 chip.source.chunk_type === "table_cell" ? ".table, cell"
                 : chip.source.chunk_type === "table"     ? ".table"
+                : chip.source.chunk_type === "figure"    ? ".figure"
                 :                                          ".text";
               return (
                 <button
