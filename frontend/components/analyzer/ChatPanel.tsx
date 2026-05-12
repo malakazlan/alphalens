@@ -437,17 +437,21 @@ const MessageRow = memo(function MessageRow({
                 : chip.source.chunk_type === "table"     ? ".table"
                 : chip.source.chunk_type === "figure"    ? ".figure"
                 :                                          ".text";
-              // Per-chunk-type colour theming. Three families so users can
-              // visually triage by source-kind without reading the chip:
-              //   table/table_cell -> blue   (structured data, Stripe-feel)
-              //   figure           -> violet (visual / chart content)
-              //   text/other       -> amber  (narrative passages)
+              // Per-chunk-type colour theming. `accent` matches the DocViewer
+              // overlay palette in globals.css so clicking a chip lands on a
+              // highlight of the same colour. `text` is a slightly darker
+              // same-hue shade for the chip's label text — the bright
+              // overlay colours work great as borders but are too low-
+              // contrast for small label text on a white card.
+              //   table/table_cell -> blue    #2193FD  (overlay-box--table)
+              //   figure           -> magenta #FF5CFF  (overlay-box--figure)
+              //   text/other       -> green   #32D583  (overlay-box--text)
               const isTable  = chip.source.chunk_type === "table_cell" || chip.source.chunk_type === "table";
               const isFigure = chip.source.chunk_type === "figure";
               const tone =
-                isTable  ? { accent: "#2193FD", tint: "rgba(33,147,253,0.06)",  glyphBg: "rgba(33,147,253,0.10)",  border: "rgba(33,147,253,0.35)" }
-              : isFigure ? { accent: "#7C3AED", tint: "rgba(124,58,237,0.06)",  glyphBg: "rgba(124,58,237,0.10)",  border: "rgba(124,58,237,0.35)" }
-              :            { accent: "#D97706", tint: "rgba(217,119,6,0.06)",   glyphBg: "rgba(217,119,6,0.10)",   border: "rgba(217,119,6,0.35)"  };
+                isTable  ? { accent: "#2193FD", text: "#1672D4", tint: "rgba(33,147,253,0.06)",  glyphBg: "rgba(33,147,253,0.12)",  border: "rgba(33,147,253,0.35)" }
+              : isFigure ? { accent: "#FF5CFF", text: "#C026D3", tint: "rgba(255,92,255,0.06)",  glyphBg: "rgba(255,92,255,0.14)",  border: "rgba(255,92,255,0.40)" }
+              :            { accent: "#32D583", text: "#15803D", tint: "rgba(50,213,131,0.06)",  glyphBg: "rgba(50,213,131,0.14)",  border: "rgba(50,213,131,0.38)" };
               return (
                 <button
                   key={`${msg.id}-${i}`}
@@ -463,7 +467,7 @@ const MessageRow = memo(function MessageRow({
                     className="shrink-0 inline-flex items-center justify-center font-bold tabular-nums"
                     style={{
                       width: 18, height: 18, borderRadius: 5,
-                      background: tone.glyphBg, color: tone.accent,
+                      background: tone.glyphBg, color: tone.text,
                       fontSize: 10,
                     }}
                     aria-hidden
@@ -480,12 +484,12 @@ const MessageRow = memo(function MessageRow({
                   <span className="shrink-0" style={{ color: "var(--al-border)", fontSize: 12 }}>|</span>
 
                   {/* Semantic label */}
-                  <span className="flex-1 truncate font-medium" style={{ color: tone.accent, fontSize: 12 }}>
+                  <span className="flex-1 truncate font-medium" style={{ color: tone.text, fontSize: 12 }}>
                     {chip.label}
                   </span>
 
                   {/* Arrow */}
-                  <span className="shrink-0" style={{ color: tone.accent, opacity: isActive ? 1 : 0.65, fontSize: 13 }}>→</span>
+                  <span className="shrink-0" style={{ color: tone.text, opacity: isActive ? 1 : 0.65, fontSize: 13 }}>→</span>
                 </button>
               );
             })}
