@@ -108,6 +108,22 @@ class DecomposeChangeArgs(BaseModel):
                            description="How many top contributors to return, ranked by absolute delta.")
 
 
+class QueryFreeformArgs(BaseModel):
+    """Args for `query_freeform`.
+
+    Free-form semantic search over the whole document. Used as a SAFETY-NET
+    after the structured tools (lookup_value, get_section, ...) come up
+    empty — the agent shouldn't give up just because the doc's section
+    labels don't match the agent's vocabulary. This tool returns the
+    top-K relevant chunks for the user's question with their text and
+    citations, so the agent can answer from raw chunks when needed.
+    """
+    question: str = Field(..., min_length=1, max_length=500,
+                           description="The user's natural-language question (or a paraphrase). The tool runs embedding-based retrieval against ALL chunk types — tables, text, figures.")
+    top_k:    int = Field(default=8, ge=1, le=20,
+                           description="How many chunks to return.")
+
+
 class DetectRedFlagsArgs(BaseModel):
     """Args for `detect_red_flags`.
 

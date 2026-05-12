@@ -34,6 +34,7 @@ from .schemas import (
     ComparePeriodsArgs,
     DecomposeChangeArgs,
     DetectRedFlagsArgs,
+    QueryFreeformArgs,
 )
 
 logger = logging.getLogger(__name__)
@@ -206,6 +207,92 @@ _LINE_ITEM_SYNONYMS: dict[str, list[str]] = {
 }
 
 
+# ─── Section-name aliases ──────────────────────────────────────────────────
+# Same idea as line-item synonyms but at the SECTION level. The doc may
+# label the same content as 'Balance Sheet', 'Consolidated Balance Sheet',
+# 'Statement of Financial Position' — the agent shouldn't have to guess
+# which surface form the parser captured. When the agent asks
+# get_section('balance sheet') we expand to ALL aliases and match cells
+# whose section_header overlaps any of them.
+#
+# Each canonical key maps to the surface forms we accept from EITHER side
+# (the agent's query or the document's section_header). Order inside each
+# list doesn't matter — every alias is compared symmetrically.
+_SECTION_ALIASES: dict[str, list[str]] = {
+    "balance_sheet": [
+        "balance sheet", "balance sheets",
+        "consolidated balance sheet", "consolidated balance sheets",
+        "statement of financial position", "statements of financial position",
+        "consolidated statement of financial position",
+        "assets", "liabilities", "equity",                # short names users say
+        "total assets", "total liabilities",
+        "current assets", "non-current assets", "noncurrent assets",
+        "current liabilities", "non-current liabilities", "noncurrent liabilities",
+        "shareholders equity", "shareholders' equity",
+        "stockholders equity", "stockholders' equity",
+        "members equity", "members' equity",
+        "property plant and equipment", "ppe",
+    ],
+    "income_statement": [
+        "income statement", "income statements",
+        "consolidated income statement", "consolidated statement of operations",
+        "statement of operations", "statements of operations",
+        "profit and loss", "profit & loss", "p&l",
+        "results of operations",
+        "revenue", "revenues", "sales",
+        "operating expenses",
+    ],
+    "cash_flow": [
+        "cash flow statement", "cash flow statements",
+        "statement of cash flows", "statements of cash flows",
+        "consolidated statement of cash flows",
+        "cash flows from operating activities",
+        "operating activities", "investing activities", "financing activities",
+    ],
+    "comprehensive_income": [
+        "comprehensive income", "statement of comprehensive income",
+        "other comprehensive income", "oci",
+    ],
+    "changes_in_equity": [
+        "changes in equity", "statement of changes in equity",
+        "statement of changes in members' equity",
+        "statement of stockholders' equity",
+        "retained earnings", "soce",
+    ],
+    "notes": [
+        "notes", "notes to financial statements",
+        "notes to the financial statements",
+        "notes to consolidated financial statements",
+        "accounting policies", "summary of significant accounting policies",
+    ],
+}
+
+
+def _expand_section_aliases(name: str) -> list[str]:
+    """Return surface forms for a section name. Same two-pass strategy as
+    line-item alias expansion: exact match wins, longest substring fallback.
+    """
+    key = _normalise(name)
+    # Pass 1: exact alias match.
+    for canon, aliases in _SECTION_ALIASES.items():
+        if any(_normalise(a) == key for a in aliases):
+            return aliases
+    # Pass 2: longest matching alias.
+    best_canon: str | None = None
+    best_len = 0
+    for canon, aliases in _SECTION_ALIASES.items():
+        for a in aliases:
+            na = _normalise(a)
+            if (na in key or key in na):
+                length = min(len(na), len(key))
+                if length > best_len:
+                    best_len = length
+                    best_canon = canon
+    if best_canon is not None:
+        return list(_SECTION_ALIASES[best_canon])
+    return [name]
+
+
 def _expand_aliases(line_item: str) -> list[str]:
     """Return all known surface forms for a line-item name.
 
@@ -327,9 +414,16 @@ def lookup_value(ctx: DocContext, args: LookupValueArgs) -> ToolResult:
 def get_section(ctx: DocContext, args: GetSectionArgs) -> ToolResult:
     """Return every cell whose section_header matches the given name.
     Useful when the user asks for an overview/summary of a named section.
+
+    Section matching is alias-aware: get_section('balance sheet') also
+    matches sections labelled 'Statement of Financial Position',
+    'Consolidated Balance Sheet', etc. Without this the agent would have
+    to guess the exact surface form the parser captured — and silently
+    fail when the guess was wrong.
     """
     t0 = time.time()
-    q = _normalise(args.name)
+    aliases = _expand_section_aliases(args.name)
+    alias_norms = [_normalise(a) for a in aliases]
     rows: list[dict[str, Any]] = []
     citations: list[CitationRef] = []
     seen_cells: set[str] = set()
@@ -339,8 +433,11 @@ def get_section(ctx: DocContext, args: GetSectionArgs) -> ToolResult:
         if not sec:
             continue
         sn = _normalise(sec)
-        # match if section name contains the query or vice versa
-        if q not in sn and sn not in q:
+        # Match when any alias is a substring of the section header OR
+        # exactly equal. One-directional: avoids 'cash' (alias) matching
+        # 'cash flow' (section) when the agent asked for the cash-flow
+        # statement specifically.
+        if not any(a == sn or a in sn for a in alias_norms):
             continue
         text = ctx.cell_lookup.get(cid, "")
         if not text.strip():
@@ -1168,6 +1265,109 @@ def detect_red_flags(ctx: DocContext, args: DetectRedFlagsArgs) -> ToolResult:
     )
 
 
+# ────────────────────────────────────────────────────────────────────────────
+# TOOL 9 — query_freeform  (safety-net retrieval)
+# ────────────────────────────────────────────────────────────────────────────
+# When the structured tools come up empty, the agent should reach for this
+# tool before declaring 'not found'. It scores every loaded chunk against
+# the question's tokens (overlap + light section-keyword boosting) and
+# returns the top-K chunks with their text + citations. Pure-Python — no
+# embedding call, no Qdrant round-trip — because the agent already has
+# the chunks loaded in DocContext. Fast, deterministic, doesn't burn
+# extra OpenAI / Qdrant quota.
+
+_FREEFORM_STOP_TOKENS = {
+    "the", "a", "an", "of", "in", "on", "at", "to", "for", "is", "are",
+    "was", "were", "be", "been", "being", "and", "or", "but", "if", "as",
+    "by", "with", "this", "that", "these", "those", "what", "which",
+    "who", "whom", "whose", "where", "when", "why", "how", "do", "does",
+    "did", "has", "have", "had", "can", "could", "would", "should",
+    "show", "tell", "give", "me", "us", "i", "you", "your", "our",
+    "about", "from", "into",
+}
+
+
+def query_freeform(ctx: DocContext, args: QueryFreeformArgs) -> ToolResult:
+    """Free-form keyword search over every loaded chunk. Use as a fallback
+    when structured tools return nothing.
+    """
+    t0 = time.time()
+    q_tokens = {
+        t for t in _tokens(args.question)
+        if t not in _FREEFORM_STOP_TOKENS
+    }
+    if not q_tokens:
+        return ToolResult(
+            tool_name="query_freeform",
+            ok=False,
+            summary="Question contained no scorable content tokens",
+            error="empty_query",
+            latency_ms=int((time.time() - t0) * 1000),
+        )
+
+    scored: list[tuple[float, dict[str, Any]]] = []
+    for ch in ctx.qdrant_chunks:
+        text = _flatten(ch.get("markdown") or "")
+        if not text:
+            continue
+        body_tokens = _tokens(text)
+        if not body_tokens:
+            continue
+        overlap = q_tokens & body_tokens
+        if not overlap:
+            continue
+        # Score: number of distinct overlapping tokens, weighted slightly
+        # higher for tokens that appear in the section header (means the
+        # chunk is in a topically relevant section of the document).
+        score = float(len(overlap))
+        sec_tokens = _tokens(ch.get("section_header") or "")
+        score += 1.5 * len(q_tokens & sec_tokens)
+        # Boost figure chunks marginally — they're often the most
+        # information-dense per token and easy to miss in a flat scan.
+        if (ch.get("chunk_type") or "").lower() == "figure":
+            score += 0.5
+        scored.append((score, ch))
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    top = scored[:args.top_k]
+
+    chunks_out: list[dict[str, Any]] = []
+    citations: list[CitationRef] = []
+    for sc, ch in top:
+        text = _flatten(ch.get("markdown") or "")
+        chunks_out.append({
+            "chunk_id":   ch.get("chunk_id"),
+            "chunk_type": ch.get("chunk_type") or "text",
+            "page":       int(ch.get("page", 0) or 0) + 1,
+            "section":    ch.get("section_header") or "",
+            "score":      round(sc, 2),
+            # Cap the text to keep the LLM context tight. The agent can
+            # call read_figure or lookup_value if it wants more.
+            "text":       text[:800],
+        })
+        cit = _make_citation(
+            ctx, ch.get("chunk_id") or "",
+            label=(ch.get("section_header") or (text[:40] if text else ch.get("chunk_type") or "chunk")),
+        )
+        if cit:
+            citations.append(cit)
+
+    return ToolResult(
+        tool_name="query_freeform",
+        ok=len(chunks_out) > 0,
+        summary=(
+            f"Found {len(chunks_out)} chunk(s) relevant to {args.question!r}"
+            if chunks_out else f"No chunks matched {args.question!r}"
+        ),
+        payload={
+            "question": args.question,
+            "chunks":   chunks_out,
+        },
+        citations=citations[:15],
+        latency_ms=int((time.time() - t0) * 1000),
+    )
+
+
 # ─── Tool registry (name → callable + args model) ───────────────────────────
 TOOL_REGISTRY: dict[str, tuple[Any, Any]] = {
     "lookup_value":      (lookup_value,      LookupValueArgs),
@@ -1178,6 +1378,7 @@ TOOL_REGISTRY: dict[str, tuple[Any, Any]] = {
     "compare_periods":   (compare_periods,   ComparePeriodsArgs),
     "decompose_change":  (decompose_change,  DecomposeChangeArgs),
     "detect_red_flags":  (detect_red_flags,  DetectRedFlagsArgs),
+    "query_freeform":    (query_freeform,    QueryFreeformArgs),
 }
 
 
