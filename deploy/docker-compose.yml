@@ -1,19 +1,72 @@
 # AlphaLens production stack — runs on anorra-prod alongside (but isolated from)
 # the existing Anorra stack.
 #
+# Services:
+#   redis              — local ARQ job queue (replaces Upstash, 2026-05)
+#   alphalens-web      — FastAPI app behind Cloudflare tunnel
+#   alphalens-worker   — ARQ worker (document parsing + PDF render)
+#   cloudflared        — Cloudflare Tunnel to api.alphalens.site
+#
 # Isolation rules:
 #   - dedicated network alphalens_net on 172.30.0.0/16 (Anorra is on 172.20.0.0/16)
 #   - container names prefixed alphalens_*
 #   - no ports bound to host — public traffic enters via cloudflared tunnel
 #   - resource limits prevent a runaway from starving Anorra
 #
+# First-time setup after pulling this compose:
+#   1. Edit /opt/alphalens/.env
+#        UPSTASH_REDIS_URL=redis://redis:6379       # was: rediss://...upstash.io:6379
+#   2. docker compose -f /opt/alphalens/src/deploy/docker-compose.yml \
+#                     --env-file /opt/alphalens/.env up -d --build
+#
 # Bring up:
 #   docker compose --env-file /opt/alphalens/.env up -d --build
 #
 # Tear down (does NOT touch Anorra):
 #   docker compose --env-file /opt/alphalens/.env down
+#   docker compose --env-file /opt/alphalens/.env down -v     # also wipes redis queue
 
 services:
+  # Self-hosted Redis — replaces Upstash for the ARQ job queue.
+  #
+  # Why local: Upstash free tier (500k commands / month) was tripping
+  # roughly once a month, crash-looping the worker and breaking new
+  # document uploads + PDF rendering for half the month. Local Redis on
+  # the same VM has no command cap and adds ~30 MB RAM. The ARQ queue
+  # doesn't need durable cross-host availability — if this VM dies, the
+  # web container is also dead, so a local queue is no weaker than the
+  # remote one was.
+  #
+  # Set in /opt/alphalens/.env after first deploy of this compose:
+  #   UPSTASH_REDIS_URL=redis://redis:6379
+  # (worker.py's URL parser handles plain `redis://` natively — no TLS
+  # for an internal docker network is the correct choice.)
+  redis:
+    image: redis:7-alpine
+    container_name: alphalens_redis
+    restart: unless-stopped
+    # appendonly persists the queue across container restarts. Without
+    # it, queued-but-not-yet-picked jobs would be lost on every redeploy
+    # of the redis container — fine for development, bad for prod.
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "256mb", "--maxmemory-policy", "noeviction"]
+    networks:
+      - alphalens_net
+    volumes:
+      - alphalens_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 15s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    mem_limit: 320m
+    cpus: 0.5
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "3"
+
   alphalens-web:
     build:
       context: ..
@@ -21,6 +74,14 @@ services:
     image: alphalens-web:latest
     container_name: alphalens_web
     restart: unless-stopped
+    depends_on:
+      # Web enqueues ARQ jobs (uploads → process_document, reports →
+      # render_report_pdf). Without redis reachable the enqueue call
+      # raises and the user gets a 503. Web doesn't crash without it
+      # (Redis is only touched on specific endpoints), so this gate is
+      # cosmetic — but it makes the dependency obvious in `docker ps`.
+      redis:
+        condition: service_healthy
     env_file:
       - /opt/alphalens/.env
     environment:
@@ -55,6 +116,12 @@ services:
     restart: unless-stopped
     depends_on:
       alphalens-web:
+        condition: service_healthy
+      redis:
+        # Wait for redis to be healthy before booting — without this gate
+        # the worker's startup ping races the redis container and ARQ's
+        # built-in retry (5 attempts × 1.2s) can exhaust before redis is
+        # ready, causing the worker to crash-loop on the very first deploy.
         condition: service_healthy
     env_file:
       - /opt/alphalens/.env
@@ -97,3 +164,11 @@ networks:
     ipam:
       config:
         - subnet: 172.30.0.0/16
+
+volumes:
+  # ARQ job queue persistence — appendonly file lives here so a redis
+  # container restart doesn't drop queued-but-unpicked jobs. Survives
+  # `docker compose down` (only `down -v` removes it). Backed up by
+  # whatever VM-level backup story you have for /var/lib/docker/volumes.
+  alphalens_redis_data:
+    name: alphalens_redis_data
