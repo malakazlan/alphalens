@@ -1,14 +1,21 @@
 # Core Framework
-fastapi==0.104.1
+# fastapi 0.115+ pulls starlette 0.40+, which fixes
+# CVE-2024-47874 and CVE-2025-54121 transitively.
+fastapi==0.115.0
 uvicorn==0.24.0.post1
-python-multipart==0.0.6
+# python-multipart bumped from 0.0.6 -> 0.0.27 to fix:
+#   PYSEC-2024-38, CVE-2024-53981, CVE-2026-24486,
+#   CVE-2026-40347, CVE-2026-42561
+python-multipart==0.0.27
 
 # Data Validation
 pydantic[email]>=2.11.7,<3.0.0
 pydantic-settings>=2.0.0
 
 # HTTP & API
-requests==2.31.0
+# requests bumped from 2.31.0 -> 2.33.0 to fix:
+#   CVE-2024-35195, CVE-2024-47081, CVE-2026-25645
+requests==2.33.0
 aiohttp>=3.9.0
 
 # Data Processing
@@ -18,7 +25,8 @@ numpy==2.0.2
 PyPDF2==3.0.1
 
 # Environment
-python-dotenv==1.1.1
+# python-dotenv bumped from 1.1.1 -> 1.2.2 to fix CVE-2026-28684
+python-dotenv==1.2.2
 
 # AI/ML Services
 landingai-ade==1.2.0
@@ -38,6 +46,11 @@ qdrant-client>=1.9.0
 arq>=0.25.0
 
 # PDF Report Generation
+# xhtml2pdf 0.2.16: CVE-2024-25885 has no fix available upstream as of
+# 2026-05. Practical risk is low: xhtml2pdf is a legacy path; primary
+# PDF rendering goes through Playwright/Chromium (see Dockerfile.worker
+# + backend/render/pdf_chromium.py). xhtml2pdf only used by older
+# Report v1 codepath that's been superseded. Tracked as accepted risk.
 xhtml2pdf==0.2.16
 python-bidi==0.4.2
 
