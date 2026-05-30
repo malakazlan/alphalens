@@ -209,6 +209,35 @@ app.add_middleware(
 )
 
 
+# ─── Security headers middleware ─────────────────────────────────────────────
+# Sets the headers Mozilla Observatory (and any web-security scanner) expects
+# on a public-facing HTTP surface. The frontend (Next.js) already sets these
+# for HTML responses in next.config.mjs; this middleware ensures the JSON API
+# at api.alphalens.site also returns them.
+#
+# Why each one:
+#   X-Content-Type-Options: nosniff  → block MIME-sniffing attacks even on JSON
+#   X-Frame-Options: DENY            → no embedding the API in an iframe
+#   Referrer-Policy                  → don't leak the API URL via Referer header
+#   Strict-Transport-Security        → force HTTPS for 1 year (HSTS)
+#   Content-Security-Policy          → strictest possible for a JSON-only API:
+#                                       allow nothing, forbid framing
+#
+# Browsers don't render JSON as HTML, so most of these are belt-and-braces
+# for a JSON API — but a scanner-grade audit expects them, and they cost
+# nothing.
+@app.middleware("http")
+async def add_security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"]   = "nosniff"
+    response.headers["X-Frame-Options"]          = "DENY"
+    response.headers["Referrer-Policy"]          = "strict-origin-when-cross-origin"
+    response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    response.headers["Content-Security-Policy"]  = "default-src 'none'; frame-ancestors 'none'"
+    response.headers["Permissions-Policy"]       = "camera=(), microphone=(), geolocation=()"
+    return response
+
+
 # ─── Citation helpers ────────────────────────────────────────────────────────────
 
 # Regex patterns for parsing ADE markdown
